@@ -177,23 +177,6 @@ sudo ./install.sh --upgrade       # Carries your existing API key over
 Use `--upgrade`, not a plain `install.sh`: without it the installer does not
 look for your existing API key and will ask for it again.
 
-Coming from a version that used the provider's name in its paths
-(`data/ionos-checker`, `ionos-mail-checker.php`, a container called
-`ionos-checker`), the installer migrates the layout on its own: it removes the
-old container, moves the data and log directories, renames the script and
-drops the stale logrotate rule. Your API key, trusted sender profiles and
-budget counter move along. It checks that every step is possible before
-touching anything, so a collision aborts with nothing changed, and running it
-again afterwards does nothing. The filter is inactive for the few seconds
-between the move and the container restart - mail keeps flowing, it just
-passes without an AI verdict during that window.
-
-If you want every component brought to the shipped version instead, use
-`--reinstall`. It keeps your API key and `trusted_sender_profiles.json` and
-overwrites everything else - settings, the rspamd `ai_filter` group and the
-compose override - writing a backup of each file it touches. Other groups in
-`groups.conf` and other services in the override file are left alone.
-
 What the upgrade replaces, and what it leaves alone:
 
 | | |
