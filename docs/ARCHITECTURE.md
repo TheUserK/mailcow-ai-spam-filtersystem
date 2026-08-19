@@ -50,7 +50,7 @@ Incoming Email
 +---------------------+
 | PHP Checker         |
 | ai-checker:8080  |
-| (ionos-mail-checker |
+| (ai-mail-checker    |
 |  .php)              |
 +----------+----------+
            |
@@ -88,7 +88,7 @@ Incoming Email
 
 ## Components
 
-### 1. Docker Container (ionos-checker)
+### 1. Docker Container (ai-checker)
 - **Image:** built from `php:8.4-cli` + `pdo_mysql` (the official image does not ship it, and the internal-mail lookup needs it)
 - **Network:** mailcow-network (internal), plus reaches the mailcow `mysql` container for internal-mail detection
 - **Health:** HTTP /health endpoint
@@ -127,7 +127,7 @@ Incoming Email
 ```
 /opt/mailcow-dockerized/
 +-- data/
-|   +-- ionos-checker/
+|   +-- ai-checker/
 |   |   +-- ai-mail-checker.php           # PHP analysis script (incl. API key + all config constants)
 |   |   +-- router.php                       # HTTP router
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
@@ -139,7 +139,7 @@ Incoming Email
 |   |   |   +-- ai-filter-settings.lua  # Filter settings
 |   |   +-- local.d/
 |   |       +-- groups.conf         # Symbol group definition
-|   +-- logs/ionos-checker/
+|   +-- logs/ai-checker/
 |       +-- stats.log               # Analysis results
 |       +-- errors.log              # Error events
 |       +-- monthly_budget.json     # Budget tracking

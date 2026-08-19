@@ -163,7 +163,7 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 
 ## Configuration Not Taking Effect
 
-1. **PHP constants (ai-mail-checker.php):** Restart ionos-checker container
+1. **PHP constants (ai-mail-checker.php):** Restart ai-checker container
    ```bash
    docker compose restart ai-checker
    ```

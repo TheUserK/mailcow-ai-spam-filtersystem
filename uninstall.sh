@@ -49,8 +49,6 @@ $COMPOSE_CMD stop ai-checker 2>/dev/null || true
 if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]]; then
     sed -i '/-- AI Content Filter loader/d' data/conf/rspamd/lua/rspamd.local.lua
     sed -i '/ai-content-filter.lua/d' data/conf/rspamd/lua/rspamd.local.lua
-    # Also remove old v1 block if present
-    sed -i '/-- === IONOS AI FILTER/,/-- === END IONOS AI FILTER ===/d' data/conf/rspamd/lua/rspamd.local.lua
     echo -e "${GREEN}[OK]${NC} Rspamd loader removed"
 fi
 
@@ -62,7 +60,6 @@ echo -e "${GREEN}[OK]${NC} Lua filter files removed"
 # Clean groups.conf (v2 and v1)
 if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     sed -i '/group "ai_filter"/,/^}/d' data/conf/rspamd/local.d/groups.conf
-    sed -i '/group "ionos"/,/^}/d' data/conf/rspamd/local.d/groups.conf
     echo -e "${GREEN}[OK]${NC} Groups config cleaned"
 fi
 
@@ -91,8 +88,6 @@ fi
 
 # Remove system scripts
 rm -f /usr/local/bin/ai-filter-*.sh
-# Namen aus frueheren Versionen
-rm -f /usr/local/bin/ionos-stats.sh /usr/local/bin/ionos-test.sh
 rm -f /etc/logrotate.d/ai-filter
 echo -e "${GREEN}[OK]${NC} Scripts removed"
 

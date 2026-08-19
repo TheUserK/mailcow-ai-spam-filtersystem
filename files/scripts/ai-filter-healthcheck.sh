@@ -106,17 +106,21 @@ else
     echo -e "${YELLOW}[WARN]${NC} Cannot confirm filter loaded (may need rspamd restart)"
 fi
 
-# 7. Warn about a second, older filter still running alongside this one.
-# rspamd auto-loads every *.lua in plugins.d, so a leftover filter keeps
-# scoring every mail a second time without appearing in any config file.
-LEGACY_HITS=$(grep -rl 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM' \
-    data/conf/rspamd/plugins.d/*.lua data/conf/rspamd/lua/*.lua 2>/dev/null | tr '\n' ' ')
-if [[ -n "$LEGACY_HITS" ]]; then
-    echo -e "${RED}[FAIL]${NC} An older IONOS filter is still active: $LEGACY_HITS"
-    echo "       Every mail is analysed and scored TWICE. Run: install.sh --reinstall"
+# 7. Is a second AI filter registered alongside this one?
+# Read what rspamd actually loaded, not what sits on disk: a filter dropped
+# into plugins.d is auto-loaded without appearing in any config file, which is
+# exactly how a second one can score every mail unnoticed. Any AI-looking
+# symbol that is not ours means something else is also judging mail.
+FOREIGN_AI=$($COMPOSE_CMD exec -T rspamd-mailcow rspamc counters 2>/dev/null \
+    | grep -oE '\b[A-Z0-9_]*AI_[A-Z0-9_]*\b' | sort -u \
+    | grep -vE '^AI_CONTENT_(SCORE|FILTER)$' | tr '\n' ' ')
+if [[ -n "${FOREIGN_AI// /}" ]]; then
+    echo -e "${RED}[FAIL]${NC} A second AI filter is registered: $FOREIGN_AI"
+    echo "       Every mail is analysed and scored twice. Find it with:"
+    echo "         grep -rl 'rspamd_http' data/conf/rspamd/plugins.d/ data/conf/rspamd/lua/"
     ERRORS=$((ERRORS + 1))
 else
-    echo -e "${GREEN}[OK]${NC} No leftover legacy filter"
+    echo -e "${GREEN}[OK]${NC} No second AI filter registered"
 fi
 
 # 8. Check groups.conf

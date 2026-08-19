@@ -70,49 +70,13 @@ preflight_checks() {
     return $errors
 }
 
-migrate_v1() {
-    local mailcow_dir="$1"
-    echo -e "${YELLOW}Migrating from v1...${NC}"
-
-    # Remove old Lua block from rspamd.local.lua
-    if grep -q "IONOS AI FILTER" "$mailcow_dir/data/conf/rspamd/lua/rspamd.local.lua" 2>/dev/null; then
-        sed -i '/-- === IONOS AI FILTER/,/-- === END IONOS AI FILTER ===/d' \
-            "$mailcow_dir/data/conf/rspamd/lua/rspamd.local.lua"
-        echo -e "${GREEN}[OK]${NC} Removed old v1 Lua block"
-    fi
-
-    # Remove old groups.conf entry
-    if grep -q 'group "ionos"' "$mailcow_dir/data/conf/rspamd/local.d/groups.conf" 2>/dev/null; then
-        sed -i '/group "ionos"/,/^}/d' "$mailcow_dir/data/conf/rspamd/local.d/groups.conf"
-        echo -e "${GREEN}[OK]${NC} Removed old v1 groups config"
-    fi
-
-    # Extract API key from old PHP if config.ini doesn't exist
-    if [[ ! -f "$mailcow_dir/data/ai-checker/config.ini" ]] && \
-       [[ -f "$mailcow_dir/data/ai-checker/ai-mail-checker.php" ]]; then
-        local old_key
-        old_key=$(extract_php_api_key "$mailcow_dir/data/ai-checker/ai-mail-checker.php" || true)
-        if [[ -n "$old_key" ]]; then
-            echo -e "${GREEN}[OK]${NC} Found existing API key from v1"
-            echo "$old_key"
-            return 0
-        fi
-    fi
-    return 1
-}
-
-# Extracts the AI_API_TOKEN constant value from a deployed
-# ai-mail-checker.php (v2 config.ini installs never had it embedded here,
-# but v1 and v3+ both store it as a PHP constant directly).
+# Liest den API-Key aus einem bereits ausgerollten ai-mail-checker.php,
+# damit ein Upgrade nicht erneut danach fragt.
 extract_php_api_key() {
     local php_file="$1"
     [[ -f "$php_file" ]] || return 1
     local key
-    # AI_API_TOKEN ist der aktuelle Name, IONOS_API_TOKEN der aus frueheren
-    # Versionen. Beim Upgrade liegt noch die alte Datei da, und ohne den
-    # zweiten Namen wuerde der Installer nach einem Key fragen, den er
-    # eigentlich vor sich hat.
-    key=$(grep -oP "define\('(AI|IONOS)_API_TOKEN',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
+    key=$(grep -oP "define\('AI_API_TOKEN',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
     if [[ -n "$key" && "$key" != "YOUR_AI_API_KEY_HERE" ]]; then
         echo "$key"
         return 0
@@ -134,153 +98,6 @@ override_is_current() {
     local f="$1"
     grep -q 'context:[[:space:]]*\./data/ai-checker' "$f" \
         && grep -q 'PHP_CLI_SERVER_WORKERS' "$f"
-}
-
-# Entfernt Ueberbleibsel des alten v1-Filters (IONOS_AI_CHECK / IONOS_AI_SPAM).
-# Laeuft in JEDEM Modus: bisher war die Bereinigung an eine Neuinstallation
-# gekoppelt und wurde bei --upgrade/--reinstall uebersprungen - also genau
-# dann, wenn eine Altinstallation garantiert vorhanden ist. Folge: beide
-# Filter liefen parallel, jede Mail kostete zwei API-Calls und bekam den
-# KI-Score doppelt aufaddiert, was die Score-Deckelung aushebelt.
-cleanup_legacy_filter() {
-    local removed=0
-    local ts
-    ts=$(date +%s)
-    local lua_dir="data/conf/rspamd/lua"
-    local local_lua="$lua_dir/rspamd.local.lua"
-
-    if [[ -f "$local_lua" ]]; then
-        # Einzelne dofile()-Zeile auf die alte Datei: gefahrlos zu entfernen.
-        if grep -q 'ionos-ai-filter\.lua' "$local_lua"; then
-            cp "$local_lua" "$local_lua.backup.$ts"
-            sed -i '/ionos-ai-filter\.lua/d' "$local_lua"
-            removed=$((removed + 1))
-            echo -e "${GREEN}[OK]${NC} Old v1 loader removed from rspamd.local.lua (backup: $local_lua.backup.$ts)"
-        fi
-
-        # Inline-Block: NUR anfassen, wenn Anfangs- UND Endmarker da sind.
-        # Fehlt der Endmarker, wuerde ein Bereichs-sed bis zum Dateiende
-        # loeschen und andere Anpassungen mitnehmen - das ist es nicht wert.
-        if grep -q -- '-- === IONOS AI FILTER' "$local_lua" \
-           && grep -q -- '-- === END IONOS AI FILTER ===' "$local_lua"; then
-            cp "$local_lua" "$local_lua.backup.$ts"
-            sed -i '/-- === IONOS AI FILTER/,/-- === END IONOS AI FILTER ===/d' "$local_lua"
-            removed=$((removed + 1))
-            echo -e "${GREEN}[OK]${NC} Old v1 filter block removed from rspamd.local.lua (backup: $local_lua.backup.$ts)"
-        elif grep -q 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM' "$local_lua"; then
-            # Vorhanden, aber nicht sauber abgegrenzt -> nichts automatisch
-            # entfernen, sondern genau sagen, wo es steht.
-            echo -e "${RED}[ACTION REQUIRED]${NC} An old IONOS filter is still active in:"
-            echo "       $MAILCOW_DIR/$local_lua"
-            echo "       It registers its own symbols, so every mail is analysed TWICE"
-            echo "       and the AI score is added twice. Lines involved:"
-            grep -n 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM\|IONOS AI FILTER' "$local_lua" \
-                | sed 's/^/         /'
-            echo "       The block has no clear end marker, so it is NOT removed"
-            echo "       automatically. Delete it by hand, then restart rspamd:"
-            echo "         $COMPOSE_CMD restart rspamd-mailcow"
-            LEGACY_MANUAL=true
-        fi
-    fi
-
-    if [[ -f "$lua_dir/ionos-ai-filter.lua" ]]; then
-        mv "$lua_dir/ionos-ai-filter.lua" "$lua_dir/ionos-ai-filter.lua.disabled.$ts"
-        removed=$((removed + 1))
-        echo -e "${GREEN}[OK]${NC} Old v1 filter file disabled (renamed, not deleted)"
-    fi
-
-    # plugins.d ist der unauffaelligste Fundort: Rspamd laedt dort JEDE .lua
-    # automatisch, ohne Eintrag in rspamd.local.lua. Ein alter Filter laeuft
-    # deshalb unbemerkt weiter und bewertet jede Mail ein zweites Mal.
-    # Nur Dateien anfassen, die wirklich die alten Symbole registrieren -
-    # in plugins.d koennen auch fremde Plugins liegen.
-    local plugins_dir="data/conf/rspamd/plugins.d"
-    if [[ -d "$plugins_dir" ]]; then
-        local plugin
-        for plugin in "$plugins_dir"/*.lua; do
-            [[ -e "$plugin" ]] || continue
-            if grep -q 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM' "$plugin"; then
-                mv "$plugin" "$plugin.disabled.$ts"
-                removed=$((removed + 1))
-                echo -e "${GREEN}[OK]${NC} Old filter disabled: $plugin -> $plugin.disabled.$ts"
-                echo "       (renamed, not deleted - rspamd only loads *.lua from plugins.d)"
-            fi
-        done
-    fi
-
-    if [[ -f "data/conf/rspamd/local.d/groups.conf" ]] \
-       && grep -q 'group "ionos"' data/conf/rspamd/local.d/groups.conf; then
-        cp data/conf/rspamd/local.d/groups.conf "data/conf/rspamd/local.d/groups.conf.backup.$ts"
-        sed -i '/group "ionos"/,/^}/d' data/conf/rspamd/local.d/groups.conf
-        removed=$((removed + 1))
-        echo -e "${GREEN}[OK]${NC} Old v1 symbol group removed from groups.conf"
-    fi
-
-    if [[ $removed -gt 0 ]]; then
-        echo -e "${YELLOW}[INFO]${NC} The old filter was running alongside the new one -"
-        echo "       every mail was analysed twice and scored twice. Fixed now."
-    fi
-}
-
-# Bringt eine Installation mit den alten, anbieterspezifischen Namen auf das
-# aktuelle Schema. Prueft zuerst, ob alle Schritte durchfuehrbar sind, und
-# faengt erst dann an: ein halb ausgefuehrter Umzug laesst Compose auf ein
-# Verzeichnis zeigen, das es nicht mehr gibt, und der Filter waere tot.
-# Mehrfaches Ausfuehren ist folgenlos.
-migrate_to_ai_naming() {
-    local compose_cmd="$1"
-    local ts; ts=$(date +%s)
-
-    local has_old=false
-    [[ -d "data/ionos-checker" || -d "data/logs/ionos-checker" ]] && has_old=true
-    [[ "$has_old" == "false" ]] && return 0
-
-    echo -e "${YELLOW}Migrating to provider-neutral names...${NC}"
-
-    # Vorabpruefung: nichts anfassen, solange irgendetwas kollidiert.
-    if [[ -d "data/ionos-checker" && -e "data/ai-checker" ]]; then
-        echo -e "${RED}[FAIL]${NC} Both data/ionos-checker and data/ai-checker exist."
-        echo "       Cannot decide which one is current - resolve by hand, then re-run."
-        return 1
-    fi
-    if [[ -d "data/logs/ionos-checker" && -e "data/logs/ai-checker" ]]; then
-        echo -e "${RED}[FAIL]${NC} Both data/logs/ionos-checker and data/logs/ai-checker exist."
-        echo "       Cannot decide which one is current - resolve by hand, then re-run."
-        return 1
-    fi
-
-    # Container zuerst weg. Er hat das Datenverzeichnis eingehaengt; wird es
-    # unter ihm weggezogen, arbeitet er auf einem Verzeichnis weiter, das
-    # unter dem alten Namen nicht mehr existiert.
-    if [[ -f "docker-compose.override.yml" ]] && grep -q "ionos-checker" docker-compose.override.yml; then
-        $compose_cmd rm -sf ionos-checker >/dev/null 2>&1 || true
-        echo -e "${GREEN}[OK]${NC} Old ionos-checker container removed"
-    fi
-
-    if [[ -d "data/ionos-checker" ]]; then
-        mv "data/ionos-checker" "data/ai-checker"
-        echo -e "${GREEN}[OK]${NC} data/ionos-checker -> data/ai-checker (API key moved along)"
-    fi
-    if [[ -d "data/logs/ionos-checker" ]]; then
-        mv "data/logs/ionos-checker" "data/logs/ai-checker"
-        echo -e "${GREEN}[OK]${NC} data/logs/ionos-checker -> data/logs/ai-checker"
-    fi
-    if [[ -f "data/ai-checker/ionos-mail-checker.php" ]]; then
-        mv "data/ai-checker/ionos-mail-checker.php" "data/ai-checker/ai-mail-checker.php"
-        echo -e "${GREEN}[OK]${NC} ionos-mail-checker.php -> ai-mail-checker.php"
-    fi
-
-    # Alte Logrotate-Regel zeigt auf das verschobene Verzeichnis. Bliebe sie
-    # liegen, wuerde die Rotation still wieder aussetzen.
-    if [[ -f "/etc/logrotate.d/ionos-checker" ]]; then
-        rm -f "/etc/logrotate.d/ionos-checker"
-        echo -e "${GREEN}[OK]${NC} Old logrotate rule removed"
-    fi
-
-    echo -e "${YELLOW}[INFO]${NC} The compose override and the rspamd checker_url are updated"
-    echo "       further down in this run - the filter is inactive until then."
-    echo ""
-    return 0
 }
 
 # === MAIN LOGIC ===
@@ -341,21 +158,6 @@ echo ""
 
 cd "$MAILCOW_DIR" || exit 1
 
-# === NAME MIGRATION ===
-if ! migrate_to_ai_naming "$COMPOSE_CMD"; then
-    echo ""
-    echo -e "${RED}Migration aborted - nothing was changed.${NC}"
-    exit 1
-fi
-
-# Check for v1 installation
-V1_API_KEY=""
-if [[ "${UPGRADE_MODE:-}" != "true" ]] && grep -q "IONOS AI FILTER" data/conf/rspamd/lua/rspamd.local.lua 2>/dev/null; then
-    echo -e "${YELLOW}Detected v1 installation. Migrating...${NC}"
-    V1_API_KEY=$(migrate_v1 "$MAILCOW_DIR" 2>/dev/null || true)
-    UPGRADE_MODE=true
-fi
-
 # === API KEY ===
 AI_API_KEY=""
 
@@ -369,11 +171,6 @@ if [[ -z "$AI_API_KEY" && "${UPGRADE_MODE:-}" == "true" && -f "data/ai-checker/a
     # v3 keeps the key as a PHP constant in the deployed checker script
     AI_API_KEY=$(extract_php_api_key "data/ai-checker/ai-mail-checker.php" || true)
     [[ -n "$AI_API_KEY" ]] && echo -e "${GREEN}[OK]${NC} Using existing API key from ai-mail-checker.php"
-fi
-
-if [[ -z "$AI_API_KEY" && -n "$V1_API_KEY" ]]; then
-    AI_API_KEY="$V1_API_KEY"
-    echo -e "${GREEN}[OK]${NC} Using API key from v1 installation"
 fi
 
 if [[ -z "$AI_API_KEY" || "$AI_API_KEY" == "YOUR_API_KEY_HERE" ]]; then
@@ -400,9 +197,6 @@ fi
 echo ""
 echo "Installing..."
 echo ""
-
-# === LEGACY CLEANUP ===
-cleanup_legacy_filter
 
 # === DIRECTORIES ===
 mkdir -p data/ai-checker
@@ -507,7 +301,7 @@ fi
 
 # === DOCKER COMPOSE OVERRIDE ===
 if [[ -f "docker-compose.override.yml" ]]; then
-    if grep -qE "ionos-checker|ai-checker" docker-compose.override.yml; then
+    if grep -q "ai-checker" docker-compose.override.yml; then
         if override_is_current docker-compose.override.yml; then
             echo -e "${GREEN}[OK]${NC} docker-compose.override.yml is up to date"
         else
@@ -569,15 +363,6 @@ fi
 cp "$SCRIPT_DIR"/files/scripts/ai-filter-*.sh /usr/local/bin/
 chmod +x /usr/local/bin/ai-filter-*.sh
 
-# Vorgaenger mit anbieterspezifischem Namen entfernen. Blieben sie liegen,
-# haette man zwei Staende derselben Werkzeuge im PATH - und der aeltere
-# faellt erst auf, wenn er falsche Zahlen ausgibt.
-for legacy in /usr/local/bin/ionos-stats.sh /usr/local/bin/ionos-test.sh; do
-    if [[ -f "$legacy" ]]; then
-        rm -f "$legacy"
-        echo -e "${GREEN}[OK]${NC} Removed superseded $legacy"
-    fi
-done
 cp "$SCRIPT_DIR/files/scripts/logrotate-ai-filter" /etc/logrotate.d/ai-filter
 echo -e "${GREEN}[OK]${NC} Management scripts installed"
 
