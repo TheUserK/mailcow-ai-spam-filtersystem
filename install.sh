@@ -185,10 +185,18 @@ if [[ -z "$AI_API_KEY" || "$AI_API_KEY" == "YOUR_API_KEY_HERE" ]]; then
         exit 1
     fi
 
-    # IONOS-Schluessel beginnen mit "ionos_". Andere Anbieter mit
-    # OpenAI-kompatibler API nutzen eigene Formate - deshalb nur ein Hinweis.
-    if [[ ! $AI_API_KEY =~ ^ionos_ ]]; then
-        echo -e "${YELLOW}Note: Key does not look like an IONOS key (no 'ionos_' prefix)${NC}"
+    # IONOS AI Model Hub gibt JSON Web Tokens aus - die beginnen mit "eyJ".
+    # Was wie eine UUID aussieht, ist die Token-ID aus dem Token Manager,
+    # nicht der Token selbst. Andere Anbieter mit OpenAI-kompatibler API
+    # nutzen eigene Formate - deshalb nur ein Hinweis, kein harter Abbruch.
+    if [[ $AI_API_KEY =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}- ]]; then
+        echo -e "${RED}Error: That is a token ID, not the token itself.${NC}"
+        echo "Copy the token value from the Token Manager - it starts with 'eyJ'."
+        exit 1
+    fi
+
+    if [[ ! $AI_API_KEY =~ ^eyJ ]]; then
+        echo -e "${YELLOW}Note: Key does not look like an IONOS token (JWTs start with 'eyJ')${NC}"
         read -p "Continue anyway? (y/N): " confirm
         [[ ! $confirm =~ ^[Yy]$ ]] && exit 1
     fi
