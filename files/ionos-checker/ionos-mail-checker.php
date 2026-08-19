@@ -479,6 +479,9 @@ Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
 {"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|spam|phishing|fraud|pharma|marketing", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+
+Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
+"reasoning" hoechstens 150 Zeichen - laengere Antworten werden abgeschnitten.
 PROMPT;
 
     $body = mb_substr($mail['body_clean'], 0, 3000);
@@ -529,7 +532,7 @@ PROMPT;
             ['role' => 'user',   'content' => $userPrompt],
         ],
         'temperature' => 0.0,
-        'max_tokens'  => 400,
+        'max_tokens'  => 600,
     ];
 
     // --- Ein Call, ein Retry. ---
@@ -570,10 +573,34 @@ PROMPT;
         $content = $m[0];
     }
 
+    $content = sanitizeAiNumberWords($content);
+
     $analysis = json_decode($content, true);
+
+    // Abgeschnittene Antworten sind der haeufigste Parse-Fehler: die Zahlen
+    // stehen am Anfang und sind laengst vollstaendig, nur das "reasoning" am
+    // Ende bricht mitten im Satz ab. Die Mail deswegen unbewertet zu lassen
+    // waere Verschwendung - also die Felder herausfischen.
+    $recovered = false;
+    if (!is_array($analysis) || !isset($analysis['spam_probability'])) {
+        $salvaged = recoverTruncatedAnalysis($content);
+        if ($salvaged !== null) {
+            $analysis = $salvaged;
+            $recovered = true;
+        }
+    }
+
     if (!is_array($analysis) || !isset($analysis['spam_probability'])) {
         logError($requestId, 'Failed to parse AI response', ['content' => mb_substr($content, 0, 300)]);
         return neutralResponse('parse-error');
+    }
+
+    if ($recovered) {
+        logError($requestId, 'Recovered truncated AI response', [
+            'spam_probability' => $analysis['spam_probability'],
+            'confidence' => $analysis['confidence'] ?? null,
+            'category' => $analysis['category'] ?? null,
+        ]);
     }
 
     $category = cleanTextValue($analysis['category'] ?? 'unknown');
@@ -603,6 +630,67 @@ PROMPT;
     ];
 }
 
+
+// ---------------------------------------------------------------------
+//  Manche Modelle geben Ziffern gelegentlich als Wort aus ("0. nine" statt
+//  0.9). Das JSON ist dann unparsebar, obwohl der Inhalt brauchbar waere.
+//  Nur in Zahlkontexten ersetzen, damit "one-time password" im Reasoning
+//  nicht zerschossen wird.
+// ---------------------------------------------------------------------
+function sanitizeAiNumberWords($content) {
+    static $words = [
+        'zero' => '0', 'one' => '1', 'two' => '2', 'three' => '3', 'four' => '4',
+        'five' => '5', 'six' => '6', 'seven' => '7', 'eight' => '8', 'nine' => '9',
+    ];
+    $alternatives = implode('|', array_keys($words));
+
+    // "0. nine" / "0.nine"  ->  "0.9"
+    $content = preg_replace_callback(
+        '/(\d+\.)\s*(' . $alternatives . ')\b/i',
+        function ($m) use ($words) { return $m[1] . $words[mb_strtolower($m[2])]; },
+        $content
+    );
+
+    // '"confidence": nine'  ->  '"confidence": 9'
+    $content = preg_replace_callback(
+        '/("(?:spam_probability|confidence)"\s*:\s*)(' . $alternatives . ')\b/i',
+        function ($m) use ($words) { return $m[1] . $words[mb_strtolower($m[2])]; },
+        $content
+    );
+
+    return $content;
+}
+
+// ---------------------------------------------------------------------
+//  Rettet die Kernfelder aus einer abgeschnittenen Antwort. Gibt null
+//  zurueck, wenn nicht einmal die Wahrscheinlichkeit lesbar ist - dann war
+//  die Antwort wirklich unbrauchbar.
+// ---------------------------------------------------------------------
+function recoverTruncatedAnalysis($content) {
+    if (!preg_match('/"spam_probability"\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)/', $content, $p)) {
+        return null;
+    }
+
+    $analysis = ['spam_probability' => floatval($p[1])];
+
+    if (preg_match('/"confidence"\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)/', $content, $c)) {
+        $analysis['confidence'] = floatval($c[1]);
+    }
+    if (preg_match('/"category"\s*:\s*"([a-z_-]+)"/i', $content, $cat)) {
+        $analysis['category'] = $cat[1];
+    }
+    // red_flags nur uebernehmen, wenn das Array geschlossen ist - ein
+    // abgeschnittenes Array wuerde halbe Flags liefern.
+    if (preg_match('/"red_flags"\s*:\s*\[([^\]]*)\]/', $content, $rf)) {
+        preg_match_all('/"([^"]*)"/', $rf[1], $items);
+        $analysis['red_flags'] = $items[1];
+    }
+    if (preg_match('/"reasoning"\s*:\s*"([^"]*)/', $content, $r)) {
+        $analysis['reasoning'] = rtrim($r[1]) . ' [abgeschnitten]';
+    }
+
+    return $analysis;
+}
 
 // ---------------------------------------------------------------------
 //  Wahrscheinlichkeit + Confidence  ->  ein graduierter, signierter Score

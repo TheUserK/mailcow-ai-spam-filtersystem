@@ -249,6 +249,15 @@ chmod 755 data/ionos-checker
 chmod 700 data/logs/ionos-checker
 
 # === PHP SCRIPTS ===
+# Der deployte Checker ist die Datei, in der am ehesten von Hand nachgebessert
+# wurde - und sie traegt den API-Key. Vor dem Ueberschreiben sichern, sonst
+# sind lokale Anpassungen ersatzlos weg.
+if [[ -f "data/ionos-checker/ionos-mail-checker.php" ]]; then
+    CHECKER_BACKUP="data/ionos-checker/ionos-mail-checker.php.backup.$(date +%s)"
+    cp data/ionos-checker/ionos-mail-checker.php "$CHECKER_BACKUP"
+    chmod 600 "$CHECKER_BACKUP"
+    echo -e "${GREEN}[OK]${NC} Previous checker backed up: $CHECKER_BACKUP"
+fi
 cp "$SCRIPT_DIR/files/ionos-checker/ionos-mail-checker.php" data/ionos-checker/
 cp "$SCRIPT_DIR/files/ionos-checker/router.php" data/ionos-checker/
 cp "$SCRIPT_DIR/files/ionos-checker/trusted_sender_profiles.json.example" data/ionos-checker/
