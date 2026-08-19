@@ -115,12 +115,23 @@ fi
 # an init line. A log line only proves the filter loaded at some point - it
 # survives a later restart in which the filter did not come up, and that false
 # reassurance has already hidden a dead filter once.
-if $COMPOSE_CMD exec -T rspamd-mailcow rspamc counters 2>/dev/null \
-     | grep -q 'AI_CONTENT_FILTER'; then
+# Kurz nachfassen: direkt nach einem Rspamd-Neustart antwortet rspamc noch
+# nicht, und ein leeres Ergebnis sieht genauso aus wie ein fehlendes Symbol.
+FILTER_REGISTERED=false
+for _ in 1 2 3 4 5 6; do
+    if $COMPOSE_CMD exec -T rspamd-mailcow rspamc counters 2>/dev/null \
+         | grep -q 'AI_CONTENT_FILTER'; then
+        FILTER_REGISTERED=true
+        break
+    fi
+    sleep 2
+done
+
+if [[ "$FILTER_REGISTERED" == "true" ]]; then
     echo -e "${GREEN}[OK]${NC} AI filter registered in Rspamd"
 else
     echo -e "${RED}[FAIL]${NC} AI filter NOT registered in Rspamd"
-    echo "       It is loaded but disabled, or not loaded at all. Check:"
+    echo "       Not loaded, or loaded and disabled (checked over 12s). Check:"
     echo "         $COMPOSE_CMD logs rspamd-mailcow | grep -i ai-content"
     ERRORS=$((ERRORS + 1))
 fi
