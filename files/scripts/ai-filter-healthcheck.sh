@@ -128,6 +128,26 @@ if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     fi
 fi
 
+# 9. Is log rotation actually happening?
+# This is worth checking explicitly: nothing else notices when logrotate is
+# not running, and the files hold pseudonymised sender data, so a silently
+# unrotated log quietly outgrows the retention the setup promises.
+STATS_LOG="data/logs/ionos-checker/stats.log"
+if [[ -s "$STATS_LOG" ]]; then
+    FIRST_DAY=$(head -1 "$STATS_LOG" | grep -oP '"timestamp":"\K[0-9-]{10}')
+    if [[ -n "$FIRST_DAY" ]]; then
+        SPAN_DAYS=$(( ( $(date +%s) - $(date -d "$FIRST_DAY" +%s 2>/dev/null || echo 0) ) / 86400 ))
+        if [[ $SPAN_DAYS -gt 10 ]]; then
+            echo -e "${RED}[FAIL]${NC} stats.log covers $SPAN_DAYS days - retention is 7"
+            echo "       Log rotation is not running. Check:"
+            echo "         logrotate -d /etc/logrotate.d/ionos-checker"
+            ERRORS=$((ERRORS + 1))
+        else
+            echo -e "${GREEN}[OK]${NC} Log rotation working (stats.log covers $SPAN_DAYS days)"
+        fi
+    fi
+fi
+
 echo ""
 if [[ $ERRORS -eq 0 ]]; then
     echo -e "${GREEN}All checks passed!${NC}"
