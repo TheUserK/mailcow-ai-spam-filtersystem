@@ -44,6 +44,21 @@ same ones that apply to every other Rspamd rule) make that call. To make the
 filter more or less aggressive overall, tune Rspamd's action thresholds, or
 lower/raise `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS` here.
 
+## Reinstalling from scratch
+
+`install.sh --upgrade` deliberately preserves your configuration. To pull
+every component up to the version shipped in this repo instead:
+
+```bash
+sudo ./install.sh --reinstall
+```
+
+Kept: your API key (read out of the deployed script) and
+`trusted_sender_profiles.json`. Overwritten: `ai-filter-settings.lua`, the
+`ai_filter` block in `groups.conf`, `docker-compose.override.yml`, and all
+PHP/Lua/script files. Every overwritten file is backed up first. Other groups
+in `groups.conf` and other services in the override file are not touched.
+
 ## Trusted sender profiles
 
 Built-in profiles (DHL, DPD, Hermes, UPS, GLS, Shop-Apotheke, DocMorris,

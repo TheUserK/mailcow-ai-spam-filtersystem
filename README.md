@@ -125,6 +125,12 @@ sudo ./install.sh --upgrade       # Carries your existing API key over
 Use `--upgrade`, not a plain `install.sh`: without it the installer does not
 look for your existing API key and will ask for it again.
 
+If you want every component brought to the shipped version instead, use
+`--reinstall`. It keeps your API key and `trusted_sender_profiles.json` and
+overwrites everything else - settings, the rspamd `ai_filter` group and the
+compose override - writing a backup of each file it touches. Other groups in
+`groups.conf` and other services in the override file are left alone.
+
 What the upgrade replaces, and what it leaves alone:
 
 | | |

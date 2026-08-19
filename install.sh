@@ -151,14 +151,24 @@ case "${1:-}" in
         echo -e "${YELLOW}Upgrade mode${NC} - will carry your existing API key over"
         echo ""
         ;;
+    --reinstall)
+        UPGRADE_MODE=true
+        FORCE_REPLACE=true
+        echo -e "${YELLOW}Reinstall mode${NC} - every component is replaced with the shipped version."
+        echo "Your API key and trusted_sender_profiles.json are kept; everything else"
+        echo "(settings, rspamd group config, compose override) is overwritten."
+        echo ""
+        ;;
     --help|-h)
         echo "Usage: install.sh [OPTIONS]"
         echo ""
         echo "Options:"
-        echo "  (none)     Fresh installation"
-        echo "  --upgrade  Upgrade existing installation (preserves config)"
-        echo "  --check    Run health check on existing installation"
-        echo "  --help     Show this help"
+        echo "  (none)      Fresh installation"
+        echo "  --upgrade   Upgrade existing installation (preserves your config)"
+        echo "  --reinstall Replace every component with the shipped version."
+        echo "              Keeps only the API key and trusted_sender_profiles.json."
+        echo "  --check     Run health check on existing installation"
+        echo "  --help      Show this help"
         exit 0
         ;;
 esac
@@ -276,6 +286,12 @@ if [[ ! -f "data/conf/rspamd/lua/ai-filter-settings.lua" ]]; then
     cp "$SCRIPT_DIR/files/rspamd/ai-filter-settings.lua.template" data/conf/rspamd/lua/ai-filter-settings.lua
     chmod 644 data/conf/rspamd/lua/ai-filter-settings.lua
     echo -e "${GREEN}[OK]${NC} AI filter settings created"
+elif [[ "${FORCE_REPLACE:-}" == "true" ]]; then
+    cp data/conf/rspamd/lua/ai-filter-settings.lua \
+       "data/conf/rspamd/lua/ai-filter-settings.lua.backup.$(date +%s)"
+    cp "$SCRIPT_DIR/files/rspamd/ai-filter-settings.lua.template" data/conf/rspamd/lua/ai-filter-settings.lua
+    chmod 644 data/conf/rspamd/lua/ai-filter-settings.lua
+    echo -e "${GREEN}[OK]${NC} AI filter settings replaced (backup kept)"
 else
     echo -e "${GREEN}[OK]${NC} Existing ai-filter-settings.lua preserved"
 fi
@@ -296,6 +312,14 @@ if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     if ! grep -q 'group "ai_filter"' data/conf/rspamd/local.d/groups.conf; then
         cat "$SCRIPT_DIR/files/rspamd/groups.conf.append" >> data/conf/rspamd/local.d/groups.conf
         echo -e "${GREEN}[OK]${NC} Groups config updated"
+    elif [[ "${FORCE_REPLACE:-}" == "true" ]]; then
+        # Nur den ai_filter-Block herausschneiden und frisch anhaengen -
+        # andere Gruppen in der Datei bleiben unberuehrt.
+        cp data/conf/rspamd/local.d/groups.conf \
+           "data/conf/rspamd/local.d/groups.conf.backup.$(date +%s)"
+        sed -i '/group "ai_filter"/,/^}/d' data/conf/rspamd/local.d/groups.conf
+        cat "$SCRIPT_DIR/files/rspamd/groups.conf.append" >> data/conf/rspamd/local.d/groups.conf
+        echo -e "${GREEN}[OK]${NC} Groups config replaced (backup kept)"
     else
         echo -e "${GREEN}[OK]${NC} Groups config already present"
     fi
@@ -327,7 +351,11 @@ if [[ -f "docker-compose.override.yml" ]]; then
                 cp docker-compose.override.yml "$OVERRIDE_BACKUP"
                 echo "       ionos-checker is the only service in the file, so it can be"
                 echo "       replaced safely. Backup: $OVERRIDE_BACKUP"
-                read -p "Update docker-compose.override.yml? (Y/n): " upd
+                if [[ "${FORCE_REPLACE:-}" == "true" ]]; then
+                    upd="y"
+                else
+                    read -p "Update docker-compose.override.yml? (Y/n): " upd
+                fi
                 if [[ ! $upd =~ ^[Nn]$ ]]; then
                     cp "$SCRIPT_DIR/files/docker-compose.override.yml" docker-compose.override.yml
                     echo -e "${GREEN}[OK]${NC} docker-compose.override.yml updated (backup kept)"
