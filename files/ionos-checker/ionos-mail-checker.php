@@ -69,6 +69,39 @@ define('LOG_FILE_MODE', 0600);
 // ---------------------------------------------------------------------
 define('MAX_SPAM_POINTS', 4.0);   // max. Punkte bei sicherem Spam
 define('MAX_HAM_POINTS',  3.0);   // max. Punkte Abzug bei sicherem Ham
+// ---------------------------------------------------------------------
+//  Obergrenzen fuer den GESAMTSCORE (Rspamd + unser Beitrag).
+//  Bewusst als Gesamtsumme formuliert und nicht als Punktzahl: nur so ist
+//  die Zusicherung "kann nie rejecten" beweisbar, egal was Rspamd vorher
+//  schon gefunden hat. Rspamds Reject-Schwelle liegt per Default bei 15.
+// ---------------------------------------------------------------------
+define('REJECT_THRESHOLD', 15.0);
+
+// Normalfall: darf bis deutlich ueber die Junk-Schwelle, nie bis Reject.
+define('MAX_TOTAL_DEFAULT', 12.0);
+
+// Transaktions- und persoenliche Mail: noch vorsichtiger. Eine Rechnung
+// oder Bestellbestaetigung darf im Junk landen - abgewiesen werden darf sie
+// nie. Hinter Maschinenmail sitzt niemand, der den Bounce bemerkt.
+define('MAX_TOTAL_TRANSACTIONAL', 8.0);
+
+// Nur unaufgeforderte Massenmail darf hierhin - und nur, wenn AI_MAY_REJECT
+// aktiv ist und die Bedingungen in rejectAllowed() ALLE zutreffen.
+define('MAX_TOTAL_REJECTABLE', 18.0);
+
+// Schattenmodus. false = es wird protokolliert, was abgewiesen WUERDE, aber
+// der Score bleibt unter der Reject-Schwelle. Erst einschalten, wenn die
+// Logs zeigen, dass die Auswahl stimmt.
+define('AI_MAY_REJECT', false);
+
+// Bodenwert, sobald die volle Reject-Konjunktion haelt. Die uebliche Kurve
+// skaliert mit Wahrscheinlichkeit und Confidence und schoepft selbst bei
+// einem klaren Urteil nur rund zwei Drittel aus - viel zu wenig, um eine
+// Mail abzuweisen. Wenn das Modell die Kategorie aber ueberhaupt vergibt und
+// ein unabhaengiger Strukturbeleg zustimmt, IST das die Aussage. Der Deckel
+// begrenzt den Wert danach weiterhin.
+define('REJECT_FLOOR', 16.0);
+
 define('MAX_PHISHING_POINTS', 10.0); // Phishing/Fraud darf kraeftig beissen, aber
                                      // bewusst UNTER Rspamds Reject-Schwelle (15):
                                      // die KI allein soll nie eine Mail versenken.
@@ -135,6 +168,8 @@ logStats($requestId, [
     'category' => $result['category'] ?? 'unknown',
     'red_flags' => $result['red_flags'] ?? [],
     'analysis_source' => $result['analysis_source'] ?? 'ai',
+    'evidence' => $result['evidence'] ?? [],
+    'reject_eligible' => !empty($result['reject_eligible']),
     'matched_profile' => $localResult['matched_profile'] ?? '',
     'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
     'url_domains' => $mail['url_domains'],
@@ -245,6 +280,10 @@ function prepareMailContext(array $data) {
         'return_path_domain' => $returnPathDomain,
         'message_id' => $messageId,
         'message_id_domain' => $messageIdDomain,
+        // Teil eines laufenden Austauschs? Dann nie abweisen - dahinter
+        // steckt eine bestehende Konversation.
+        'in_reply_to' => cleanTextValue($data['in_reply_to'] ?? ($headers['in_reply_to'] ?? '')),
+        'references' => cleanTextValue($data['references'] ?? ($headers['references'] ?? '')),
         'headers' => [
             'list_unsubscribe' => cleanTextValue($headers['list_unsubscribe'] ?? $data['list_unsubscribe'] ?? ''),
             'list_id' => cleanTextValue($headers['list_id'] ?? $data['list_id'] ?? ''),
@@ -477,8 +516,39 @@ Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
   Phishing-Signal. Genau diese Kombination ist deine Aufgabe.
 - "url-suspect-listing": schwache Listung, nur ein leichter Hinweis.
 
+KATEGORIE - waehle genau eine. Sie entscheidet, wie hart die Mail
+behandelt werden darf, also waehle sie sorgfaeltig:
+
+Geschuetzt (werden nie abgewiesen, hoechstens einsortiert):
+- "legitimate": normale erwuenschte Mail
+- "transactional": Bestellung, Rechnung, Versand, Buchung, Zahlung,
+  Passwort-Reset, Bestaetigungscode, Vertragsdokument
+- "personal": von einem Menschen an einen Menschen geschrieben
+- "newsletter": Newsletter, den der Empfaenger erkennbar bestellt hat -
+  identifizierbarer Absender, Impressum, funktionierender Abmeldelink
+- "marketing": kommerzielle Mail eines IDENTIFIZIERBAREN Anbieters, zu dem
+  eine Geschaeftsbeziehung plausibel ist
+
+Angreifbar (duerfen abgewiesen werden):
+- "clickbait": Sensationsaufhaenger ohne erkennbaren Absender, dessen einziger
+  Zweck der Klick ist. Prominente, Gesundheits- oder Reichtumsversprechen,
+  kein konkretes Angebot, keine Beziehung zum Empfaenger, meist Wegwerfdomain.
+  Abgrenzung zu "newsletter": dort gibt es eine Marke, ein Impressum und ein
+  Abo. Fehlt beides und ist der Aufhaenger reisserisch -> clickbait.
+- "spam": unaufgeforderte Massenmail von unbekanntem oder Wegwerf-Absender
+- "pharma": Medikamente, Potenzmittel, Abnehmpraeparate
+- "phishing": Abgriff von Zugangsdaten oder Identitaet
+- "fraud": Betrug, Vorschussbetrug, CEO-Fraud, Erpressung
+
+WICHTIG: Eine Mail, die sich als Bestellbestaetigung, Rechnung oder
+Passwort-Reset AUSGIBT, es aber nicht ist, ist "phishing" - niemals
+"transactional". Die geschuetzten Kategorien gelten nur fuer echte Vertreter.
+
+Im Zweifel die geschuetztere Kategorie waehlen. Ausnahme: Bei "clickbait"
+darfst du dich klar festlegen - ein Fehlurteil kostet dort niemanden etwas.
+
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
-{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|spam|phishing|fraud|pharma|marketing", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
 
 Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
 "reasoning" hoechstens 150 Zeichen - laengere Antworten werden abgeschnitten.
@@ -620,6 +690,47 @@ PROMPT;
         $score = min(max($score, 0.0) + $impersonation, MAX_PHISHING_POINTS);
     }
 
+    // --- Wie hart darf diese Mail behandelt werden? ---
+    $policy     = categoryPolicy($category);
+    $confidence = floatval($analysis['confidence'] ?? 0.5);
+    $evidence   = collectStructuralEvidence($mail, $localContext);
+
+    // Ein Reject verlangt die Zustimmung einer zweiten, unabhaengigen Quelle.
+    // Die KI allein reicht nicht: sie kann sich irren, und ein Reject ist die
+    // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
+    $rejectEligible = $policy['may_reject']
+        && $confidence >= 0.80
+        && !empty($evidence)
+        && empty($localContext['matched_profile'])
+        && $mail['in_reply_to'] === '';
+
+    $ceiling = ($rejectEligible && AI_MAY_REJECT)
+        ? MAX_TOTAL_REJECTABLE
+        : $policy['max_total'];
+
+    if ($rejectEligible) {
+        $score = max($score, REJECT_FLOOR);
+    }
+
+    $scoreBeforeCeiling = $score;
+    $score = clampToTotalCeiling($score, $mail['rspamd_score'], $ceiling);
+
+    // Schattenmodus: festhalten, was passiert WAERE. So laesst sich die
+    // Auswahl an echten Daten pruefen, bevor scharf geschaltet wird.
+    if ($rejectEligible && !AI_MAY_REJECT) {
+        $wouldScore = clampToTotalCeiling($scoreBeforeCeiling, $mail['rspamd_score'], MAX_TOTAL_REJECTABLE);
+        $wouldTotal = $mail['rspamd_score'] + $wouldScore;
+        if ($wouldTotal >= REJECT_THRESHOLD) {
+            logError($requestId, 'Would reject (shadow mode)', [
+                'category'    => $category,
+                'confidence'  => $confidence,
+                'evidence'    => $evidence,
+                'from'        => anonymizeAddress($mail['from']),
+                'would_total' => round($wouldTotal, 2),
+            ]);
+        }
+    }
+
     return [
         'score'           => $score,
         'action'          => 'add',   // KI rejected nie — addiert nur
@@ -627,9 +738,130 @@ PROMPT;
         'category'        => $category,
         'red_flags'       => normalizeStringList($analysis['red_flags'] ?? []),
         'analysis_source' => 'ai',
+        'evidence'        => $evidence,
+        'reject_eligible' => $rejectEligible,
     ];
 }
 
+
+// ---------------------------------------------------------------------
+//  Wie hart darf eine Kategorie behandelt werden?
+//
+//  'points'     - wie viel die KI selbst hoechstens beitragen darf
+//  'max_total'  - Obergrenze fuer Rspamd-Score PLUS unseren Beitrag
+//  'may_reject' - darf diese Kategorie ueberhaupt bis zur Reject-Schwelle?
+//
+//  Die Deckelung ist bewusst als GESAMTSUMME formuliert. Nur so laesst sich
+//  zusichern, dass eine geschuetzte Kategorie nie abgewiesen wird - egal wie
+//  viele Punkte Rspamd vorher schon vergeben hat.
+// ---------------------------------------------------------------------
+function categoryPolicy($category) {
+    switch ($category) {
+        // Geschuetzt: hinter Transaktions- und Maschinenmail sitzt niemand,
+        // der einen Bounce bemerkt. Die darf hoechstens einsortiert werden.
+        case 'legitimate':
+        case 'transactional':
+        case 'personal':
+            return ['points' => MAX_SPAM_POINTS, 'max_total' => MAX_TOTAL_TRANSACTIONAL, 'may_reject' => false];
+
+        // Erwuenschte oder zumindest zuordenbare Werbung: darf in den Junk,
+        // aber nicht verworfen werden.
+        case 'newsletter':
+        case 'marketing':
+            return ['points' => MAX_SPAM_POINTS + 1.0, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => false];
+
+        // Angreifbar. Bei clickbait kostet ein Fehlurteil praktisch nichts:
+        // niemand vermisst die Mail, niemand meldet sich.
+        case 'clickbait':
+        case 'spam':
+        case 'pharma':
+        case 'phishing':
+        case 'fraud':
+            // max_total bleibt bewusst der Normalwert. Bis zur Reject-Schwelle
+            // kommt eine Mail nur, wenn zusaetzlich die Konjunktion in
+            // analyzeWithAI() haelt - nicht schon durch ihre Kategorie.
+            return ['points' => MAX_PHISHING_POINTS, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => true];
+    }
+
+    // Unbekannte Kategorie -> vorsichtig behandeln.
+    return ['points' => MAX_SPAM_POINTS, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => false];
+}
+
+// ---------------------------------------------------------------------
+//  Belege, die NICHT von der KI stammen. Fuer ein Reject muss mindestens
+//  einer davon zutreffen: eine zweite, unabhaengige Quelle soll dem Urteil
+//  zustimmen, damit ein Modellfehler allein keine Mail verwirft.
+// ---------------------------------------------------------------------
+function collectStructuralEvidence(array $mail, array $localContext) {
+    $evidence = [];
+
+    if (allUrlsAreCloudStorage($mail['url_domains'])) {
+        $evidence[] = 'cloud-storage-only-links';
+    }
+    if (floatval($localContext['impersonation_score'] ?? 0) > 0) {
+        $evidence[] = 'brand-impersonation';
+    }
+    if (!empty($mail['signals']['url_blacklisted']) || !empty($mail['signals']['url_phishing'])) {
+        $evidence[] = 'url-on-blocklist';
+    }
+    if (!empty(findDangerousAttachments($mail['attachments']))) {
+        $evidence[] = 'dangerous-attachment';
+    }
+    if (!empty(findShortenerDomains($mail['url_domains']))) {
+        $evidence[] = 'url-shortener';
+    }
+
+    return $evidence;
+}
+
+// ---------------------------------------------------------------------
+//  Object-Storage-Hoster. Landingpages dort sind bei Bulk-Versendern
+//  beliebt, weil die Domain reputabel ist und auf keiner Blockliste steht
+//  noch je stehen wird. Einzelne solche Links sind voellig normal
+//  (Rechnungen, Exporte) - verdaechtig ist erst, wenn eine Mail AUSSER
+//  diesen gar keine Links hat, also nicht einmal auf den eigenen Absender
+//  verweist.
+// ---------------------------------------------------------------------
+function allUrlsAreCloudStorage(array $domains) {
+    $domains = normalizeDomainList($domains);
+    if (empty($domains)) {
+        return false;
+    }
+
+    $storageHosts = [
+        'storage.googleapis.com', 'firebasestorage.googleapis.com',
+        's3.amazonaws.com', 'amazonaws.com',
+        'blob.core.windows.net', 'core.windows.net',
+        'digitaloceanspaces.com', 'backblazeb2.com', 'r2.dev',
+        'storage.yandexcloud.net', 'objectstorage.oraclecloud.com',
+        'oss-cn-hangzhou.aliyuncs.com', 'aliyuncs.com',
+    ];
+
+    foreach ($domains as $domain) {
+        if (!domainMatchesAny($domain, $storageHosts)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------
+//  Deckelt unseren Beitrag so, dass die Gesamtsumme die Obergrenze der
+//  Kategorie nicht ueberschreitet. Ham-Abzuege bleiben unangetastet, und
+//  wenn Rspamd allein schon ueber der Grenze liegt, legen wir nichts drauf -
+//  statt die Mail kuenstlich zu retten.
+// ---------------------------------------------------------------------
+function clampToTotalCeiling($score, $rspamdScore, $ceiling) {
+    if ($score <= 0) {
+        return $score;
+    }
+    $headroom = $ceiling - $rspamdScore;
+    if ($headroom <= 0) {
+        return 0.0;
+    }
+    return round(min($score, $headroom), 2);
+}
 
 // ---------------------------------------------------------------------
 //  Manche Modelle geben Ziffern gelegentlich als Wort aus ("0. nine" statt
@@ -704,9 +936,8 @@ function scoreFromAi($probability, $confidence, $category = '') {
     // Gefaehrliche Kategorien duerfen hoeher raus. Ein als "phishing" oder
     // "fraud" eingestuftes Mail ist kaum je ein False-Positive, also kriegt
     // die KI hier mehr Spielraum als bei Marketing/Spam.
-    $maxSpam = in_array($category, ['phishing', 'fraud'], true)
-        ? MAX_PHISHING_POINTS
-        : MAX_SPAM_POINTS;
+    $policy  = categoryPolicy($category);
+    $maxSpam = $policy['points'];
 
     $direction = ($probability - 0.5) * 2.0;     // -1 .. +1
     $magnitude = abs($direction) * $confidence;  //  0 .. 1
@@ -1106,6 +1337,10 @@ function logStats($requestId, $data) {
         'matched_profile' => $data['matched_profile'] ?? '',
         'mail_type_guess' => $data['mail_type_guess'] ?? '',
         'url_domains' => array_slice(normalizeDomainList($data['url_domains'] ?? []), 0, 8),
+        // Strukturbelege und Reject-Freigabe mitschreiben: nur so laesst sich
+        // im Schattenmodus nachvollziehen, welche Mails abgewiesen wuerden.
+        'evidence' => normalizeStringList($data['evidence'] ?? []),
+        'reject_eligible' => !empty($data['reject_eligible']),
     ];
 
     // Betreff und Body sind Inhaltsdaten - nur mitschreiben, wenn der

@@ -275,6 +275,10 @@ rspamd_config:register_symbol({
     local reply_to = header_str(task, 'Reply-To')
     local return_path = header_str(task, 'Return-Path')
     local message_id = header_str(task, 'Message-Id')
+    -- Antwort auf eine laufende Konversation? Wird als Schutz gegen ein
+    -- versehentliches Reject ausgewertet.
+    local in_reply_to = header_str(task, 'In-Reply-To')
+    local references = header_str(task, 'References')
     local list_unsubscribe = header_str(task, 'List-Unsubscribe')
     local list_id = header_str(task, 'List-Id')
     local precedence = header_str(task, 'Precedence')
@@ -314,6 +318,8 @@ rspamd_config:register_symbol({
       reply_to = reply_to,
       return_path = return_path,
       message_id = message_id,
+      in_reply_to = in_reply_to,
+      references = references,
       urls = urls,
       url_domains = url_domains,
       headers = {

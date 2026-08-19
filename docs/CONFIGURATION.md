@@ -59,6 +59,53 @@ Kept: your API key (read out of the deployed script) and
 PHP/Lua/script files. Every overwritten file is backed up first. Other groups
 in `groups.conf` and other services in the override file are not touched.
 
+## Categories and how hard each may be treated
+
+The AI picks exactly one category, and that choice decides the ceiling on
+the **total** score - Rspamd's own points plus the filter's contribution.
+Expressing the limit as a total rather than as a point budget is what makes
+"this category is never rejected" an actual guarantee instead of an estimate.
+
+| Category | Total capped at | May be rejected |
+|---|---|---|
+| `legitimate`, `transactional`, `personal` | `MAX_TOTAL_TRANSACTIONAL` (8) | never |
+| `newsletter`, `marketing` | `MAX_TOTAL_DEFAULT` (12) | never |
+| `clickbait`, `spam`, `pharma`, `phishing`, `fraud` | `MAX_TOTAL_DEFAULT` (12) | only via the conjunction below |
+
+Nothing reaches the reject threshold on its category alone. It additionally
+takes **all** of:
+
+- the category is one of the attackable ones
+- `confidence` >= 0.80
+- at least one structural signal that does **not** come from the AI:
+  cloud-storage-only links, brand impersonation, a blocklist hit, a
+  dangerous attachment, or a URL shortener
+- no trusted sender profile matched
+- no `In-Reply-To` header, i.e. the mail is not part of an ongoing exchange
+
+The structural signal is the point of the exercise: a reject always needs a
+second, independent source to agree, so a single wrong model verdict cannot
+discard mail on its own.
+
+When all of it holds, `REJECT_FLOOR` applies. The usual curve scales with
+probability and confidence and only reaches about two thirds of the budget
+even on a clear verdict - far too little to reject. Once the category is
+assigned and a structural signal agrees, the category *is* the verdict, so
+the score no longer scales down.
+
+**`AI_MAY_REJECT` is off by default.** With it off, mail that meets every
+condition is written to `errors.log` as `Would reject (shadow mode)` and
+still capped below the reject threshold. Run it that way for a couple of
+weeks, read the log, and only then decide:
+
+```bash
+grep "Would reject" data/logs/ionos-checker/errors.log | jq -r \
+  '"\(.timestamp) \(.context.category) \(.context.would_total) \(.context.from) \(.context.evidence|join(","))"'
+```
+
+`stats.log` carries `evidence` and `reject_eligible` per mail for the same
+purpose.
+
 ## Trusted sender profiles
 
 Built-in profiles (DHL, DPD, Hermes, UPS, GLS, Shop-Apotheke, DocMorris,
