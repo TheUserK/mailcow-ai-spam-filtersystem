@@ -1,0 +1,14 @@
+.env
+config.ini
+*.backup
+*.log
+*.swp
+.DS_Store
+monthly_budget.json
+
+# Eigene Trusted-Sender-Profile: enthalten die Domains echter
+# Geschaeftspartner und gehoeren nicht ins oeffentliche Repo.
+trusted_sender_profiles.json
+
+# Backups, die install.sh anlegt
+docker-compose.override.yml.backup.*

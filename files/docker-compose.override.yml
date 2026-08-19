@@ -1,0 +1,32 @@
+services:
+  ionos-checker:
+    # Built locally instead of using php:8.2-cli directly: the official image
+    # does not include pdo_mysql, which the internal-mail detection needs.
+    build:
+      context: ./data/ionos-checker
+    container_name: mailcow-ionos-checker
+    restart: always
+    volumes:
+      - ./data/ionos-checker:/app:ro
+      - ./data/logs/ionos-checker:/var/log/ionos-checker:rw
+    working_dir: /app
+    command: php -S 0.0.0.0:8080 router.php
+    networks:
+      mailcow-network:
+        aliases:
+          - ionos-checker
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'echo file_get_contents(\"http://localhost:8080/health\");' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - MAILCOW_DBPASS=${DBPASS}
+      - MAILCOW_DBUSER=${DBUSER:-mailcow}
+      - MAILCOW_DBNAME=${DBNAME:-mailcow}
+      # php -S is single-worker by default, which serialises every mail behind
+      # the slowest AI call. Without this a burst of mail runs into rspamd's
+      # http_timeout.
+      - PHP_CLI_SERVER_WORKERS=4

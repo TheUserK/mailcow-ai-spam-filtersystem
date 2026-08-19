@@ -1,0 +1,13 @@
+
+group "ai_filter" {
+  symbols {
+    "AI_CONTENT_FILTER" {
+      weight = 0.0;
+      description = "AI content filter triggered";
+    }
+    "AI_CONTENT_SCORE" {
+      weight = 1.0;
+      description = "AI content policy check";
+    }
+  }
+}
