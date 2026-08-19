@@ -133,7 +133,14 @@ fi
 # not running, and the files hold pseudonymised sender data, so a silently
 # unrotated log quietly outgrows the retention the setup promises.
 STATS_LOG="data/logs/ionos-checker/stats.log"
-if [[ -s "$STATS_LOG" ]]; then
+if [[ ! -f "$STATS_LOG" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} stats.log does not exist yet (no mail analysed so far)"
+elif [[ ! -s "$STATS_LOG" ]]; then
+    # Leere Datei ist ein gueltiger Zustand - aber sag es, statt die Zeile
+    # kommentarlos wegzulassen. Eine fehlende Ausgabe liest sich wie ein
+    # fehlender Check.
+    echo -e "${GREEN}[OK]${NC} stats.log is empty (just rotated, or no mail analysed yet)"
+else
     FIRST_DAY=$(head -1 "$STATS_LOG" | grep -oP '"timestamp":"\K[0-9-]{10}')
     if [[ -n "$FIRST_DAY" ]]; then
         SPAN_DAYS=$(( ( $(date +%s) - $(date -d "$FIRST_DAY" +%s 2>/dev/null || echo 0) ) / 86400 ))
