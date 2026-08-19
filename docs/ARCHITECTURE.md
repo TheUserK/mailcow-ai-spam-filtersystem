@@ -106,7 +106,7 @@ Incoming Email
 - Never returns a `reject` action - always `add` (or `pass` for the two skip cases above), with a numeric score for Rspamd to add
 
 ### 3. Rspamd Lua Filter (ai-content-filter.lua)
-- Loaded via `dofile()` from rspamd.local.lua (one-line loader)
+- Installed in `plugins.d/`, auto-loaded by rspamd, no loader line anywhere
 - Reads settings from ai-filter-settings.lua
 - Postfilter stage (priority 10)
 - Skips authenticated senders, so outgoing mail from your own users is never sent to the AI provider
@@ -168,12 +168,23 @@ are summed up.
 
 ## Update Resilience
 
-The filter uses a `dofile()` architecture:
-- Only a one-line loader in rspamd.local.lua
-- Actual filter code in separate file (never touched by Mailcow updates)
-- If rspamd.local.lua gets reset: `ai-filter-repair.sh` re-adds the one line
-- All config in data/ directory (survives Mailcow updates)
-- Health check script can run via cron for automatic monitoring
+The filter is a single untracked file in `data/conf/rspamd/plugins.d/`.
+Rspamd loads every `*.lua` from that directory on its own, so nothing has to
+reference it, and mailcow's own README there names it as the place for custom
+modules.
+
+Why that survives, from mailcow's `update.sh`:
+
+- it commits only **tracked** files (`git add -u`, `git commit -am`) before
+  updating, so untracked files are never part of the commit
+- it merges with `git merge -X theirs`, meaning mailcow's version wins any
+  conflict - which is why a line appended to the tracked `rspamd.local.lua`
+  is unreliable
+- it runs no `git clean`, so untracked files are never removed
+
+The settings file stays in `lua/`, also untracked, and is read explicitly by
+the filter via `loadfile()` rather than being auto-loaded - keeping it out of
+`plugins.d` avoids depending on load order.
 
 ## Budget Protection
 

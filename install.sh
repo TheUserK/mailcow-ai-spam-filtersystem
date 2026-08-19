@@ -247,12 +247,38 @@ if [[ -f "data/ai-checker/config.ini" ]]; then
 fi
 
 # === RSPAMD LUA FILTER ===
-# Copy filter and settings files
-cp "$SCRIPT_DIR/files/rspamd/ai-content-filter.lua" data/conf/rspamd/lua/
-chmod 644 data/conf/rspamd/lua/ai-content-filter.lua
-echo -e "${GREEN}[OK]${NC} AI filter Lua script installed"
+# Der Filter gehoert nach plugins.d, nicht in lua/ mit einer dofile()-Zeile in
+# rspamd.local.lua. Grund steht in mailcows update.sh: dort werden vor dem
+# Update nur GETRACKTE Dateien committet und anschliessend mit
+# "git merge -X theirs" zusammengefuehrt - bei einem Konflikt gewinnt also
+# mailcow, und eine angehaengte Loader-Zeile in der getrackten
+# rspamd.local.lua ist weg. Untracked Dateien fasst update.sh dagegen nie an,
+# es gibt kein "git clean". plugins.d ist ausserdem genau dafuer gedacht;
+# mailcows eigenes README dort sagt: "This is where you should copy any
+# rspamd custom module".
+mkdir -p data/conf/rspamd/plugins.d
+cp "$SCRIPT_DIR/files/rspamd/ai-content-filter.lua" data/conf/rspamd/plugins.d/
+chmod 644 data/conf/rspamd/plugins.d/ai-content-filter.lua
+echo -e "${GREEN}[OK]${NC} AI filter installed to plugins.d (survives mailcow updates)"
 
-# Generate settings file (only if not exists or not upgrading)
+# Reste der frueheren Ablage entfernen - sonst laeuft der Filter doppelt.
+if [[ -f "data/conf/rspamd/lua/ai-content-filter.lua" ]]; then
+    rm -f data/conf/rspamd/lua/ai-content-filter.lua
+    echo -e "${GREEN}[OK]${NC} Removed the old copy from lua/"
+fi
+if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]] \
+   && grep -q "ai-content-filter.lua" data/conf/rspamd/lua/rspamd.local.lua; then
+    cp data/conf/rspamd/lua/rspamd.local.lua \
+       "data/conf/rspamd/lua/rspamd.local.lua.backup.$(date +%s)"
+    sed -i '/-- AI Content Filter loader/d; /ai-content-filter\.lua/d' \
+        data/conf/rspamd/lua/rspamd.local.lua
+    echo -e "${GREEN}[OK]${NC} Removed our dofile() line from rspamd.local.lua (backup kept)"
+    echo "       mailcow's own file is untouched from now on."
+fi
+
+# Die Einstellungsdatei bleibt in lua/: sie wird vom Filter explizit per
+# loadfile() geladen, nicht automatisch. In plugins.d wuerde rspamd sie
+# ebenfalls laden, aber in unbestimmter Reihenfolge.
 if [[ ! -f "data/conf/rspamd/lua/ai-filter-settings.lua" ]]; then
     cp "$SCRIPT_DIR/files/rspamd/ai-filter-settings.lua.template" data/conf/rspamd/lua/ai-filter-settings.lua
     chmod 644 data/conf/rspamd/lua/ai-filter-settings.lua
@@ -265,17 +291,6 @@ elif [[ "${FORCE_REPLACE:-}" == "true" ]]; then
     echo -e "${GREEN}[OK]${NC} AI filter settings replaced (backup kept)"
 else
     echo -e "${GREEN}[OK]${NC} Existing ai-filter-settings.lua preserved"
-fi
-
-# Add dofile() loader to rspamd.local.lua
-touch data/conf/rspamd/lua/rspamd.local.lua
-if ! grep -q "ai-content-filter.lua" data/conf/rspamd/lua/rspamd.local.lua; then
-    echo "" >> data/conf/rspamd/lua/rspamd.local.lua
-    echo "-- AI Content Filter loader" >> data/conf/rspamd/lua/rspamd.local.lua
-    echo "dofile('/etc/rspamd/lua/ai-content-filter.lua')" >> data/conf/rspamd/lua/rspamd.local.lua
-    echo -e "${GREEN}[OK]${NC} dofile() loader added to rspamd.local.lua"
-else
-    echo -e "${GREEN}[OK]${NC} dofile() loader already present"
 fi
 
 # === RSPAMD GROUPS ===
@@ -428,7 +443,6 @@ echo "  ai-filter-log.sh       Recent verdicts (-h for filters)"
 echo "  ai-filter-stats.sh     Summary"
 echo "  ai-filter-test.sh      End-to-end check"
 echo "  ai-filter-healthcheck.sh  Health check (also: install.sh --check)"
-echo "  ai-filter-repair.sh    Repair after mailcow update"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ai-checker"
 echo ""

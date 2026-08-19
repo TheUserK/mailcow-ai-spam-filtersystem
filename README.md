@@ -50,7 +50,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **Brand-impersonation detection** - Catches "PayPal" or "DHL" claimed in the sender name/address when the domain doesn't actually belong to that brand (typosquats and foreign domains).
 - **Internal-mail detection** - Mail between two local Mailcow domains skips analysis entirely (queries the Mailcow DB for active domains).
 - **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt.
-- **Update-Resilient** - Survives Mailcow updates, includes health check and auto-repair
+- **Untouched by mailcow updates** - Installed into `plugins.d/`, which mailcow's update never writes to, so there is no loader line that can go missing
 - **Budget Protection** - Monthly spending limits with automatic tracking
 - **Privacy-conscious defaults** - Inbound mail only (your users' outgoing mail is never sent to the AI), no mail content in the logs by default, 7-day retention
 
@@ -153,15 +153,25 @@ install.sh --check                # Same health check
 Timestamps are printed in the server's local time. The checker itself writes
 UTC, which is worth knowing when comparing against Rspamd's log.
 
-## After Mailcow Updates
+## Mailcow updates
 
-The filter is designed to survive updates. If something breaks:
+Nothing to do. The filter lives in `data/conf/rspamd/plugins.d/`, which is
+where mailcow's own README in that directory says custom rspamd modules
+belong, and rspamd loads every `*.lua` from there without needing an entry in
+any config file.
 
-```bash
-ai-filter-repair.sh               # Auto-repairs the filter
-```
+That placement is what makes it survive. `update.sh` commits only **tracked**
+files before merging and then merges with `-X theirs`, so a line appended to a
+tracked file like `rspamd.local.lua` loses against mailcow's version whenever
+the two collide. Our filter is an untracked file, is never part of that merge,
+and `update.sh` runs no `git clean` - so it is never touched.
 
-For automatic monitoring, add to crontab:
+Earlier versions installed the filter into `lua/` with a loader line in
+`rspamd.local.lua` and shipped a repair script for when that line went
+missing. `install.sh` removes both leftovers on upgrade.
+
+A cron health check is still worth having, for the checker container and the
+API key rather than for the filter:
 ```
 */30 * * * * /usr/local/bin/ai-filter-healthcheck.sh > /dev/null 2>&1
 ```

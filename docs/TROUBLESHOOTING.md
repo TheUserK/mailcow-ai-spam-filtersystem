@@ -35,32 +35,26 @@ docker compose exec ai-checker curl -s http://localhost:8080/health
 # Should return: OK
 ```
 
-## Filter Not Working After Mailcow Update
+## After a Mailcow Update
 
-This is the most common issue. Run:
-```bash
-ai-filter-repair.sh
-```
-
-This re-adds the `dofile()` loader to rspamd.local.lua and restarts Rspamd.
-
-To prevent this, add a cron job:
-```
-*/30 * * * * /usr/local/bin/ai-filter-healthcheck.sh > /dev/null 2>&1
-```
-
-### Manual Check
+A mailcow update should not affect the filter - it is an untracked file in
+`plugins.d/`, and `update.sh` neither commits nor cleans those. To confirm:
 
 ```bash
-# Is the loader in rspamd.local.lua?
-grep "ai-content-filter" /opt/mailcow-dockerized/data/conf/rspamd/lua/rspamd.local.lua
-
-# Is the filter file there?
-ls -la /opt/mailcow-dockerized/data/conf/rspamd/lua/ai-content-filter.lua
-
-# Is it loaded?
+ls -la /opt/mailcow-dockerized/data/conf/rspamd/plugins.d/ai-content-filter.lua
 docker compose logs rspamd-mailcow | grep "AI Content Filter initialized"
 ```
+
+If the file is gone, reinstalling puts it back:
+```bash
+cd /opt/mailcow-ai-spam-filtersystem && git pull && ./install.sh --reinstall
+```
+
+Coming from an older version, the filter sat in `lua/` with a loader line in
+`rspamd.local.lua` - a tracked mailcow file, so the line was lost whenever the
+update's merge hit a conflict there. `install.sh` removes both leftovers, and
+the health check fails if either is still present, since they would load the
+filter a second time.
 
 ## Emails Not Being Analyzed
 
