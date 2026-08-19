@@ -137,11 +137,21 @@ Rspamd decides: Pass / Quarantine / Reject, based on the total score
 ## Monitoring
 
 ```bash
-ionos-stats.sh                    # View statistics
-ionos-test.sh                     # Quick API test
+ai-filter-log.sh                  # Recent verdicts, newest last
+ai-filter-log.sh -R               # Only mail that qualifies for rejection
+ai-filter-log.sh -c clickbait     # Only one category
+ai-filter-log.sh -f               # Follow live
+ai-filter-log.sh -r -n 40         # Raw JSON, same as tail | jq
+ai-filter-log.sh -e               # errors.log instead
+
+ai-filter-stats.sh                # Summary: sources, categories, score spread, budget
+ai-filter-test.sh                 # End-to-end check against the running checker
 ai-filter-healthcheck.sh          # Health check (can run via cron)
-install.sh --check                # Full installation check
+install.sh --check                # Same health check
 ```
+
+Timestamps are printed in the server's local time. The checker itself writes
+UTC, which is worth knowing when comparing against Rspamd's log.
 
 ## After Mailcow Updates
 
