@@ -89,10 +89,14 @@ define('MAX_TOTAL_TRANSACTIONAL', 8.0);
 // aktiv ist und die Bedingungen in rejectAllowed() ALLE zutreffen.
 define('MAX_TOTAL_REJECTABLE', 18.0);
 
-// Schattenmodus. false = es wird protokolliert, was abgewiesen WUERDE, aber
-// der Score bleibt unter der Reject-Schwelle. Erst einschalten, wenn die
-// Logs zeigen, dass die Auswahl stimmt.
-define('AI_MAY_REJECT', false);
+// Darf eine Mail, die ALLE Bedingungen in analyzeWithAI() erfuellt, bis ueber
+// die Reject-Schwelle kommen?
+//   true  - ja. Jeder Kandidat wird als "Reject allowed" protokolliert.
+//   false - Schattenmodus: derselbe Eintrag erscheint als "Would reject",
+//           der Score bleibt aber unter der Schwelle.
+// In beiden Faellen landet jeder Kandidat in errors.log - im scharfen Modus
+// ist dieses Log die einzige Stelle, an der man sieht, was verworfen wurde.
+define('AI_MAY_REJECT', true);
 
 // Bodenwert, sobald die volle Reject-Konjunktion haelt. Die uebliche Kurve
 // skaliert mit Wahrscheinlichkeit und Confidence und schoepft selbst bei
@@ -715,18 +719,22 @@ PROMPT;
     $scoreBeforeCeiling = $score;
     $score = clampToTotalCeiling($score, $mail['rspamd_score'], $ceiling);
 
-    // Schattenmodus: festhalten, was passiert WAERE. So laesst sich die
-    // Auswahl an echten Daten pruefen, bevor scharf geschaltet wird.
-    if ($rejectEligible && !AI_MAY_REJECT) {
+    // Jeden Kandidaten protokollieren - scharf wie im Schattenmodus. Eine
+    // abgewiesene Mail hinterlaesst sonst keine Spur, die man nachlesen
+    // koennte: sie taucht in keinem Postfach auf und in keiner Quarantaene,
+    // die man taeglich anschaut.
+    if ($rejectEligible) {
         $wouldScore = clampToTotalCeiling($scoreBeforeCeiling, $mail['rspamd_score'], MAX_TOTAL_REJECTABLE);
         $wouldTotal = $mail['rspamd_score'] + $wouldScore;
         if ($wouldTotal >= REJECT_THRESHOLD) {
-            logError($requestId, 'Would reject (shadow mode)', [
-                'category'    => $category,
-                'confidence'  => $confidence,
-                'evidence'    => $evidence,
-                'from'        => anonymizeAddress($mail['from']),
-                'would_total' => round($wouldTotal, 2),
+            logError($requestId, AI_MAY_REJECT ? 'Reject allowed' : 'Would reject (shadow mode)', [
+                'category'     => $category,
+                'confidence'   => $confidence,
+                'evidence'     => $evidence,
+                'from'         => anonymizeAddress($mail['from']),
+                'to'           => anonymizeAddress($mail['to']),
+                'total_score'  => round($wouldTotal, 2),
+                'applied'      => AI_MAY_REJECT,
             ]);
         }
     }
