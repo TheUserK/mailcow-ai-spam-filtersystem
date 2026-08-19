@@ -8,17 +8,16 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 ERRORS=0
-MAILCOW_DIR=""
+if [[ -z "${MAILCOW_DIR:-}" ]]; then
+    for dir in /opt/mailcow-dockerized /opt/mailcow; do
+        if [[ -f "$dir/mailcow.conf" ]]; then
+            MAILCOW_DIR="$dir"
+            break
+        fi
+    done
+fi
 
-# Find mailcow directory
-for dir in /opt/mailcow-dockerized /opt/mailcow; do
-    if [[ -f "$dir/mailcow.conf" ]]; then
-        MAILCOW_DIR="$dir"
-        break
-    fi
-done
-
-if [[ -z "$MAILCOW_DIR" ]]; then
+if [[ -z "${MAILCOW_DIR:-}" ]]; then
     echo -e "${RED}[FAIL]${NC} Mailcow directory not found"
     exit 1
 fi
@@ -39,26 +38,30 @@ echo "AI Spam Filter Health Check"
 echo "==========================="
 echo ""
 
-# 1. Check dofile line in rspamd.local.lua
-if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]]; then
-    if grep -q "ai-content-filter.lua" data/conf/rspamd/lua/rspamd.local.lua; then
-        echo -e "${GREEN}[OK]${NC} dofile() loader present in rspamd.local.lua"
-    else
-        echo -e "${RED}[FAIL]${NC} dofile() loader MISSING in rspamd.local.lua"
-        echo "       Run: /usr/local/bin/ai-filter-repair.sh"
-        ERRORS=$((ERRORS + 1))
-    fi
+# 1. Filter in plugins.d - rspamd loads *.lua from there on its own, and
+# mailcow's update never touches untracked files in it.
+if [[ -f "data/conf/rspamd/plugins.d/ai-content-filter.lua" ]]; then
+    echo -e "${GREEN}[OK]${NC} ai-content-filter.lua in plugins.d"
 else
-    echo -e "${RED}[FAIL]${NC} rspamd.local.lua not found"
+    echo -e "${RED}[FAIL]${NC} ai-content-filter.lua MISSING from plugins.d"
+    echo "       Run: install.sh --reinstall"
     ERRORS=$((ERRORS + 1))
 fi
 
-# 2. Check filter lua file
-if [[ -f "data/conf/rspamd/lua/ai-content-filter.lua" ]]; then
-    echo -e "${GREEN}[OK]${NC} ai-content-filter.lua exists"
-else
-    echo -e "${RED}[FAIL]${NC} ai-content-filter.lua MISSING"
+# 2. No leftovers from the previous arrangement, which would load the filter
+# a second time.
+STALE=""
+[[ -f "data/conf/rspamd/lua/ai-content-filter.lua" ]] && STALE="lua/ai-content-filter.lua"
+if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]] \
+   && grep -q "ai-content-filter.lua" data/conf/rspamd/lua/rspamd.local.lua; then
+    STALE="$STALE dofile-line-in-rspamd.local.lua"
+fi
+if [[ -n "$STALE" ]]; then
+    echo -e "${RED}[FAIL]${NC} Leftovers from the old layout: $STALE"
+    echo "       The filter would run twice. Run: install.sh --reinstall"
     ERRORS=$((ERRORS + 1))
+else
+    echo -e "${GREEN}[OK]${NC} No leftovers from the old layout"
 fi
 
 # 3. Check settings lua file

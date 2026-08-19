@@ -49,10 +49,11 @@ $COMPOSE_CMD stop ai-checker 2>/dev/null || true
 if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]]; then
     sed -i '/-- AI Content Filter loader/d' data/conf/rspamd/lua/rspamd.local.lua
     sed -i '/ai-content-filter.lua/d' data/conf/rspamd/lua/rspamd.local.lua
-    echo -e "${GREEN}[OK]${NC} Rspamd loader removed"
+    echo -e "${GREEN}[OK]${NC} Old rspamd loader line removed"
 fi
 
 # Remove filter lua files
+rm -f data/conf/rspamd/plugins.d/ai-content-filter.lua
 rm -f data/conf/rspamd/lua/ai-content-filter.lua
 rm -f data/conf/rspamd/lua/ai-filter-settings.lua
 echo -e "${GREEN}[OK]${NC} Lua filter files removed"
