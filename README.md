@@ -122,6 +122,21 @@ git pull
 sudo ./install.sh --upgrade       # Carries your existing API key over
 ```
 
+Use `--upgrade`, not a plain `install.sh`: without it the installer does not
+look for your existing API key and will ask for it again.
+
+What the upgrade replaces, and what it leaves alone:
+
+| | |
+|---|---|
+| Replaced | `ionos-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
+| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, your `groups.conf` and `rspamd.local.lua` entries |
+| Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ionos-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
+
+The override matters: it carries the build context that brings `pdo_mysql`
+into the container. An install left on an older override keeps running, but
+internal-mail detection stays broken because the PHP driver is missing.
+
 ## Uninstallation
 
 ```bash

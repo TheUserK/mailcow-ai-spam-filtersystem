@@ -116,6 +116,22 @@ extract_php_api_key() {
     return 1
 }
 
+# Zaehlt die Top-Level-Services in einer Compose-Datei. Wird gebraucht, um zu
+# entscheiden, ob wir eine bestehende Override-Datei gefahrlos ersetzen duerfen
+# oder ob dort noch fremde Dienste stehen, die wir nicht anfassen wollen.
+count_compose_services() {
+    awk '/^services:[[:space:]]*$/{f=1;next} /^[^[:space:]#]/{f=0} f && /^  [a-zA-Z0-9_.-]+:[[:space:]]*$/{c++} END{print c+0}' "$1"
+}
+
+# Ist der ionos-checker-Block in der Override-Datei noch auf dem alten Stand?
+# Merkmale des aktuellen Stands: Build-Context zeigt auf data/ionos-checker
+# (bringt pdo_mysql mit) und PHP_CLI_SERVER_WORKERS ist gesetzt.
+override_is_current() {
+    local f="$1"
+    grep -q 'context:[[:space:]]*\./data/ionos-checker' "$f" \
+        && grep -q 'PHP_CLI_SERVER_WORKERS' "$f"
+}
+
 # === MAIN LOGIC ===
 
 # Handle command-line arguments
@@ -291,13 +307,39 @@ fi
 # === DOCKER COMPOSE OVERRIDE ===
 if [[ -f "docker-compose.override.yml" ]]; then
     if grep -q "ionos-checker" docker-compose.override.yml; then
-        echo -e "${GREEN}[OK]${NC} ionos-checker already in docker-compose.override.yml"
-        if ! grep -q "MAILCOW_DBPASS" docker-compose.override.yml; then
-            echo -e "${YELLOW}[WARN]${NC} docker-compose.override.yml is missing MAILCOW_DBPASS (needed since v3"
-            echo "       for internal-mail detection via the mailcow DB). Add this line to the"
-            echo "       ionos-checker service's environment: section, next to TZ:"
-            echo "         - MAILCOW_DBPASS=\${DBPASS}"
-            echo "       Reference: $SCRIPT_DIR/files/docker-compose.override.yml"
+        if override_is_current docker-compose.override.yml; then
+            echo -e "${GREEN}[OK]${NC} docker-compose.override.yml is up to date"
+        else
+            # Der Installer hat diese Datei frueher nie aktualisiert. Dadurch
+            # blieben Installationen auf einem Override haengen, der pdo_mysql
+            # nicht mitbringt - die Interne-Mail-Erkennung war dann dauerhaft
+            # kaputt, ohne dass es irgendwo aufgefallen waere.
+            echo -e "${YELLOW}[INFO]${NC} docker-compose.override.yml is outdated:"
+            grep -q 'context:[[:space:]]*\./data/ionos-checker' docker-compose.override.yml \
+                || echo "         - build context does not point at data/ionos-checker (pdo_mysql missing)"
+            grep -q 'PHP_CLI_SERVER_WORKERS' docker-compose.override.yml \
+                || echo "         - PHP_CLI_SERVER_WORKERS not set (requests are serialised)"
+
+            OVERRIDE_SERVICES=$(count_compose_services docker-compose.override.yml)
+
+            if [[ "$OVERRIDE_SERVICES" -le 1 ]]; then
+                OVERRIDE_BACKUP="docker-compose.override.yml.backup.$(date +%s)"
+                cp docker-compose.override.yml "$OVERRIDE_BACKUP"
+                echo "       ionos-checker is the only service in the file, so it can be"
+                echo "       replaced safely. Backup: $OVERRIDE_BACKUP"
+                read -p "Update docker-compose.override.yml? (Y/n): " upd
+                if [[ ! $upd =~ ^[Nn]$ ]]; then
+                    cp "$SCRIPT_DIR/files/docker-compose.override.yml" docker-compose.override.yml
+                    echo -e "${GREEN}[OK]${NC} docker-compose.override.yml updated (backup kept)"
+                else
+                    echo -e "${YELLOW}[WARN]${NC} Keeping the old file - internal-mail detection will stay broken."
+                fi
+            else
+                # Fremde Dienste in der Datei: nichts automatisch anfassen.
+                echo "       The file defines $OVERRIDE_SERVICES services, so it is NOT touched"
+                echo "       automatically. Merge the ionos-checker block by hand from:"
+                echo "         $SCRIPT_DIR/files/docker-compose.override.yml"
+            fi
         fi
     else
         echo -e "${YELLOW}[INFO]${NC} docker-compose.override.yml exists but has no ionos-checker service"
