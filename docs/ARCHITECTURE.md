@@ -110,6 +110,7 @@ Incoming Email
 - Reads settings from ai-filter-settings.lua
 - Postfilter stage (priority 10)
 - Skips authenticated senders, so outgoing mail from your own users is never sent to the AI provider
+- Skips mail re-delivered by the server's own sieve forwarding (`SIEVE_HOST`, `LOCAL_OUTBOUND`). It was already analysed on ingress with the authentication intact, which forwarding destroys - a forwarded legitimate mail otherwise presents exactly the signature of a forged one
 - Checks the Lua-level sender whitelist before making any API call at all (saves cost)
 - Gathers SPF/DKIM/DMARC results, Reply-To/Return-Path/Message-Id, List-Unsubscribe/List-Id, forged-sender signals, URLs/link-domains, attachments and content stats from the task, and sends them to the PHP checker
 - Also forwards the URL reputation Rspamd has already established for the mail (Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank, and the SEM fresh-domain zone). These lookups happen anyway as part of stock mailcow - reading their symbols costs nothing and adds no dependency

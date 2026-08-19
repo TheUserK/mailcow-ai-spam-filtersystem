@@ -142,6 +142,22 @@ rspamd_config:register_symbol({
       return false
     end
 
+    -- Skip mail our own sieve forwarding is re-delivering. We already
+    -- analysed it on the way in, and we did it better: forwarding rewrites
+    -- the envelope sender and breaks SPF/DKIM, so on the second pass a
+    -- legitimate mail looks exactly like a forgery - From still claims the
+    -- original sender while the envelope and the authentication no longer
+    -- back that up. Re-analysing costs a second API call to reach a worse
+    -- verdict on the same message.
+    --
+    -- Deliberately not keyed on FORWARDED: that also fires for mail an
+    -- external forwarder sends us, which we have never seen and do want to
+    -- check. SIEVE_HOST and LOCAL_OUTBOUND mark our own re-delivery.
+    if task:get_symbol('SIEVE_HOST') or task:get_symbol('LOCAL_OUTBOUND') then
+      rspamd_logger.infox(task, 'AI Filter: locally forwarded mail, already analysed on ingress - skipping')
+      return false
+    end
+
     -- Sender addresses (envelope + header), with domains as parsed by Rspamd
     local from_smtp = task:get_from('smtp')
     local from_mime = task:get_from('mime')
