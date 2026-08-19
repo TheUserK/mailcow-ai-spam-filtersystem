@@ -7,10 +7,19 @@ the AI. Both only ever return a graduated, signed score - positive pushes
 towards spam, negative pushes towards ham - which gets **added** to Rspamd's
 own metric. Rspamd's own action thresholds (defaults: reject around 15,
 quarantine lower) make the final call based on the *total* score, same as
-for every other Rspamd rule. Every cap the checker applies stays below that
-reject threshold, so a false positive from the AI alone can never sink a
-mail - but a confident phishing detection still pushes the total over the
-threshold together with whatever Rspamd's other rules already found.
+for every other Rspamd rule.
+
+What the checker controls is how far it may push that total, and it decides
+that from the category. Protected categories - `legitimate`, `transactional`,
+`personal`, `newsletter`, `marketing` - are capped below the reject
+threshold, so no misjudgement of a real order confirmation or a personal
+message can discard it; the worst case is the junk folder.
+
+Only unsolicited bulk may go further, and never on the model's word alone:
+it additionally takes a confidence of at least 0.80, a structural signal
+established outside the model, no trusted-sender match, and no `In-Reply-To`
+header. A single wrong verdict therefore cannot throw mail away - a second,
+independent source has to agree.
 
 ## System Overview
 

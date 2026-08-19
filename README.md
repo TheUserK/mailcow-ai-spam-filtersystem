@@ -4,11 +4,47 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 
 **Built for GDPR/DSGVO setups** - AI processing runs in German data centers (IONOS Frankfurt/Berlin). It is not "compliant" out of the box: you are the controller, so you still need a DPA/AVV with IONOS, an entry in your records of processing (Art. 30) and a line in your privacy policy. See [Privacy & GDPR/DSGVO](#privacy--gdprdsgvo).
 
+> [!CAUTION]
+> **This filter rejects mail, and rejected mail is gone.**
+>
+> With the shipped defaults (`AI_MAY_REJECT = true`), mail that meets
+> [all of these conditions](docs/CONFIGURATION.md#categories-and-how-hard-each-may-be-treated)
+> is scored past Rspamd's reject threshold and refused during the SMTP
+> transaction. There is no copy in any mailbox. The sending server gets a
+> bounce — a person may notice it and call you, an automated sender will not
+> notice at all.
+>
+> To run without that, set `AI_MAY_REJECT` to `false` in
+> `ionos-mail-checker.php` and restart the container. Qualifying mail is then
+> capped below the threshold and only marked as spam.
+>
+> Either way, **every** candidate is written to `errors.log` with its
+> category, confidence and evidence. That log is the only trace a rejected
+> mail leaves. Read it.
+
+> [!IMPORTANT]
+> **Mail content leaves your server.** For every mail that reaches the AI
+> stage, the sender, the subject and up to 3000 characters of the body are
+> transmitted to IONOS. Most mail never gets that far, and outgoing mail from
+> your own users is never sent at all — but what is sent, is sent.
+>
+> If you run this for anybody other than yourself, you are the controller
+> under GDPR. A data processing agreement with IONOS, an entry in your records
+> of processing and a line in your privacy policy are your responsibility, not
+> this project's. See [Privacy & GDPR/DSGVO](#privacy--gdprdsgvo) for the full
+> list.
+
+> [!NOTE]
+> Provided as is under the MIT license, without warranty of any kind. You
+> decide whether it fits your setup, and you operate it at your own risk.
+> Test it with `log_only_mode = true` before pointing production mail at it.
+
 ## Features
 
 - **AI-Powered Analysis** - Uses GPT-OSS-120B (120B parameters) for context-aware detection
 - **Processing in Germany** - The AI provider is IONOS (Frankfurt/Berlin), no US transfer
-- **Additive scoring, no self-triggered rejects** - The AI and the local heuristics only ever add a graduated, signed score (positive = spam, negative = ham) to Rspamd's own metric. Rspamd's own thresholds make the final pass/quarantine/reject decision.
+- **Additive scoring** - The AI and the local heuristics only ever add a graduated, signed score (positive = spam, negative = ham) to Rspamd's own metric; Rspamd's own thresholds make the final call. The score a category may contribute is capped as a *total*, so protected categories - transactional mail, personal mail, solicited newsletters - cannot be rejected no matter how badly the AI misjudges them.
+- **Rejection needs a second source** - Only unsolicited bulk can reach the reject threshold, and only when a structural signal that does not come from the AI agrees: cloud-storage-only links, brand impersonation, a blocklist hit, a dangerous attachment or a URL shortener. Plus no trusted-sender match and no reply to an existing thread.
 - **Trusted sender profiles** - Known shippers, marketplaces, banks and telecoms (DHL, Amazon, PayPal, Telekom, ...) get a safe local auto-pass (no AI call, no cost) when auth is strong and headers/links align - extendable via `trusted_sender_profiles.json`.
 - **Uses Rspamd's own URL reputation** - Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank and the fresh-domain zone are queried by stock mailcow anyway; their results are folded into the analysis as risk flags. No extra service, no additional lookups, no new dependency.
 - **Brand-impersonation detection** - Catches "PayPal" or "DHL" claimed in the sender name/address when the domain doesn't actually belong to that brand (typosquats and foreign domains).
@@ -47,7 +83,13 @@ The installer will:
 4. Install all components
 5. Optionally start the filter
 
-**Tip:** Set `log_only_mode = true` in `ai-filter-settings.lua` to test without affecting mail delivery!
+**Before you point real mail at it:** set `log_only_mode = true` in
+`ai-filter-settings.lua`. The filter then runs and logs its verdicts without
+changing delivery, so you can see what it would do to your actual mail flow
+first. Turn it off once the results look right to you.
+
+Rejection is active out of the box — see the warning at the top of this file
+if that is not what you want.
 
 ## Configuration
 
