@@ -49,7 +49,7 @@ Incoming Email
            v (HTTP POST, internal network)
 +---------------------+
 | PHP Checker         |
-| ionos-checker:8080  |
+| ai-checker:8080  |
 | (ionos-mail-checker |
 |  .php)              |
 +----------+----------+
@@ -93,9 +93,9 @@ Incoming Email
 - **Network:** mailcow-network (internal), plus reaches the mailcow `mysql` container for internal-mail detection
 - **Health:** HTTP /health endpoint
 - **Resources:** ~50MB RAM, minimal CPU
-- **Config:** constants at the top of `ionos-mail-checker.php` (no config.ini)
+- **Config:** constants at the top of `ai-mail-checker.php` (no config.ini)
 
-### 2. PHP Script (ionos-mail-checker.php)
+### 2. PHP Script (ai-mail-checker.php)
 - Receives email context via HTTP POST from Rspamd (from/to, headers, SPF/DKIM/DMARC results, URLs, attachments, content stats, ...)
 - Checks whether both sides are local Mailcow domains (Mailcow DB lookup) -> skip
 - Matches the sender against built-in + custom trusted sender profiles (shippers, marketplaces, banks, telecoms) and checks Reply-To/Return-Path/Message-Id/link-domain alignment -> safe auto-pass if everything lines up and auth is strong
@@ -127,7 +127,7 @@ Incoming Email
 /opt/mailcow-dockerized/
 +-- data/
 |   +-- ionos-checker/
-|   |   +-- ionos-mail-checker.php           # PHP analysis script (incl. API key + all config constants)
+|   |   +-- ai-mail-checker.php           # PHP analysis script (incl. API key + all config constants)
 |   |   +-- router.php                       # HTTP router
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
 |   |   +-- trusted_sender_profiles.json     # your custom trusted senders (optional, not shipped)

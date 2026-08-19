@@ -2,7 +2,7 @@
 -- GitHub: https://github.com/TheUserK/mailcow-ai-spam-filtersystem
 -- MIT License
 --
--- Talks to ionos-mail-checker.php (v3, additive/low-false-positive engine).
+-- Talks to ai-mail-checker.php (additive, low-false-positive engine).
 -- The checker sets no action itself - it only returns a graduated, signed
 -- score (positive = spam/phishing, negative = ham) that gets added straight
 -- into Rspamd's own metric, and Rspamd's action thresholds decide from the
@@ -22,7 +22,7 @@ if settings_chunk then
 else
   rspamd_logger.errx(rspamd_config, 'AI Filter: Cannot load settings from %s, using defaults', settings_path)
   ai_filter_settings = {
-    checker_url = 'http://ionos-checker:8080/ionos-mail-checker.php',
+    checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
     skip_score_above = 14.0,
     skip_score_below = -10.0,
     http_timeout = 30.0,

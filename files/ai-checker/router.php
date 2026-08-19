@@ -9,4 +9,4 @@ if ($uri === '/health') {
     exit;
 }
 
-require 'ionos-mail-checker.php';
+require 'ai-mail-checker.php';

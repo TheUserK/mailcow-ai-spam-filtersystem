@@ -68,32 +68,32 @@ else
     echo -e "${YELLOW}[WARN]${NC} ai-filter-settings.lua missing (using defaults)"
 fi
 
-# 4. Check API key is embedded in ionos-mail-checker.php
-if [[ -f "data/ionos-checker/ionos-mail-checker.php" ]]; then
-    if grep -qP "define\('IONOS_API_TOKEN',\s*''\)" data/ionos-checker/ionos-mail-checker.php; then
-        echo -e "${RED}[FAIL]${NC} API key not configured in ionos-mail-checker.php"
+# 4. Check API key is embedded in ai-mail-checker.php
+if [[ -f "data/ai-checker/ai-mail-checker.php" ]]; then
+    if grep -qP "define\('AI_API_TOKEN',\s*''\)" data/ai-checker/ai-mail-checker.php; then
+        echo -e "${RED}[FAIL]${NC} API key not configured in ai-mail-checker.php"
         ERRORS=$((ERRORS + 1))
     else
-        echo -e "${GREEN}[OK]${NC} ionos-mail-checker.php present with API key"
+        echo -e "${GREEN}[OK]${NC} ai-mail-checker.php present with API key"
     fi
 else
-    echo -e "${RED}[FAIL]${NC} ionos-mail-checker.php not found"
+    echo -e "${RED}[FAIL]${NC} ai-mail-checker.php not found"
     ERRORS=$((ERRORS + 1))
 fi
 
-# 5. Check ionos-checker container
-if $COMPOSE_CMD ps 2>/dev/null | grep -q "ionos-checker.*Up\|ionos-checker.*running"; then
-    echo -e "${GREEN}[OK]${NC} ionos-checker container running"
+# 5. Check ai-checker container
+if $COMPOSE_CMD ps 2>/dev/null | grep -q "ai-checker.*Up\|ai-checker.*running"; then
+    echo -e "${GREEN}[OK]${NC} ai-checker container running"
 
     # Check health endpoint
-    HEALTH=$($COMPOSE_CMD exec -T ionos-checker curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null)
+    HEALTH=$($COMPOSE_CMD exec -T ai-checker curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null)
     if [[ "$HEALTH" == "200" ]]; then
         echo -e "${GREEN}[OK]${NC} Health endpoint responding"
     else
         echo -e "${YELLOW}[WARN]${NC} Health endpoint returned: $HEALTH"
     fi
 else
-    echo -e "${RED}[FAIL]${NC} ionos-checker container not running"
+    echo -e "${RED}[FAIL]${NC} ai-checker container not running"
     ERRORS=$((ERRORS + 1))
 fi
 
@@ -132,7 +132,7 @@ fi
 # This is worth checking explicitly: nothing else notices when logrotate is
 # not running, and the files hold pseudonymised sender data, so a silently
 # unrotated log quietly outgrows the retention the setup promises.
-STATS_LOG="data/logs/ionos-checker/stats.log"
+STATS_LOG="data/logs/ai-checker/stats.log"
 if [[ ! -f "$STATS_LOG" ]]; then
     echo -e "${YELLOW}[WARN]${NC} stats.log does not exist yet (no mail analysed so far)"
 elif [[ ! -s "$STATS_LOG" ]]; then
@@ -147,7 +147,7 @@ else
         if [[ $SPAN_DAYS -gt 10 ]]; then
             echo -e "${RED}[FAIL]${NC} stats.log covers $SPAN_DAYS days - retention is 7"
             echo "       Log rotation is not running. Check:"
-            echo "         logrotate -d /etc/logrotate.d/ionos-checker"
+            echo "         logrotate -d /etc/logrotate.d/ai-checker"
             ERRORS=$((ERRORS + 1))
         else
             echo -e "${GREEN}[OK]${NC} Log rotation working (stats.log covers $SPAN_DAYS days)"

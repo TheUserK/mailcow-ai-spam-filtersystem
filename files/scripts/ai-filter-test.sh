@@ -24,30 +24,30 @@ echo "=== AI Filter Test ==="
 echo ""
 
 echo -n "1. Health endpoint: "
-if $COMPOSE_CMD exec -T ionos-checker php -r 'echo file_get_contents("http://localhost:8080/health");' 2>/dev/null | grep -q OK; then
+if $COMPOSE_CMD exec -T ai-checker php -r 'echo file_get_contents("http://localhost:8080/health");' 2>/dev/null | grep -q OK; then
     echo -e "${GREEN}OK${NC}"
 else
     echo -e "${RED}no response${NC}"
-    echo "   Check: $COMPOSE_CMD logs ionos-checker"
+    echo "   Check: $COMPOSE_CMD logs ai-checker"
     exit 1
 fi
 
 echo -n "2. pdo_mysql present: "
-if $COMPOSE_CMD exec -T ionos-checker php -m 2>/dev/null | grep -q pdo_mysql; then
+if $COMPOSE_CMD exec -T ai-checker php -m 2>/dev/null | grep -q pdo_mysql; then
     echo -e "${GREEN}OK${NC}"
 else
     echo -e "${RED}missing${NC} - internal-mail detection will not work"
 fi
 
 echo "3. Analysis round-trip:"
-RESULT=$($COMPOSE_CMD exec -T ionos-checker php -r '
+RESULT=$($COMPOSE_CMD exec -T ai-checker php -r '
 $data = json_encode([
   "from" => "Test <test@example.com>", "to" => "info@example.org",
   "subject" => "Test", "body" => "This is a test message.", "rspamd_score" => 3.0,
 ]);
 $ctx = stream_context_create(["http" => ["method" => "POST",
   "header" => "Content-Type: application/json", "content" => $data, "ignore_errors" => true]]);
-echo file_get_contents("http://localhost:8080/ionos-mail-checker.php", false, $ctx);
+echo file_get_contents("http://localhost:8080/ai-mail-checker.php", false, $ctx);
 ' 2>/dev/null)
 
 if [[ -z "$RESULT" ]]; then
@@ -66,9 +66,9 @@ fi
 # nicht - meist ein falscher oder abgelaufener API-Key.
 if echo "$RESULT" | grep -q "api-error"; then
     echo -e "   ${YELLOW}The checker works, but the AI provider did not answer.${NC}"
-    echo "   Check the API key in $MAILCOW_DIR/data/ionos-checker/ionos-mail-checker.php"
+    echo "   Check the API key in $MAILCOW_DIR/data/ai-checker/ai-mail-checker.php"
 fi
 
 echo ""
 echo "4. Container status:"
-$COMPOSE_CMD ps ionos-checker
+$COMPOSE_CMD ps ai-checker

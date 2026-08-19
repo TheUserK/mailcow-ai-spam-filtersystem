@@ -1,4 +1,4 @@
-# ionos-checker runtime image.
+# ai-checker runtime image.
 #
 # The official php images do NOT ship pdo_mysql, so the internal-mail lookup
 # (getLocalDomains() -> mailcow DB) would fail with "could not find driver"

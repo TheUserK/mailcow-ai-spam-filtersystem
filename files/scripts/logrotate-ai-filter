@@ -4,8 +4,8 @@
 # keep the files root-only and do not hold them longer than needed.
 #
 # If these files ever grow far beyond `rotate` days, logrotate is not running.
-# Check with: logrotate -d /etc/logrotate.d/ionos-checker
-/opt/mailcow-dockerized/data/logs/ionos-checker/*.log {
+# Check with: logrotate -d /etc/logrotate.d/ai-filter
+/opt/mailcow-dockerized/data/logs/ai-checker/*.log {
     daily
     rotate 7
     compress
