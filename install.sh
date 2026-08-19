@@ -428,12 +428,23 @@ if [[ $start_containers =~ ^[Yy]$ ]]; then
     # Filter bleibt stumm - das ist der haeufigste "es passiert nichts"-Fall.
     echo "Restarting Rspamd to load the filter..."
     $COMPOSE_CMD restart rspamd-mailcow
-    sleep 3
+    # Rspamd braucht ein paar Sekunden, bis die Lua-Dateien geladen sind, und
+    # loggt beim Start sehr viel - mit einem kurzen sleep und einem kleinen
+    # tail-Fenster ist die Init-Zeile leicht zu verpassen. Also nachfassen.
+    FILTER_LOADED=false
+    for _ in $(seq 1 10); do
+        if $COMPOSE_CMD logs --tail=2000 rspamd-mailcow 2>/dev/null \
+             | grep -q "AI Content Filter initialized"; then
+            FILTER_LOADED=true
+            break
+        fi
+        sleep 3
+    done
 
-    if $COMPOSE_CMD logs --tail=200 rspamd-mailcow 2>/dev/null | grep -q "AI Content Filter initialized"; then
+    if [[ "$FILTER_LOADED" == "true" ]]; then
         echo -e "${GREEN}[OK]${NC} AI filter loaded in Rspamd"
     else
-        echo -e "${YELLOW}[WARN]${NC} Could not confirm the filter loaded"
+        echo -e "${YELLOW}[WARN]${NC} Could not confirm the filter loaded after 30s"
         echo "       Check: $COMPOSE_CMD logs rspamd-mailcow | grep 'AI Filter'"
     fi
 else
