@@ -279,6 +279,23 @@ else
     echo -e "${GREEN}[OK]${NC} Module already enabled in rspamd.conf.local"
 fi
 
+# Reste der frueheren Ablage entfernen. Liegen Datei und dofile-Zeile noch
+# daneben, wird der Filter zweimal registriert - und rspamd registriert ihn
+# daraufhin gar nicht. Der Healthcheck erkennt den Zustand und verweist
+# hierher, also muss er hier auch behoben werden.
+if [[ -f "data/conf/rspamd/lua/ai-content-filter.lua" ]]; then
+    rm -f data/conf/rspamd/lua/ai-content-filter.lua
+    echo -e "${GREEN}[OK]${NC} Removed the stale copy from lua/"
+fi
+if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]] \
+   && grep -q "ai-content-filter.lua" data/conf/rspamd/lua/rspamd.local.lua; then
+    cp data/conf/rspamd/lua/rspamd.local.lua \
+       "data/conf/rspamd/lua/rspamd.local.lua.backup.$(date +%s)"
+    sed -i '/-- AI Content Filter loader/d; /ai-content-filter\.lua/d' \
+        data/conf/rspamd/lua/rspamd.local.lua
+    echo -e "${GREEN}[OK]${NC} Removed the stale dofile() line from rspamd.local.lua (backup kept)"
+fi
+
 # Die Einstellungsdatei bleibt in lua/: sie wird vom Filter explizit per
 # loadfile() geladen, nicht automatisch. In plugins.d wuerde rspamd sie
 # ebenfalls laden, aber in unbestimmter Reihenfolge.
