@@ -93,14 +93,21 @@ even on a clear verdict - far too little to reject. Once the category is
 assigned and a structural signal agrees, the category *is* the verdict, so
 the score no longer scales down.
 
-**`AI_MAY_REJECT` is off by default.** With it off, mail that meets every
-condition is written to `errors.log` as `Would reject (shadow mode)` and
-still capped below the reject threshold. Run it that way for a couple of
-weeks, read the log, and only then decide:
+**`AI_MAY_REJECT` controls whether that actually happens.** Either way every
+qualifying mail is written to `errors.log`: as `Reject allowed` when armed,
+as `Would reject (shadow mode)` when not, with the category, the confidence,
+the structural evidence and the resulting total.
+
+Read that log. A rejected mail leaves no other trace - it reaches no mailbox
+and no quarantine anyone opens daily, and the only party who notices is the
+sender, who gets a bounce. Automated senders do not notice at all.
+
+Setting it to `false` first and reading a week or two of `Would reject`
+entries is the cautious path:
 
 ```bash
-grep "Would reject" data/logs/ionos-checker/errors.log | jq -r \
-  '"\(.timestamp) \(.context.category) \(.context.would_total) \(.context.from) \(.context.evidence|join(","))"'
+grep -E "Reject allowed|Would reject" data/logs/ionos-checker/errors.log | jq -r \
+  '"\(.timestamp) \(.context.category) \(.context.total_score) \(.context.from) \(.context.evidence|join(","))"'
 ```
 
 `stats.log` carries `evidence` and `reject_eligible` per mail for the same
