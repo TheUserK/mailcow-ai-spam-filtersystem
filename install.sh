@@ -336,6 +336,11 @@ mkdir -p data/logs/ionos-checker
 chmod 755 data/ionos-checker
 # Logs enthalten pseudonymisierte Absender/Empfaenger - nicht world-readable
 chmod 700 data/logs/ionos-checker
+# Bereits vorhandene Logdateien mitnehmen. Der Checker setzt 0600 nur beim
+# Anlegen, sonst muesste er bei jedem Schreibvorgang die Rechte pruefen -
+# Dateien aus einer aelteren Installation blieben dadurch world-readable.
+find data/logs/ionos-checker -maxdepth 1 -type f \( -name '*.log' -o -name '*.json' \) \
+    -exec chmod 600 {} + 2>/dev/null || true
 
 # === PHP SCRIPTS ===
 # Der deployte Checker ist die Datei, in der am ehesten von Hand nachgebessert
