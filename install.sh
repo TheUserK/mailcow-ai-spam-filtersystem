@@ -261,21 +261,6 @@ cp "$SCRIPT_DIR/files/rspamd/ai-content-filter.lua" data/conf/rspamd/plugins.d/
 chmod 644 data/conf/rspamd/plugins.d/ai-content-filter.lua
 echo -e "${GREEN}[OK]${NC} AI filter installed to plugins.d (survives mailcow updates)"
 
-# Reste der frueheren Ablage entfernen - sonst laeuft der Filter doppelt.
-if [[ -f "data/conf/rspamd/lua/ai-content-filter.lua" ]]; then
-    rm -f data/conf/rspamd/lua/ai-content-filter.lua
-    echo -e "${GREEN}[OK]${NC} Removed the old copy from lua/"
-fi
-if [[ -f "data/conf/rspamd/lua/rspamd.local.lua" ]] \
-   && grep -q "ai-content-filter.lua" data/conf/rspamd/lua/rspamd.local.lua; then
-    cp data/conf/rspamd/lua/rspamd.local.lua \
-       "data/conf/rspamd/lua/rspamd.local.lua.backup.$(date +%s)"
-    sed -i '/-- AI Content Filter loader/d; /ai-content-filter\.lua/d' \
-        data/conf/rspamd/lua/rspamd.local.lua
-    echo -e "${GREEN}[OK]${NC} Removed our dofile() line from rspamd.local.lua (backup kept)"
-    echo "       mailcow's own file is untouched from now on."
-fi
-
 # Die Einstellungsdatei bleibt in lua/: sie wird vom Filter explizit per
 # loadfile() geladen, nicht automatisch. In plugins.d wuerde rspamd sie
 # ebenfalls laden, aber in unbestimmter Reihenfolge.
