@@ -185,6 +185,25 @@ cleanup_legacy_filter() {
         echo -e "${GREEN}[OK]${NC} Old v1 filter file disabled (renamed, not deleted)"
     fi
 
+    # plugins.d ist der unauffaelligste Fundort: Rspamd laedt dort JEDE .lua
+    # automatisch, ohne Eintrag in rspamd.local.lua. Ein alter Filter laeuft
+    # deshalb unbemerkt weiter und bewertet jede Mail ein zweites Mal.
+    # Nur Dateien anfassen, die wirklich die alten Symbole registrieren -
+    # in plugins.d koennen auch fremde Plugins liegen.
+    local plugins_dir="data/conf/rspamd/plugins.d"
+    if [[ -d "$plugins_dir" ]]; then
+        local plugin
+        for plugin in "$plugins_dir"/*.lua; do
+            [[ -e "$plugin" ]] || continue
+            if grep -q 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM' "$plugin"; then
+                mv "$plugin" "$plugin.disabled.$ts"
+                removed=$((removed + 1))
+                echo -e "${GREEN}[OK]${NC} Old filter disabled: $plugin -> $plugin.disabled.$ts"
+                echo "       (renamed, not deleted - rspamd only loads *.lua from plugins.d)"
+            fi
+        done
+    fi
+
     if [[ -f "data/conf/rspamd/local.d/groups.conf" ]] \
        && grep -q 'group "ionos"' data/conf/rspamd/local.d/groups.conf; then
         cp data/conf/rspamd/local.d/groups.conf "data/conf/rspamd/local.d/groups.conf.backup.$ts"

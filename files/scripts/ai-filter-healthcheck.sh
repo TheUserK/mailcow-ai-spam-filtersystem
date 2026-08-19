@@ -106,7 +106,20 @@ else
     echo -e "${YELLOW}[WARN]${NC} Cannot confirm filter loaded (may need rspamd restart)"
 fi
 
-# 7. Check groups.conf
+# 7. Warn about a second, older filter still running alongside this one.
+# rspamd auto-loads every *.lua in plugins.d, so a leftover filter keeps
+# scoring every mail a second time without appearing in any config file.
+LEGACY_HITS=$(grep -rl 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM' \
+    data/conf/rspamd/plugins.d/*.lua data/conf/rspamd/lua/*.lua 2>/dev/null | tr '\n' ' ')
+if [[ -n "$LEGACY_HITS" ]]; then
+    echo -e "${RED}[FAIL]${NC} An older IONOS filter is still active: $LEGACY_HITS"
+    echo "       Every mail is analysed and scored TWICE. Run: install.sh --reinstall"
+    ERRORS=$((ERRORS + 1))
+else
+    echo -e "${GREEN}[OK]${NC} No leftover legacy filter"
+fi
+
+# 8. Check groups.conf
 if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     if grep -q 'group "ai_filter"' data/conf/rspamd/local.d/groups.conf; then
         echo -e "${GREEN}[OK]${NC} Rspamd groups configured"
