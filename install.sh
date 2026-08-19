@@ -492,11 +492,18 @@ else
 fi
 
 # === SYSTEM SCRIPTS ===
-cp "$SCRIPT_DIR/files/scripts/ionos-stats.sh" /usr/local/bin/
-cp "$SCRIPT_DIR/files/scripts/ionos-test.sh" /usr/local/bin/
-cp "$SCRIPT_DIR/files/scripts/ai-filter-healthcheck.sh" /usr/local/bin/
-cp "$SCRIPT_DIR/files/scripts/ai-filter-repair.sh" /usr/local/bin/
-chmod +x /usr/local/bin/ionos-*.sh /usr/local/bin/ai-filter-*.sh
+cp "$SCRIPT_DIR"/files/scripts/ai-filter-*.sh /usr/local/bin/
+chmod +x /usr/local/bin/ai-filter-*.sh
+
+# Vorgaenger mit anbieterspezifischem Namen entfernen. Blieben sie liegen,
+# haette man zwei Staende derselben Werkzeuge im PATH - und der aeltere
+# faellt erst auf, wenn er falsche Zahlen ausgibt.
+for legacy in /usr/local/bin/ionos-stats.sh /usr/local/bin/ionos-test.sh; do
+    if [[ -f "$legacy" ]]; then
+        rm -f "$legacy"
+        echo -e "${GREEN}[OK]${NC} Removed superseded $legacy"
+    fi
+done
 cp "$SCRIPT_DIR/files/scripts/logrotate-ionos" /etc/logrotate.d/ionos-checker
 echo -e "${GREEN}[OK]${NC} Management scripts installed"
 
@@ -558,9 +565,10 @@ echo "Custom trusted senders: $MAILCOW_DIR/data/ionos-checker/trusted_sender_pro
 echo "  (copy from trusted_sender_profiles.json.example in the same directory)"
 echo ""
 echo "Commands:"
-echo "  install.sh --check     Health check"
-echo "  ionos-test.sh          Quick API test"
-echo "  ionos-stats.sh         View statistics"
+echo "  ai-filter-log.sh       Recent verdicts (-h for filters)"
+echo "  ai-filter-stats.sh     Summary"
+echo "  ai-filter-test.sh      End-to-end check"
+echo "  ai-filter-healthcheck.sh  Health check (also: install.sh --check)"
 echo "  ai-filter-repair.sh    Repair after mailcow update"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ionos-checker"

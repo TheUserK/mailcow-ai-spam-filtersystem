@@ -90,8 +90,9 @@ if [[ $delete_logs =~ ^[Yy]$ ]]; then
 fi
 
 # Remove system scripts
+rm -f /usr/local/bin/ai-filter-*.sh
+# Namen aus frueheren Versionen
 rm -f /usr/local/bin/ionos-stats.sh /usr/local/bin/ionos-test.sh
-rm -f /usr/local/bin/ai-filter-healthcheck.sh /usr/local/bin/ai-filter-repair.sh
 rm -f /etc/logrotate.d/ionos-checker
 echo -e "${GREEN}[OK]${NC} Scripts removed"
 
