@@ -111,12 +111,18 @@ else
 fi
 
 # 6. Check rspamd filter loaded
-# Grosszuegiges Fenster: Rspamd loggt viel, die Init-Zeile faellt sonst
-# hinten raus und der Check meldet faelschlich einen Fehler.
-if $COMPOSE_CMD logs --tail=2000 rspamd-mailcow 2>/dev/null | grep -q "AI Content Filter initialized"; then
-    echo -e "${GREEN}[OK]${NC} AI filter loaded in Rspamd"
+# Ask rspamd what it actually has registered instead of searching the log for
+# an init line. A log line only proves the filter loaded at some point - it
+# survives a later restart in which the filter did not come up, and that false
+# reassurance has already hidden a dead filter once.
+if $COMPOSE_CMD exec -T rspamd-mailcow rspamc counters 2>/dev/null \
+     | grep -q 'AI_CONTENT_FILTER'; then
+    echo -e "${GREEN}[OK]${NC} AI filter registered in Rspamd"
 else
-    echo -e "${YELLOW}[WARN]${NC} Cannot confirm filter loaded (may need rspamd restart)"
+    echo -e "${RED}[FAIL]${NC} AI filter NOT registered in Rspamd"
+    echo "       It is loaded but disabled, or not loaded at all. Check:"
+    echo "         $COMPOSE_CMD logs rspamd-mailcow | grep -i ai-content"
+    ERRORS=$((ERRORS + 1))
 fi
 
 # 7. Is a second AI filter registered alongside this one?
