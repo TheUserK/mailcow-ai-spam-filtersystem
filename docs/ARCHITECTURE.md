@@ -75,7 +75,7 @@ Incoming Email
 ## Components
 
 ### 1. Docker Container (ionos-checker)
-- **Image:** built from `php:8.2-cli` + `pdo_mysql` (the official image does not ship it, and the internal-mail lookup needs it)
+- **Image:** built from `php:8.4-cli` + `pdo_mysql` (the official image does not ship it, and the internal-mail lookup needs it)
 - **Network:** mailcow-network (internal), plus reaches the mailcow `mysql` container for internal-mail detection
 - **Health:** HTTP /health endpoint
 - **Resources:** ~50MB RAM, minimal CPU

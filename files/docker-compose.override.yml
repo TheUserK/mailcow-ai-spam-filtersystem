@@ -1,7 +1,7 @@
 services:
   ionos-checker:
-    # Built locally instead of using php:8.2-cli directly: the official image
-    # does not include pdo_mysql, which the internal-mail detection needs.
+    # Built locally instead of using a stock php image: the official images
+    # do not include pdo_mysql, which the internal-mail detection needs.
     build:
       context: ./data/ionos-checker
     container_name: mailcow-ionos-checker
