@@ -3,10 +3,12 @@
 -- MIT License
 --
 -- Talks to ionos-mail-checker.php (v3, additive/low-false-positive engine).
--- The checker never rejects by itself anymore - it only returns a graduated,
--- signed score (positive = spam/phishing, negative = ham) that gets added
--- straight into Rspamd's own metric. Rspamd's own action thresholds decide
--- pass/quarantine/reject based on the resulting total score.
+-- The checker sets no action itself - it only returns a graduated, signed
+-- score (positive = spam/phishing, negative = ham) that gets added straight
+-- into Rspamd's own metric, and Rspamd's action thresholds decide from the
+-- resulting total. That describes the mechanism, not the outcome: for
+-- unsolicited bulk the returned score may deliberately be large enough to
+-- cross the reject threshold.
 
 local rspamd_logger = require "rspamd_logger"
 local rspamd_http = require "rspamd_http"
