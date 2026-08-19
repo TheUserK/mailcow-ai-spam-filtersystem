@@ -2,10 +2,15 @@
 
 ## Design Principle (v3)
 
-The checker never rejects a mail by itself, neither the local heuristics nor
+The checker never sets an action itself, neither the local heuristics nor
 the AI. Both only ever return a graduated, signed score - positive pushes
 towards spam, negative pushes towards ham - which gets **added** to Rspamd's
-own metric. Rspamd's own action thresholds (defaults: reject around 15,
+own metric.
+
+That is a statement about the mechanism, not a promise that nothing is ever
+rejected: for unsolicited bulk the score may deliberately be large enough
+that Rspamd's own reject threshold is crossed. The guarantee lies in the
+caps below, not in the fact that we only return a number. Rspamd's own action thresholds (defaults: reject around 15,
 quarantine lower) make the final call based on the *total* score, same as
 for every other Rspamd rule.
 

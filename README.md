@@ -129,7 +129,7 @@ Local precheck (trusted sender profile + strong auth + aligned headers?) -> auto
      |
 AI Analysis (GPT-OSS-120B, German data center) -> graduated score, positive or negative
      |
-Score is ADDED to Rspamd's metric (never a direct reject)
+Score is ADDED to Rspamd's metric (the checker sets no action itself)
      |
 Rspamd decides: Pass / Quarantine / Reject, based on the total score
 ```
