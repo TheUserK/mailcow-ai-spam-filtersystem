@@ -132,6 +132,73 @@ override_is_current() {
         && grep -q 'PHP_CLI_SERVER_WORKERS' "$f"
 }
 
+# Entfernt Ueberbleibsel des alten v1-Filters (IONOS_AI_CHECK / IONOS_AI_SPAM).
+# Laeuft in JEDEM Modus: bisher war die Bereinigung an eine Neuinstallation
+# gekoppelt und wurde bei --upgrade/--reinstall uebersprungen - also genau
+# dann, wenn eine Altinstallation garantiert vorhanden ist. Folge: beide
+# Filter liefen parallel, jede Mail kostete zwei API-Calls und bekam den
+# KI-Score doppelt aufaddiert, was die Score-Deckelung aushebelt.
+cleanup_legacy_filter() {
+    local removed=0
+    local ts
+    ts=$(date +%s)
+    local lua_dir="data/conf/rspamd/lua"
+    local local_lua="$lua_dir/rspamd.local.lua"
+
+    if [[ -f "$local_lua" ]]; then
+        # Einzelne dofile()-Zeile auf die alte Datei: gefahrlos zu entfernen.
+        if grep -q 'ionos-ai-filter\.lua' "$local_lua"; then
+            cp "$local_lua" "$local_lua.backup.$ts"
+            sed -i '/ionos-ai-filter\.lua/d' "$local_lua"
+            removed=$((removed + 1))
+            echo -e "${GREEN}[OK]${NC} Old v1 loader removed from rspamd.local.lua (backup: $local_lua.backup.$ts)"
+        fi
+
+        # Inline-Block: NUR anfassen, wenn Anfangs- UND Endmarker da sind.
+        # Fehlt der Endmarker, wuerde ein Bereichs-sed bis zum Dateiende
+        # loeschen und andere Anpassungen mitnehmen - das ist es nicht wert.
+        if grep -q -- '-- === IONOS AI FILTER' "$local_lua" \
+           && grep -q -- '-- === END IONOS AI FILTER ===' "$local_lua"; then
+            cp "$local_lua" "$local_lua.backup.$ts"
+            sed -i '/-- === IONOS AI FILTER/,/-- === END IONOS AI FILTER ===/d' "$local_lua"
+            removed=$((removed + 1))
+            echo -e "${GREEN}[OK]${NC} Old v1 filter block removed from rspamd.local.lua (backup: $local_lua.backup.$ts)"
+        elif grep -q 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM' "$local_lua"; then
+            # Vorhanden, aber nicht sauber abgegrenzt -> nichts automatisch
+            # entfernen, sondern genau sagen, wo es steht.
+            echo -e "${RED}[ACTION REQUIRED]${NC} An old IONOS filter is still active in:"
+            echo "       $MAILCOW_DIR/$local_lua"
+            echo "       It registers its own symbols, so every mail is analysed TWICE"
+            echo "       and the AI score is added twice. Lines involved:"
+            grep -n 'IONOS_AI_CHECK\|IONOS_AI_SPAM\|IONOS_AI_HAM\|IONOS AI FILTER' "$local_lua" \
+                | sed 's/^/         /'
+            echo "       The block has no clear end marker, so it is NOT removed"
+            echo "       automatically. Delete it by hand, then restart rspamd:"
+            echo "         $COMPOSE_CMD restart rspamd-mailcow"
+            LEGACY_MANUAL=true
+        fi
+    fi
+
+    if [[ -f "$lua_dir/ionos-ai-filter.lua" ]]; then
+        mv "$lua_dir/ionos-ai-filter.lua" "$lua_dir/ionos-ai-filter.lua.disabled.$ts"
+        removed=$((removed + 1))
+        echo -e "${GREEN}[OK]${NC} Old v1 filter file disabled (renamed, not deleted)"
+    fi
+
+    if [[ -f "data/conf/rspamd/local.d/groups.conf" ]] \
+       && grep -q 'group "ionos"' data/conf/rspamd/local.d/groups.conf; then
+        cp data/conf/rspamd/local.d/groups.conf "data/conf/rspamd/local.d/groups.conf.backup.$ts"
+        sed -i '/group "ionos"/,/^}/d' data/conf/rspamd/local.d/groups.conf
+        removed=$((removed + 1))
+        echo -e "${GREEN}[OK]${NC} Old v1 symbol group removed from groups.conf"
+    fi
+
+    if [[ $removed -gt 0 ]]; then
+        echo -e "${YELLOW}[INFO]${NC} The old filter was running alongside the new one -"
+        echo "       every mail was analysed twice and scored twice. Fixed now."
+    fi
+}
+
 # === MAIN LOGIC ===
 
 # Handle command-line arguments
@@ -240,6 +307,9 @@ fi
 echo ""
 echo "Installing..."
 echo ""
+
+# === LEGACY CLEANUP ===
+cleanup_legacy_filter
 
 # === DIRECTORIES ===
 mkdir -p data/ionos-checker
