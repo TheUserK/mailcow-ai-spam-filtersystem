@@ -3,7 +3,7 @@
 -- See: files/rspamd/ai-content-filter.lua
 
 -- === IONOS AI FILTER (Added by mailcow-ionos-ai-spam-filter) ===
--- GitHub: https://github.com/TheUserK/mailcow-ai-spam-filter
+-- GitHub: https://github.com/TheUserK/mailcow-ai-spam-filtersystem
 -- MIT License
 
 local rspamd_logger = require "rspamd_logger"

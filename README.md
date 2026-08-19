@@ -33,8 +33,8 @@ Legitimate, Spam, Phishing, Fraud, Pharma, Marketing
 
 ```bash
 # Clone anywhere on your server
-git clone https://github.com/TheUserK/mailcow-ai-spam-filter.git
-cd mailcow-ai-spam-filter
+git clone https://github.com/TheUserK/mailcow-ai-spam-filtersystem.git
+cd mailcow-ai-spam-filtersystem
 
 # Install (auto-detects Mailcow directory)
 sudo ./install.sh
@@ -117,7 +117,7 @@ For automatic monitoring, add to crontab:
 ## Upgrading
 
 ```bash
-cd mailcow-ai-spam-filter
+cd mailcow-ai-spam-filtersystem
 git pull
 sudo ./install.sh --upgrade       # Carries your existing API key over
 ```

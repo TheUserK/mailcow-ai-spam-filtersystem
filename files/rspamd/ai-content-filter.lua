@@ -1,5 +1,5 @@
 -- === AI Content Filter for Mailcow ===
--- GitHub: https://github.com/TheUserK/mailcow-ai-spam-filter
+-- GitHub: https://github.com/TheUserK/mailcow-ai-spam-filtersystem
 -- MIT License
 --
 -- Talks to ionos-mail-checker.php (v3, additive/low-false-positive engine).
