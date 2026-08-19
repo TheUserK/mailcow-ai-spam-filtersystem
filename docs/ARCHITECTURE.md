@@ -1,0 +1,178 @@
+# Architecture
+
+## Design Principle (v3)
+
+The checker never rejects a mail by itself, neither the local heuristics nor
+the AI. Both only ever return a graduated, signed score - positive pushes
+towards spam, negative pushes towards ham - which gets **added** to Rspamd's
+own metric. Rspamd's own action thresholds (defaults: reject around 15,
+quarantine lower) make the final call based on the *total* score, same as
+for every other Rspamd rule. Every cap the checker applies stays below that
+reject threshold, so a false positive from the AI alone can never sink a
+mail - but a confident phishing detection still pushes the total over the
+threshold together with whatever Rspamd's other rules already found.
+
+## System Overview
+
+```
+Incoming Email
+     |
+     v
++---------------------+
+| Rspamd              |
+| Traditional Filters |
+| Score: -10 to 15    |
++----------+----------+
+           |
+           v (Postfilter, if score -10.0 to 14.0)
++---------------------+
+| AI_CONTENT_FILTER   |
+| Lua Module          |
+| (ai-content-filter  |
+|  .lua)              |
++----------+----------+
+           |
+           v (HTTP POST, internal network)
++---------------------+
+| PHP Checker         |
+| ionos-checker:8080  |
+| (ionos-mail-checker |
+|  .php)              |
++----------+----------+
+           |
+           +--> internal mail (both sides local)?      -> score 0, done
+           |
+           +--> trusted sender profile + strong auth +
+           |    aligned headers/links?                 -> local auto-pass, score 0, done
+           |
+           v (otherwise)
++---------------------+
+| AI Provider         |
+| (IONOS AI Hub)       |
+| GPT-OSS-120B         |
+| Frankfurt/Berlin     |
++----------+----------+
+           |
+           v (JSON: spam_probability, confidence, category)
++---------------------+
+| Graduated score      |
+| (+points for spam/   |
+|  phishing, -points   |
+|  for confident ham)  |
++----------+----------+
+           |
+           v (score ADDED to Rspamd's metric, never a direct action)
++---------------------+
+| Rspamd Final Action |
+| Pass / Quarantine   |
+| / Reject             |
+| (based on total      |
+|  score, incl. every  |
+|  other Rspamd rule)  |
++---------------------+
+```
+
+## Components
+
+### 1. Docker Container (ionos-checker)
+- **Image:** built from `php:8.2-cli` + `pdo_mysql` (the official image does not ship it, and the internal-mail lookup needs it)
+- **Network:** mailcow-network (internal), plus reaches the mailcow `mysql` container for internal-mail detection
+- **Health:** HTTP /health endpoint
+- **Resources:** ~50MB RAM, minimal CPU
+- **Config:** constants at the top of `ionos-mail-checker.php` (no config.ini)
+
+### 2. PHP Script (ionos-mail-checker.php)
+- Receives email context via HTTP POST from Rspamd (from/to, headers, SPF/DKIM/DMARC results, URLs, attachments, content stats, ...)
+- Checks whether both sides are local Mailcow domains (Mailcow DB lookup) -> skip
+- Matches the sender against built-in + custom trusted sender profiles (shippers, marketplaces, banks, telecoms) and checks Reply-To/Return-Path/Message-Id/link-domain alignment -> safe auto-pass if everything lines up and auth is strong
+- Checks for brand impersonation: does the From name/address claim a known brand while the domain doesn't belong to it? (typosquat or entirely foreign domain)
+- Turns Rspamd's URL-reputation symbols into risk flags. A blocklist hit also blocks the trusted-sender auto-pass, since even a genuine sender can link a compromised subdomain
+- Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
+- Manages budget tracking
+- Never returns a `reject` action - always `add` (or `pass` for the two skip cases above), with a numeric score for Rspamd to add
+
+### 3. Rspamd Lua Filter (ai-content-filter.lua)
+- Loaded via `dofile()` from rspamd.local.lua (one-line loader)
+- Reads settings from ai-filter-settings.lua
+- Postfilter stage (priority 10)
+- Skips authenticated senders, so outgoing mail from your own users is never sent to the AI provider
+- Checks the Lua-level sender whitelist before making any API call at all (saves cost)
+- Gathers SPF/DKIM/DMARC results, Reply-To/Return-Path/Message-Id, List-Unsubscribe/List-Id, forged-sender signals, URLs/link-domains, attachments and content stats from the task, and sends them to the PHP checker
+- Also forwards the URL reputation Rspamd has already established for the mail (Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank, and the SEM fresh-domain zone). These lookups happen anyway as part of stock mailcow - reading their symbols costs nothing and adds no dependency
+- Adds the returned score directly to the `AI_CONTENT_SCORE` symbol (no more weight division or forced reject - the number the checker returns *is* the Rspamd score delta)
+- Supports log-only mode (calls the checker, logs what it would have added, but doesn't apply it)
+
+### 4. AI Analysis
+- Model: GPT-OSS-120B (120B parameters)
+- Returns `spam_probability` (0-1), `confidence` (0-1) and a category (legitimate/spam/phishing/fraud/pharma/marketing)
+- The category caps how far the score can swing: `phishing`/`fraud` can go up to `MAX_PHISHING_POINTS` (10 - high enough to reach reject together with other signals, low enough never to get there alone), everything else is capped at `MAX_SPAM_POINTS` (4) on the spam side and `MAX_HAM_POINTS` (3) on the ham side
+
+## File Structure
+
+```
+/opt/mailcow-dockerized/
++-- data/
+|   +-- ionos-checker/
+|   |   +-- ionos-mail-checker.php           # PHP analysis script (incl. API key + all config constants)
+|   |   +-- router.php                       # HTTP router
+|   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
+|   |   +-- trusted_sender_profiles.json     # your custom trusted senders (optional, not shipped)
+|   +-- conf/rspamd/
+|   |   +-- lua/
+|   |   |   +-- rspamd.local.lua    # Contains dofile() loader
+|   |   |   +-- ai-content-filter.lua   # Main filter logic
+|   |   |   +-- ai-filter-settings.lua  # Filter settings
+|   |   +-- local.d/
+|   |       +-- groups.conf         # Symbol group definition
+|   +-- logs/ionos-checker/
+|       +-- stats.log               # Analysis results
+|       +-- errors.log              # Error events
+|       +-- monthly_budget.json     # Budget tracking
++-- docker-compose.override.yml     # Container definition
+```
+
+## Score Calculation
+
+```
+direction = (spam_probability - 0.5) * 2      -- -1 .. +1
+magnitude = |direction| * confidence          --  0 .. 1
+
+score =  magnitude * max_spam_points   if direction >= 0   (spam/phishing/fraud)
+score = -magnitude * MAX_HAM_POINTS    if direction <  0   (confident ham)
+```
+
+`max_spam_points` is `MAX_PHISHING_POINTS` (10) for category `phishing`/`fraud`,
+otherwise `MAX_SPAM_POINTS` (4). A detected brand impersonation (typosquat or
+foreign domain claiming a known brand) adds its own fixed score on top and
+blocks the AI from rescuing the mail into a negative (ham) score.
+
+This score is inserted into Rspamd's `AI_CONTENT_SCORE` symbol as-is - no
+weight division, no forced reject. Rspamd's normal metric/action
+configuration decides what happens once all symbols (including this one)
+are summed up.
+
+## Update Resilience
+
+The filter uses a `dofile()` architecture:
+- Only a one-line loader in rspamd.local.lua
+- Actual filter code in separate file (never touched by Mailcow updates)
+- If rspamd.local.lua gets reset: `ai-filter-repair.sh` re-adds the one line
+- All config in data/ directory (survives Mailcow updates)
+- Health check script can run via cron for automatic monitoring
+
+## Budget Protection
+
+- Monthly limit configurable (default: EUR 50, `MONTHLY_BUDGET_EUR` constant)
+- Per-call cost tracking against `AVG_COST_PER_CALL_EUR`
+- Auto-reset on new month
+- Budget exceeded: mail passes through with score 0 (fail-open)
+
+## Privacy & GDPR/DSGVO
+
+- All AI processing in German data centers (IONOS Frankfurt/Berlin)
+- No data used for AI model training
+- Pseudonymised logging (first 3 chars + ***); subject/body excerpts are off by default (`LOG_MAIL_CONTENT`)
+- Log files `0600`, log directory `0700`
+- 7-day log retention (configurable via logrotate)
+- Outbound mail from authenticated users is never analysed
+- AVV/DPA available from IONOS

@@ -1,0 +1,14 @@
+{
+  "_readme": "Copy this file to trusted_sender_profiles.json in the same directory to activate it. Each top-level key is a profile id (merged into or added alongside the built-in ones from ionos-mail-checker.php::getTrustedSenderProfiles()). 'domains' are accepted sender/header domains, 'url_domains' are accepted link domains (falls back to 'domains' if omitted), 'brands' are lowercase words that, if claimed in the From display-name/address without a matching domain, count as brand impersonation risk for THIS profile's own matching logic (kept separate from the phishing-impersonation brand list). A mail whose From-domain, MIME-From-domain, SMTP-From-domain, Return-Path-domain or Message-Id-domain matches one of 'domains' is considered for this profile; strong auth (SPF/DKIM/DMARC) plus alignment on Reply-To/Return-Path/Message-Id/URL domains then allows a safe local auto-pass without spending an AI call.",
+
+  "example-partner": {
+    "kind": "business-partner",
+    "domains": ["partner-domain.example", "billing.partner-domain.example"],
+    "url_domains": ["partner-domain.example"],
+    "brands": ["example partner"]
+  },
+
+  "dhl": {
+    "domains": ["dhl-paket.de"]
+  }
+}
