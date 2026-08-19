@@ -54,6 +54,9 @@ fi
 
 # Remove filter lua files
 rm -f data/conf/rspamd/plugins.d/ai-content-filter.lua
+if [[ -f "data/conf/rspamd/rspamd.conf.local" ]]; then
+    sed -i '/"ai-content-filter" {/,/^}/d' data/conf/rspamd/rspamd.conf.local
+fi
 rm -f data/conf/rspamd/lua/ai-content-filter.lua
 rm -f data/conf/rspamd/lua/ai-filter-settings.lua
 echo -e "${GREEN}[OK]${NC} Lua filter files removed"

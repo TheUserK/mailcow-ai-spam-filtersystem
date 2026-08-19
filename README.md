@@ -155,20 +155,30 @@ UTC, which is worth knowing when comparing against Rspamd's log.
 
 ## Mailcow updates
 
-Nothing to do. The filter lives in `data/conf/rspamd/plugins.d/`, which is
-where mailcow's own README in that directory says custom rspamd modules
-belong, and rspamd loads every `*.lua` from there without needing an entry in
-any config file.
+The filter itself cannot be lost. It lives in
+`data/conf/rspamd/plugins.d/ai-content-filter.lua` - untracked by mailcow's
+repository, and `update.sh` commits only tracked files and runs no
+`git clean`, so nothing in the update touches it.
 
-That placement is what makes it survive. `update.sh` commits only **tracked**
-files before merging and then merges with `-X theirs`, so a line appended to a
-tracked file like `rspamd.local.lua` loses against mailcow's version whenever
-the two collide. Our filter is an untracked file, is never part of that merge,
-and `update.sh` runs no `git clean` - so it is never touched.
+Placing the file there is not sufficient on its own. Rspamd treats anything
+in `plugins.d` as a module and disables any module that has no configuration
+section of its own:
 
-Earlier versions installed the filter into `lua/` with a loader line in
-`rspamd.local.lua` and shipped a repair script for when that line went
-missing. `install.sh` removes both leftovers on upgrade.
+```
+lua module ai-content-filter is enabled but has not been configured
+ai-content-filter disabling unconfigured lua module
+```
+
+So the installer also adds a two-line section to
+`data/conf/rspamd/rspamd.conf.local`. That file is tracked, but mailcow ships
+it as an empty stub for exactly this purpose and does not develop it, so a
+merge conflict would require mailcow to start writing to it. That is a much
+smaller exposure than the previous arrangement, which appended a loader line
+to `rspamd.local.lua` - a nine-hundred-line file mailcow works on
+continuously.
+
+If that section is ever lost, the filter goes quiet rather than breaking
+loudly, so the health check verifies it explicitly.
 
 A cron health check is still worth having, for the checker container and the
 API key rather than for the filter:

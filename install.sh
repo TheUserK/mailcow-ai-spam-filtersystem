@@ -259,7 +259,25 @@ fi
 mkdir -p data/conf/rspamd/plugins.d
 cp "$SCRIPT_DIR/files/rspamd/ai-content-filter.lua" data/conf/rspamd/plugins.d/
 chmod 644 data/conf/rspamd/plugins.d/ai-content-filter.lua
-echo -e "${GREEN}[OK]${NC} AI filter installed to plugins.d (survives mailcow updates)"
+echo -e "${GREEN}[OK]${NC} AI filter installed to plugins.d"
+
+# Die Datei allein genuegt nicht. Rspamd findet sie dort zwar - plugins.d ist
+# als try_path in der modules-Sektion eingetragen -, behandelt sie aber als
+# Modul und schaltet jedes Modul ohne eigenen Konfigurationsabschnitt wieder
+# ab:
+#   "lua module ai-content-filter is enabled but has not been configured"
+#   "ai-content-filter disabling unconfigured lua module"
+# Der Abschnitt muss auf oberster Ebene stehen; local.d/<name>.conf wird fuer
+# eigene Module nicht eingebunden. rspamd.conf.local ist der von mailcow
+# dafuer vorgesehene Platz und enthaelt ab Werk nur einen Kommentar.
+RSPAMD_CONF_LOCAL="data/conf/rspamd/rspamd.conf.local"
+touch "$RSPAMD_CONF_LOCAL"
+if ! grep -q 'ai-content-filter' "$RSPAMD_CONF_LOCAL"; then
+    printf '\n"ai-content-filter" {\n  enabled = true;\n}\n' >> "$RSPAMD_CONF_LOCAL"
+    echo -e "${GREEN}[OK]${NC} Module enabled in rspamd.conf.local"
+else
+    echo -e "${GREEN}[OK]${NC} Module already enabled in rspamd.conf.local"
+fi
 
 # Die Einstellungsdatei bleibt in lua/: sie wird vom Filter explizit per
 # loadfile() geladen, nicht automatisch. In plugins.d wuerde rspamd sie
