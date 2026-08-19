@@ -1,20 +1,20 @@
 services:
-  ionos-checker:
+  ai-checker:
     # Built locally instead of using a stock php image: the official images
     # do not include pdo_mysql, which the internal-mail detection needs.
     build:
-      context: ./data/ionos-checker
-    container_name: mailcow-ionos-checker
+      context: ./data/ai-checker
+    container_name: mailcow-ai-checker
     restart: always
     volumes:
-      - ./data/ionos-checker:/app:ro
-      - ./data/logs/ionos-checker:/var/log/ionos-checker:rw
+      - ./data/ai-checker:/app:ro
+      - ./data/logs/ai-checker:/var/log/ai-checker:rw
     working_dir: /app
     command: php -S 0.0.0.0:8080 router.php
     networks:
       mailcow-network:
         aliases:
-          - ionos-checker
+          - ai-checker
     healthcheck:
       test: ["CMD-SHELL", "php -r 'echo file_get_contents(\"http://localhost:8080/health\");' || exit 1"]
       interval: 30s

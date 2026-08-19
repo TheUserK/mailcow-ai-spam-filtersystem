@@ -64,7 +64,7 @@ if [[ -z "${MAILCOW_DIR:-}" ]]; then
 fi
 [[ -n "${MAILCOW_DIR:-}" ]] || { echo -e "${RED}Mailcow directory not found${NC}"; exit 1; }
 
-LOG="$MAILCOW_DIR/data/logs/ionos-checker/$WHICH.log"
+LOG="$MAILCOW_DIR/data/logs/ai-checker/$WHICH.log"
 [[ -f "$LOG" ]] || { echo -e "${YELLOW}No log yet:${NC} $LOG"; exit 0; }
 [[ -s "$LOG" ]] || { echo -e "${YELLOW}Log is empty${NC} (just rotated, or nothing analysed yet)"; exit 0; }
 

@@ -14,24 +14,24 @@ install.sh --check
 ### Container Won't Start
 
 ```bash
-docker compose logs ionos-checker
+docker compose logs ai-checker
 ```
 
 Common fixes:
 ```bash
 # Check PHP syntax
-docker compose exec ionos-checker php -l /app/ionos-mail-checker.php
+docker compose exec ai-checker php -l /app/ai-mail-checker.php
 
 # Fix permissions
-chmod 755 /opt/mailcow-dockerized/data/ionos-checker
-chmod 644 /opt/mailcow-dockerized/data/ionos-checker/router.php
-chmod 600 /opt/mailcow-dockerized/data/ionos-checker/ionos-mail-checker.php
+chmod 755 /opt/mailcow-dockerized/data/ai-checker
+chmod 644 /opt/mailcow-dockerized/data/ai-checker/router.php
+chmod 600 /opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php
 ```
 
 ### Health Check Failing
 
 ```bash
-docker compose exec ionos-checker curl -s http://localhost:8080/health
+docker compose exec ai-checker curl -s http://localhost:8080/health
 # Should return: OK
 ```
 
@@ -84,25 +84,25 @@ Check `stats.log` for the `analysis_source` field (`local-precheck`, `local`, `a
 ### Invalid or Missing API Key
 
 ```bash
-# Check the key is embedded in ionos-mail-checker.php
-grep "IONOS_API_TOKEN" /opt/mailcow-dockerized/data/ionos-checker/ionos-mail-checker.php
+# Check the key is embedded in ai-mail-checker.php
+grep "AI_API_TOKEN" /opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php
 ```
 
 ### Budget Exceeded
 
 ```bash
-cat /opt/mailcow-dockerized/data/logs/ionos-checker/monthly_budget.json
+cat /opt/mailcow-dockerized/data/logs/ai-checker/monthly_budget.json
 ```
 
 Reset (use with caution):
 ```bash
 echo '{"month":"2025-12","calls":0,"estimated_cost_eur":0}' > \
-  /opt/mailcow-dockerized/data/logs/ionos-checker/monthly_budget.json
+  /opt/mailcow-dockerized/data/logs/ai-checker/monthly_budget.json
 ```
 
 ### API Timeouts
 
-Increase the timeout constants in `ionos-mail-checker.php`:
+Increase the timeout constants in `ai-mail-checker.php`:
 ```php
 define('API_TIMEOUT', 30);
 define('CONNECT_TIMEOUT', 10);
@@ -126,10 +126,10 @@ for the reason.
 
 ```bash
 # Is MAILCOW_DBPASS set in the container?
-docker compose exec ionos-checker env | grep MAILCOW_DBPASS
+docker compose exec ai-checker env | grep MAILCOW_DBPASS
 ```
 
-If it's missing, add `- MAILCOW_DBPASS=${DBPASS}` to the `ionos-checker`
+If it's missing, add `- MAILCOW_DBPASS=${DBPASS}` to the `ai-checker`
 service's `environment:` section in `docker-compose.override.yml` (next to
 `TZ`) and restart the container. Check `errors.log` for
 "Failed to fetch local domains" if it's set but still failing.
@@ -140,7 +140,7 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 
 1. **Check the stats log:**
    ```bash
-   tail -20 /opt/mailcow-dockerized/data/logs/ionos-checker/stats.log | python3 -m json.tool
+   tail -20 /opt/mailcow-dockerized/data/logs/ai-checker/stats.log | python3 -m json.tool
    ```
    Look at `red_flags`, `risk_flags`-equivalent info in `reason`, and `matched_profile`.
 
@@ -152,19 +152,19 @@ service's `environment:` section in `docker-compose.override.yml` (next to
    whitelist_senders = {'noreply@bank.de'},
    ```
 
-4. **Lower `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS`** in `ionos-mail-checker.php` if the AI's contribution is too aggressive relative to your Rspamd reject/quarantine thresholds.
+4. **Lower `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS`** in `ai-mail-checker.php` if the AI's contribution is too aggressive relative to your Rspamd reject/quarantine thresholds.
 
 ## Too Much Spam Getting Through
 
-1. Raise `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS` in `ionos-mail-checker.php`
+1. Raise `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS` in `ai-mail-checker.php`
 2. Lower Rspamd's own quarantine/reject action thresholds (they now make the final call using the total score, including the AI's contribution)
 3. Widen the AI-call range in `ai-filter-settings.lua` (lower `skip_score_above`, raise `skip_score_below`) so more borderline mail reaches the AI
 
 ## Configuration Not Taking Effect
 
-1. **PHP constants (ionos-mail-checker.php):** Restart ionos-checker container
+1. **PHP constants (ai-mail-checker.php):** Restart ionos-checker container
    ```bash
-   docker compose restart ionos-checker
+   docker compose restart ai-checker
    ```
 
 2. **Lua settings (ai-filter-settings.lua):** Restart Rspamd
@@ -180,10 +180,10 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 
 ```bash
 # AI analysis results
-tail -f /opt/mailcow-dockerized/data/logs/ionos-checker/stats.log | python3 -m json.tool
+tail -f /opt/mailcow-dockerized/data/logs/ai-checker/stats.log | python3 -m json.tool
 
 # Errors
-tail -f /opt/mailcow-dockerized/data/logs/ionos-checker/errors.log | python3 -m json.tool
+tail -f /opt/mailcow-dockerized/data/logs/ai-checker/errors.log | python3 -m json.tool
 
 # Rspamd filter activity
 docker compose logs -f rspamd-mailcow | grep "AI Filter"
@@ -206,5 +206,5 @@ docker compose logs -f rspamd-mailcow | grep "AI Filter"
 3. Open GitHub issue with:
    - Health check output
    - Relevant log entries (anonymized)
-   - `ionos-mail-checker.php` **without the API key line**
+   - `ai-mail-checker.php` **without the API key line**
    - Mailcow version (`cat /opt/mailcow-dockerized/mailcow.conf | grep MAILCOW`)

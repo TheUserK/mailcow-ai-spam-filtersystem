@@ -12,7 +12,7 @@
 //     Transaktionsmails und (b) Kontext-Flags fuer die KI.
 //   - Rspamd entscheidet am Ende anhand des Gesamtscores.
 //
-//  Ablage:  /opt/mailcow-dockerized/data/ionos-checker/ionos-mail-checker.php
+//  Ablage:  /opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php
 // =====================================================================
 
 // ---------------------------------------------------------------------
@@ -21,15 +21,16 @@
 error_reporting(E_ALL);
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
-ini_set('error_log', '/var/log/ionos-checker/php-errors.log');
+ini_set('error_log', '/var/log/ai-checker/php-errors.log');
 header('Content-Type: application/json');
 
 // ---------------------------------------------------------------------
-//  IONOS API  —  HIER deine echten Daten eintragen
+//  KI-Anbieter. Die API ist OpenAI-kompatibel - jeder Anbieter mit
+//  diesem Format laesst sich hier eintragen.
 // ---------------------------------------------------------------------
-define('IONOS_API_ENDPOINT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
-define('IONOS_API_TOKEN', '');
-define('IONOS_MODEL',        'openai/gpt-oss-120b');
+define('AI_API_ENDPOINT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
+define('AI_API_TOKEN', '');
+define('AI_MODEL',        'openai/gpt-oss-120b');
 // ---------------------------------------------------------------------
 //  Timeouts (Sekunden)
 // ---------------------------------------------------------------------
@@ -46,12 +47,12 @@ define('MAILCOW_DB_USER', getenv('MAILCOW_DBUSER') ?: 'mailcow');
 // ---------------------------------------------------------------------
 //  Logs & Budget
 // ---------------------------------------------------------------------
-define('STATS_LOG', '/var/log/ionos-checker/stats.log');
-define('ERROR_LOG', '/var/log/ionos-checker/errors.log');
+define('STATS_LOG', '/var/log/ai-checker/stats.log');
+define('ERROR_LOG', '/var/log/ai-checker/errors.log');
 define('MONTHLY_BUDGET_EUR',    50);
 define('AVG_COST_PER_CALL_EUR', 0.00034);
 define('MAX_CALLS_PER_MONTH', (int)(MONTHLY_BUDGET_EUR / AVG_COST_PER_CALL_EUR));
-define('BUDGET_FILE', '/var/log/ionos-checker/monthly_budget.json');
+define('BUDGET_FILE', '/var/log/ai-checker/monthly_budget.json');
 
 // Betreff und Body-Auszug in stats.log schreiben? Das sind Inhaltsdaten von
 // Absendern, die dem nie zugestimmt haben - daher standardmaessig AUS.
@@ -600,7 +601,7 @@ PROMPT;
     );
 
     $payload = [
-        'model' => IONOS_MODEL,
+        'model' => AI_MODEL,
         'messages' => [
             ['role' => 'system', 'content' => $systemPrompt],
             ['role' => 'user',   'content' => $userPrompt],
@@ -612,12 +613,12 @@ PROMPT;
     // --- Ein Call, ein Retry. ---
     $result = null; $httpCode = 0; $curlErr = '';
     for ($attempt = 1; $attempt <= 2; $attempt++) {
-        $ch = curl_init(IONOS_API_ENDPOINT);
+        $ch = curl_init(AI_API_ENDPOINT);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             CURLOPT_HTTPHEADER     => [
-                'Authorization: Bearer ' . IONOS_API_TOKEN,
+                'Authorization: Bearer ' . AI_API_TOKEN,
                 'Content-Type: application/json',
             ],
             CURLOPT_RETURNTRANSFER => true,

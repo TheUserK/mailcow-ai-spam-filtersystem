@@ -15,7 +15,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 > notice at all.
 >
 > To run without that, set `AI_MAY_REJECT` to `false` in
-> `ionos-mail-checker.php` and restart the container. Qualifying mail is then
+> `ai-mail-checker.php` and restart the container. Qualifying mail is then
 > capped below the threshold and only marked as spam.
 >
 > Either way, **every** candidate is written to `errors.log` with its
@@ -79,7 +79,7 @@ sudo ./install.sh
 The installer will:
 1. Auto-detect your Mailcow installation
 2. Ask for your IONOS API key
-3. Embed it directly into the deployed `ionos-mail-checker.php`
+3. Embed it directly into the deployed `ai-mail-checker.php`
 4. Install all components
 5. Optionally start the filter
 
@@ -96,12 +96,12 @@ if that is not what you want.
 There is no `config.ini` anymore. All settings live as plain constants near the
 top of the deployed checker script:
 
-`/opt/mailcow-dockerized/data/ionos-checker/ionos-mail-checker.php`
+`/opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php`
 
 ```php
-define('IONOS_API_ENDPOINT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
-define('IONOS_API_TOKEN', '...');       // filled in by install.sh
-define('IONOS_MODEL', 'openai/gpt-oss-120b');
+define('AI_API_ENDPOINT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
+define('AI_API_TOKEN', '...');       // filled in by install.sh
+define('AI_MODEL', 'openai/gpt-oss-120b');
 define('MONTHLY_BUDGET_EUR', 50);
 define('MAX_SPAM_POINTS', 4.0);         // max score for regular spam/marketing
 define('MAX_HAM_POINTS', 3.0);          // max score deduction for confident ham
@@ -177,6 +177,17 @@ sudo ./install.sh --upgrade       # Carries your existing API key over
 Use `--upgrade`, not a plain `install.sh`: without it the installer does not
 look for your existing API key and will ask for it again.
 
+Coming from a version that used the provider's name in its paths
+(`data/ionos-checker`, `ionos-mail-checker.php`, a container called
+`ionos-checker`), the installer migrates the layout on its own: it removes the
+old container, moves the data and log directories, renames the script and
+drops the stale logrotate rule. Your API key, trusted sender profiles and
+budget counter move along. It checks that every step is possible before
+touching anything, so a collision aborts with nothing changed, and running it
+again afterwards does nothing. The filter is inactive for the few seconds
+between the move and the container restart - mail keeps flowing, it just
+passes without an AI verdict during that window.
+
 If you want every component brought to the shipped version instead, use
 `--reinstall`. It keeps your API key and `trusted_sender_profiles.json` and
 overwrites everything else - settings, the rspamd `ai_filter` group and the
@@ -187,9 +198,9 @@ What the upgrade replaces, and what it leaves alone:
 
 | | |
 |---|---|
-| Replaced | `ionos-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
+| Replaced | `ai-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
 | Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, your `groups.conf` and `rspamd.local.lua` entries |
-| Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ionos-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
+| Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ai-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
 
 The override matters: it carries the build context that brings `pdo_mysql`
 into the container. An install left on an older override keeps running, but
@@ -228,7 +239,7 @@ never reaches the AI provider.
 - Logging is **pseudonymised, not anonymised**: `and***@example.com` keeps the
   full domain and stays personal data under GDPR.
 - Subject and body excerpts are **not logged by default**. Set
-  `LOG_MAIL_CONTENT` to `true` in `ionos-mail-checker.php` only for temporary
+  `LOG_MAIL_CONTENT` to `true` in `ai-mail-checker.php` only for temporary
   debugging.
 - Log files are created `0600`, the log directory `0700`.
 - 7-day retention via logrotate.

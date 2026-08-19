@@ -2,14 +2,14 @@
 
 There is no `config.ini` in v3. Configuration is split across two files:
 
-1. **`/opt/mailcow-dockerized/data/ionos-checker/ionos-mail-checker.php`** - API key, budget, scoring caps (PHP constants near the top of the file)
+1. **`/opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php`** - API key, budget, scoring caps (PHP constants near the top of the file)
 2. **`/opt/mailcow-dockerized/data/conf/rspamd/lua/ai-filter-settings.lua`** - when the AI gets called at all, log-only mode, sender whitelist
 
 Plus an optional **`trusted_sender_profiles.json`** for your own trusted senders.
 
 After changes to the PHP file, restart the container:
 ```bash
-docker compose restart ionos-checker
+docker compose restart ai-checker
 ```
 
 After changes to the Lua settings or filter, restart Rspamd:
@@ -17,13 +17,13 @@ After changes to the Lua settings or filter, restart Rspamd:
 docker compose restart rspamd-mailcow
 ```
 
-## ionos-mail-checker.php constants
+## ai-mail-checker.php constants
 
 | Constant | Default | Description |
 |---|---|---|
-| `IONOS_API_ENDPOINT` | `https://openai.inference.de-txl.ionos.com/v1/chat/completions` | OpenAI-compatible API endpoint |
-| `IONOS_API_TOKEN` | (filled in by install.sh) | Your IONOS API key |
-| `IONOS_MODEL` | `openai/gpt-oss-120b` | Model name |
+| `AI_API_ENDPOINT` | `https://openai.inference.de-txl.ionos.com/v1/chat/completions` | OpenAI-compatible API endpoint |
+| `AI_API_TOKEN` | (filled in by install.sh) | Your IONOS API key |
+| `AI_MODEL` | `openai/gpt-oss-120b` | Model name |
 | `API_TIMEOUT` | `20` | API request timeout (seconds) |
 | `CONNECT_TIMEOUT` | `5` | Connection timeout (seconds) |
 | `MAILCOW_DB_HOST` / `MAILCOW_DB_NAME` / `MAILCOW_DB_USER` | `mysql` / `$MAILCOW_DBNAME` / `$MAILCOW_DBUSER` | Used for the internal-mail lookup. Name, user and password all come from container env vars fed by mailcow's `DBNAME`/`DBUSER`/`DBPASS` in `docker-compose.override.yml` |
@@ -106,7 +106,7 @@ Setting it to `false` first and reading a week or two of `Would reject`
 entries is the cautious path:
 
 ```bash
-grep -E "Reject allowed|Would reject" data/logs/ionos-checker/errors.log | jq -r \
+grep -E "Reject allowed|Would reject" data/logs/ai-checker/errors.log | jq -r \
   '"\(.timestamp) \(.context.category) \(.context.total_score) \(.context.from) \(.context.evidence|join(","))"'
 ```
 
@@ -124,7 +124,7 @@ call entirely when:
 - there are no dangerous attachments, URL shorteners, or detected brand impersonation
 
 To add your own (business partners, internal tools, ...), copy
-`trusted_sender_profiles.json.example` next to `ionos-mail-checker.php` and
+`trusted_sender_profiles.json.example` next to `ai-mail-checker.php` and
 rename it to `trusted_sender_profiles.json`:
 
 ```json
@@ -191,7 +191,7 @@ docker compose exec rspamd-mailcow rspamc counters | grep -iE 'blocked|_fail'
 
 | Setting | Default | Description |
 |---|---|---|
-| `checker_url` | `http://ionos-checker:8080/ionos-mail-checker.php` | Where Rspamd sends the mail context |
+| `checker_url` | `http://ai-checker:8080/ai-mail-checker.php` | Where Rspamd sends the mail context |
 | `skip_score_above` | `14.0` | Skip the AI call if Rspamd's score is already this high (mail is decisive spam already) |
 | `skip_score_below` | `-10.0` | Skip the AI call if Rspamd's score is already this low |
 | `http_timeout` | `30.0` | HTTP timeout for the checker call |
@@ -222,7 +222,7 @@ Or add more entries to `trusted_sender_profiles.json` so more of your regular
 mail (order confirmations, shipping notices, ...) gets a local auto-pass.
 
 ### Reduce Costs
-- Lower `MONTHLY_BUDGET_EUR` in `ionos-mail-checker.php`
+- Lower `MONTHLY_BUDGET_EUR` in `ai-mail-checker.php`
 - Tighten the score range above (fewer emails analyzed)
 - The body is already truncated to 3000 chars before it's sent to the AI
 

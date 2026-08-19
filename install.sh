@@ -88,10 +88,10 @@ migrate_v1() {
     fi
 
     # Extract API key from old PHP if config.ini doesn't exist
-    if [[ ! -f "$mailcow_dir/data/ionos-checker/config.ini" ]] && \
-       [[ -f "$mailcow_dir/data/ionos-checker/ionos-mail-checker.php" ]]; then
+    if [[ ! -f "$mailcow_dir/data/ai-checker/config.ini" ]] && \
+       [[ -f "$mailcow_dir/data/ai-checker/ai-mail-checker.php" ]]; then
         local old_key
-        old_key=$(extract_php_api_key "$mailcow_dir/data/ionos-checker/ionos-mail-checker.php" || true)
+        old_key=$(extract_php_api_key "$mailcow_dir/data/ai-checker/ai-mail-checker.php" || true)
         if [[ -n "$old_key" ]]; then
             echo -e "${GREEN}[OK]${NC} Found existing API key from v1"
             echo "$old_key"
@@ -101,15 +101,19 @@ migrate_v1() {
     return 1
 }
 
-# Extracts the IONOS_API_TOKEN constant value from a deployed
-# ionos-mail-checker.php (v2 config.ini installs never had it embedded here,
+# Extracts the AI_API_TOKEN constant value from a deployed
+# ai-mail-checker.php (v2 config.ini installs never had it embedded here,
 # but v1 and v3+ both store it as a PHP constant directly).
 extract_php_api_key() {
     local php_file="$1"
     [[ -f "$php_file" ]] || return 1
     local key
-    key=$(grep -oP "define\('IONOS_API_TOKEN',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
-    if [[ -n "$key" && "$key" != "YOUR_IONOS_API_KEY_HERE" ]]; then
+    # AI_API_TOKEN ist der aktuelle Name, IONOS_API_TOKEN der aus frueheren
+    # Versionen. Beim Upgrade liegt noch die alte Datei da, und ohne den
+    # zweiten Namen wuerde der Installer nach einem Key fragen, den er
+    # eigentlich vor sich hat.
+    key=$(grep -oP "define\('(AI|IONOS)_API_TOKEN',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
+    if [[ -n "$key" && "$key" != "YOUR_AI_API_KEY_HERE" ]]; then
         echo "$key"
         return 0
     fi
@@ -123,12 +127,12 @@ count_compose_services() {
     awk '/^services:[[:space:]]*$/{f=1;next} /^[^[:space:]#]/{f=0} f && /^  [a-zA-Z0-9_.-]+:[[:space:]]*$/{c++} END{print c+0}' "$1"
 }
 
-# Ist der ionos-checker-Block in der Override-Datei noch auf dem alten Stand?
-# Merkmale des aktuellen Stands: Build-Context zeigt auf data/ionos-checker
+# Ist der Checker-Block in der Override-Datei noch auf dem alten Stand?
+# Merkmale des aktuellen Stands: Build-Context zeigt auf data/ai-checker
 # (bringt pdo_mysql mit) und PHP_CLI_SERVER_WORKERS ist gesetzt.
 override_is_current() {
     local f="$1"
-    grep -q 'context:[[:space:]]*\./data/ionos-checker' "$f" \
+    grep -q 'context:[[:space:]]*\./data/ai-checker' "$f" \
         && grep -q 'PHP_CLI_SERVER_WORKERS' "$f"
 }
 
@@ -218,6 +222,67 @@ cleanup_legacy_filter() {
     fi
 }
 
+# Bringt eine Installation mit den alten, anbieterspezifischen Namen auf das
+# aktuelle Schema. Prueft zuerst, ob alle Schritte durchfuehrbar sind, und
+# faengt erst dann an: ein halb ausgefuehrter Umzug laesst Compose auf ein
+# Verzeichnis zeigen, das es nicht mehr gibt, und der Filter waere tot.
+# Mehrfaches Ausfuehren ist folgenlos.
+migrate_to_ai_naming() {
+    local compose_cmd="$1"
+    local ts; ts=$(date +%s)
+
+    local has_old=false
+    [[ -d "data/ionos-checker" || -d "data/logs/ionos-checker" ]] && has_old=true
+    [[ "$has_old" == "false" ]] && return 0
+
+    echo -e "${YELLOW}Migrating to provider-neutral names...${NC}"
+
+    # Vorabpruefung: nichts anfassen, solange irgendetwas kollidiert.
+    if [[ -d "data/ionos-checker" && -e "data/ai-checker" ]]; then
+        echo -e "${RED}[FAIL]${NC} Both data/ionos-checker and data/ai-checker exist."
+        echo "       Cannot decide which one is current - resolve by hand, then re-run."
+        return 1
+    fi
+    if [[ -d "data/logs/ionos-checker" && -e "data/logs/ai-checker" ]]; then
+        echo -e "${RED}[FAIL]${NC} Both data/logs/ionos-checker and data/logs/ai-checker exist."
+        echo "       Cannot decide which one is current - resolve by hand, then re-run."
+        return 1
+    fi
+
+    # Container zuerst weg. Er hat das Datenverzeichnis eingehaengt; wird es
+    # unter ihm weggezogen, arbeitet er auf einem Verzeichnis weiter, das
+    # unter dem alten Namen nicht mehr existiert.
+    if [[ -f "docker-compose.override.yml" ]] && grep -q "ionos-checker" docker-compose.override.yml; then
+        $compose_cmd rm -sf ionos-checker >/dev/null 2>&1 || true
+        echo -e "${GREEN}[OK]${NC} Old ionos-checker container removed"
+    fi
+
+    if [[ -d "data/ionos-checker" ]]; then
+        mv "data/ionos-checker" "data/ai-checker"
+        echo -e "${GREEN}[OK]${NC} data/ionos-checker -> data/ai-checker (API key moved along)"
+    fi
+    if [[ -d "data/logs/ionos-checker" ]]; then
+        mv "data/logs/ionos-checker" "data/logs/ai-checker"
+        echo -e "${GREEN}[OK]${NC} data/logs/ionos-checker -> data/logs/ai-checker"
+    fi
+    if [[ -f "data/ai-checker/ionos-mail-checker.php" ]]; then
+        mv "data/ai-checker/ionos-mail-checker.php" "data/ai-checker/ai-mail-checker.php"
+        echo -e "${GREEN}[OK]${NC} ionos-mail-checker.php -> ai-mail-checker.php"
+    fi
+
+    # Alte Logrotate-Regel zeigt auf das verschobene Verzeichnis. Bliebe sie
+    # liegen, wuerde die Rotation still wieder aussetzen.
+    if [[ -f "/etc/logrotate.d/ionos-checker" ]]; then
+        rm -f "/etc/logrotate.d/ionos-checker"
+        echo -e "${GREEN}[OK]${NC} Old logrotate rule removed"
+    fi
+
+    echo -e "${YELLOW}[INFO]${NC} The compose override and the rspamd checker_url are updated"
+    echo "       further down in this run - the filter is inactive until then."
+    echo ""
+    return 0
+}
+
 # === MAIN LOGIC ===
 
 # Handle command-line arguments
@@ -276,6 +341,13 @@ echo ""
 
 cd "$MAILCOW_DIR" || exit 1
 
+# === NAME MIGRATION ===
+if ! migrate_to_ai_naming "$COMPOSE_CMD"; then
+    echo ""
+    echo -e "${RED}Migration aborted - nothing was changed.${NC}"
+    exit 1
+fi
+
 # Check for v1 installation
 V1_API_KEY=""
 if [[ "${UPGRADE_MODE:-}" != "true" ]] && grep -q "IONOS AI FILTER" data/conf/rspamd/lua/rspamd.local.lua 2>/dev/null; then
@@ -285,39 +357,41 @@ if [[ "${UPGRADE_MODE:-}" != "true" ]] && grep -q "IONOS AI FILTER" data/conf/rs
 fi
 
 # === API KEY ===
-IONOS_API_KEY=""
+AI_API_KEY=""
 
-if [[ "${UPGRADE_MODE:-}" == "true" && -f "data/ionos-checker/config.ini" ]]; then
+if [[ "${UPGRADE_MODE:-}" == "true" && -f "data/ai-checker/config.ini" ]]; then
     # Pre-v3 installs kept the key in config.ini
-    IONOS_API_KEY=$(grep -oP '^token\s*=\s*\K.*' data/ionos-checker/config.ini 2>/dev/null | tr -d ' ')
-    [[ -n "$IONOS_API_KEY" ]] && echo -e "${GREEN}[OK]${NC} Using existing API key from config.ini (v2 install)"
+    AI_API_KEY=$(grep -oP '^token\s*=\s*\K.*' data/ai-checker/config.ini 2>/dev/null | tr -d ' ')
+    [[ -n "$AI_API_KEY" ]] && echo -e "${GREEN}[OK]${NC} Using existing API key from config.ini (v2 install)"
 fi
 
-if [[ -z "$IONOS_API_KEY" && "${UPGRADE_MODE:-}" == "true" && -f "data/ionos-checker/ionos-mail-checker.php" ]]; then
+if [[ -z "$AI_API_KEY" && "${UPGRADE_MODE:-}" == "true" && -f "data/ai-checker/ai-mail-checker.php" ]]; then
     # v3 keeps the key as a PHP constant in the deployed checker script
-    IONOS_API_KEY=$(extract_php_api_key "data/ionos-checker/ionos-mail-checker.php" || true)
-    [[ -n "$IONOS_API_KEY" ]] && echo -e "${GREEN}[OK]${NC} Using existing API key from ionos-mail-checker.php"
+    AI_API_KEY=$(extract_php_api_key "data/ai-checker/ai-mail-checker.php" || true)
+    [[ -n "$AI_API_KEY" ]] && echo -e "${GREEN}[OK]${NC} Using existing API key from ai-mail-checker.php"
 fi
 
-if [[ -z "$IONOS_API_KEY" && -n "$V1_API_KEY" ]]; then
-    IONOS_API_KEY="$V1_API_KEY"
+if [[ -z "$AI_API_KEY" && -n "$V1_API_KEY" ]]; then
+    AI_API_KEY="$V1_API_KEY"
     echo -e "${GREEN}[OK]${NC} Using API key from v1 installation"
 fi
 
-if [[ -z "$IONOS_API_KEY" || "$IONOS_API_KEY" == "YOUR_API_KEY_HERE" ]]; then
+if [[ -z "$AI_API_KEY" || "$AI_API_KEY" == "YOUR_API_KEY_HERE" ]]; then
     echo ""
     echo "Get your API key from: https://dcd.ionos.com/"
     echo "Navigate to: Access Management -> Tokens"
     echo ""
-    read -p "Enter API key: " IONOS_API_KEY
+    read -p "Enter API key: " AI_API_KEY
 
-    if [[ -z "$IONOS_API_KEY" ]]; then
+    if [[ -z "$AI_API_KEY" ]]; then
         echo -e "${RED}Error: API key is required${NC}"
         exit 1
     fi
 
-    if [[ ! $IONOS_API_KEY =~ ^ionos_ ]]; then
-        echo -e "${YELLOW}Warning: Key doesn't start with 'ionos_'${NC}"
+    # IONOS-Schluessel beginnen mit "ionos_". Andere Anbieter mit
+    # OpenAI-kompatibler API nutzen eigene Formate - deshalb nur ein Hinweis.
+    if [[ ! $AI_API_KEY =~ ^ionos_ ]]; then
+        echo -e "${YELLOW}Note: Key does not look like an IONOS key (no 'ionos_' prefix)${NC}"
         read -p "Continue anyway? (y/N): " confirm
         [[ ! $confirm =~ ^[Yy]$ ]] && exit 1
     fi
@@ -331,51 +405,51 @@ echo ""
 cleanup_legacy_filter
 
 # === DIRECTORIES ===
-mkdir -p data/ionos-checker
-mkdir -p data/logs/ionos-checker
-chmod 755 data/ionos-checker
+mkdir -p data/ai-checker
+mkdir -p data/logs/ai-checker
+chmod 755 data/ai-checker
 # Logs enthalten pseudonymisierte Absender/Empfaenger - nicht world-readable
-chmod 700 data/logs/ionos-checker
+chmod 700 data/logs/ai-checker
 # Bereits vorhandene Logdateien mitnehmen. Der Checker setzt 0600 nur beim
 # Anlegen, sonst muesste er bei jedem Schreibvorgang die Rechte pruefen -
 # Dateien aus einer aelteren Installation blieben dadurch world-readable.
-find data/logs/ionos-checker -maxdepth 1 -type f \( -name '*.log' -o -name '*.json' \) \
+find data/logs/ai-checker -maxdepth 1 -type f \( -name '*.log' -o -name '*.json' \) \
     -exec chmod 600 {} + 2>/dev/null || true
 
 # === PHP SCRIPTS ===
 # Der deployte Checker ist die Datei, in der am ehesten von Hand nachgebessert
 # wurde - und sie traegt den API-Key. Vor dem Ueberschreiben sichern, sonst
 # sind lokale Anpassungen ersatzlos weg.
-if [[ -f "data/ionos-checker/ionos-mail-checker.php" ]]; then
-    CHECKER_BACKUP="data/ionos-checker/ionos-mail-checker.php.backup.$(date +%s)"
-    cp data/ionos-checker/ionos-mail-checker.php "$CHECKER_BACKUP"
+if [[ -f "data/ai-checker/ai-mail-checker.php" ]]; then
+    CHECKER_BACKUP="data/ai-checker/ai-mail-checker.php.backup.$(date +%s)"
+    cp data/ai-checker/ai-mail-checker.php "$CHECKER_BACKUP"
     chmod 600 "$CHECKER_BACKUP"
     echo -e "${GREEN}[OK]${NC} Previous checker backed up: $CHECKER_BACKUP"
 fi
-cp "$SCRIPT_DIR/files/ionos-checker/ionos-mail-checker.php" data/ionos-checker/
-cp "$SCRIPT_DIR/files/ionos-checker/router.php" data/ionos-checker/
-cp "$SCRIPT_DIR/files/ionos-checker/trusted_sender_profiles.json.example" data/ionos-checker/
-# Build-Context fuer den ionos-checker-Container (bringt pdo_mysql mit,
+cp "$SCRIPT_DIR/files/ai-checker/ai-mail-checker.php" data/ai-checker/
+cp "$SCRIPT_DIR/files/ai-checker/router.php" data/ai-checker/
+cp "$SCRIPT_DIR/files/ai-checker/trusted_sender_profiles.json.example" data/ai-checker/
+# Build-Context fuer den ai-checker-Container (bringt pdo_mysql mit,
 # das im offiziellen php:8.2-cli-Image fehlt)
-cp "$SCRIPT_DIR/files/ionos-checker/Dockerfile" data/ionos-checker/
+cp "$SCRIPT_DIR/files/ai-checker/Dockerfile" data/ai-checker/
 
 # API key lives directly in the deployed checker script as of v3 (no more
-# config.ini). Only the copy under data/ionos-checker/ is touched - the
+# config.ini). Only the copy under data/ai-checker/ is touched - the
 # template in this repo keeps an empty token.
-IONOS_API_KEY_ESCAPED=$(printf '%s' "$IONOS_API_KEY" | sed -e 's/[\&|]/\\&/g')
-sed -i "s|define('IONOS_API_TOKEN', '')|define('IONOS_API_TOKEN', '$IONOS_API_KEY_ESCAPED')|" \
-    data/ionos-checker/ionos-mail-checker.php
+AI_API_KEY_ESCAPED=$(printf '%s' "$AI_API_KEY" | sed -e 's/[\&|]/\\&/g')
+sed -i "s|define('AI_API_TOKEN', '')|define('AI_API_TOKEN', '$AI_API_KEY_ESCAPED')|" \
+    data/ai-checker/ai-mail-checker.php
 
-chmod 644 data/ionos-checker/router.php data/ionos-checker/trusted_sender_profiles.json.example data/ionos-checker/Dockerfile
-chmod 600 data/ionos-checker/ionos-mail-checker.php
-echo -e "${GREEN}[OK]${NC} PHP scripts installed (API key embedded in ionos-mail-checker.php)"
+chmod 644 data/ai-checker/router.php data/ai-checker/trusted_sender_profiles.json.example data/ai-checker/Dockerfile
+chmod 600 data/ai-checker/ai-mail-checker.php
+echo -e "${GREEN}[OK]${NC} PHP scripts installed (API key embedded in ai-mail-checker.php)"
 
 # Leftover from a pre-v3 install - no longer read, but leave it for the
 # admin to remove manually since it still contains their API key.
-if [[ -f "data/ionos-checker/config.ini" ]]; then
+if [[ -f "data/ai-checker/config.ini" ]]; then
     echo -e "${YELLOW}[INFO]${NC} Found old config.ini from a previous version - it is no longer used."
-    echo "       Settings now live directly in data/ionos-checker/ionos-mail-checker.php."
-    echo "       Remove it manually once you've confirmed the new install works: rm data/ionos-checker/config.ini"
+    echo "       Settings now live directly in data/ai-checker/ai-mail-checker.php."
+    echo "       Remove it manually once you've confirmed the new install works: rm data/ai-checker/config.ini"
 fi
 
 # === RSPAMD LUA FILTER ===
@@ -433,7 +507,7 @@ fi
 
 # === DOCKER COMPOSE OVERRIDE ===
 if [[ -f "docker-compose.override.yml" ]]; then
-    if grep -q "ionos-checker" docker-compose.override.yml; then
+    if grep -qE "ionos-checker|ai-checker" docker-compose.override.yml; then
         if override_is_current docker-compose.override.yml; then
             echo -e "${GREEN}[OK]${NC} docker-compose.override.yml is up to date"
         else
@@ -442,8 +516,8 @@ if [[ -f "docker-compose.override.yml" ]]; then
             # nicht mitbringt - die Interne-Mail-Erkennung war dann dauerhaft
             # kaputt, ohne dass es irgendwo aufgefallen waere.
             echo -e "${YELLOW}[INFO]${NC} docker-compose.override.yml is outdated:"
-            grep -q 'context:[[:space:]]*\./data/ionos-checker' docker-compose.override.yml \
-                || echo "         - build context does not point at data/ionos-checker (pdo_mysql missing)"
+            grep -q 'context:[[:space:]]*\./data/ai-checker' docker-compose.override.yml \
+                || echo "         - build context does not point at data/ai-checker (pdo_mysql missing)"
             grep -q 'PHP_CLI_SERVER_WORKERS' docker-compose.override.yml \
                 || echo "         - PHP_CLI_SERVER_WORKERS not set (requests are serialised)"
 
@@ -452,7 +526,7 @@ if [[ -f "docker-compose.override.yml" ]]; then
             if [[ "$OVERRIDE_SERVICES" -le 1 ]]; then
                 OVERRIDE_BACKUP="docker-compose.override.yml.backup.$(date +%s)"
                 cp docker-compose.override.yml "$OVERRIDE_BACKUP"
-                echo "       ionos-checker is the only service in the file, so it can be"
+                echo "       ai-checker is the only service in the file, so it can be"
                 echo "       replaced safely. Backup: $OVERRIDE_BACKUP"
                 if [[ "${FORCE_REPLACE:-}" == "true" ]]; then
                     upd="y"
@@ -468,16 +542,16 @@ if [[ -f "docker-compose.override.yml" ]]; then
             else
                 # Fremde Dienste in der Datei: nichts automatisch anfassen.
                 echo "       The file defines $OVERRIDE_SERVICES services, so it is NOT touched"
-                echo "       automatically. Merge the ionos-checker block by hand from:"
+                echo "       automatically. Merge the ai-checker block by hand from:"
                 echo "         $SCRIPT_DIR/files/docker-compose.override.yml"
             fi
         fi
     else
-        echo -e "${YELLOW}[INFO]${NC} docker-compose.override.yml exists but has no ionos-checker service"
+        echo -e "${YELLOW}[INFO]${NC} docker-compose.override.yml exists but has no ai-checker service"
         cp docker-compose.override.yml "docker-compose.override.yml.backup.$(date +%s)"
         echo ""
         echo "Your existing override file has been backed up."
-        echo "You need to manually add the ionos-checker service."
+        echo "You need to manually add the ai-checker service."
         echo "Reference: $SCRIPT_DIR/files/docker-compose.override.yml"
         echo ""
         read -p "Replace with our template? (y/N): " replace
@@ -504,25 +578,25 @@ for legacy in /usr/local/bin/ionos-stats.sh /usr/local/bin/ionos-test.sh; do
         echo -e "${GREEN}[OK]${NC} Removed superseded $legacy"
     fi
 done
-cp "$SCRIPT_DIR/files/scripts/logrotate-ionos" /etc/logrotate.d/ionos-checker
+cp "$SCRIPT_DIR/files/scripts/logrotate-ai-filter" /etc/logrotate.d/ai-filter
 echo -e "${GREEN}[OK]${NC} Management scripts installed"
 
 # === START CONTAINERS ===
 echo ""
-echo "The ionos-checker container needs to be built/started, and Rspamd needs a"
+echo "The ai-checker container needs to be built/started, and Rspamd needs a"
 echo "restart to actually load the filter - 'up -d' alone leaves a running"
 echo "Rspamd untouched, so the filter would stay inactive."
-read -p "Start ionos-checker and restart Rspamd now? (y/N): " start_containers
+read -p "Start ai-checker and restart Rspamd now? (y/N): " start_containers
 
 if [[ $start_containers =~ ^[Yy]$ ]]; then
-    $COMPOSE_CMD up -d --build ionos-checker
+    $COMPOSE_CMD up -d --build ai-checker
     sleep 5
 
-    if $COMPOSE_CMD ps 2>/dev/null | grep -q "ionos-checker.*Up\|ionos-checker.*running"; then
-        echo -e "${GREEN}[OK]${NC} ionos-checker container running"
+    if $COMPOSE_CMD ps 2>/dev/null | grep -q "ai-checker.*Up\|ai-checker.*running"; then
+        echo -e "${GREEN}[OK]${NC} ai-checker container running"
     else
-        echo -e "${RED}[FAIL]${NC} ionos-checker container failed to start"
-        echo "       Check: $COMPOSE_CMD logs ionos-checker"
+        echo -e "${RED}[FAIL]${NC} ai-checker container failed to start"
+        echo "       Check: $COMPOSE_CMD logs ai-checker"
     fi
 
     # Ohne diesen Restart laedt Rspamd ai-content-filter.lua nicht und der
@@ -550,7 +624,7 @@ if [[ $start_containers =~ ^[Yy]$ ]]; then
     fi
 else
     echo -e "${YELLOW}[INFO]${NC} Nothing started. The filter stays INACTIVE until you run:"
-    echo "         $COMPOSE_CMD up -d --build ionos-checker"
+    echo "         $COMPOSE_CMD up -d --build ai-checker"
     echo "         $COMPOSE_CMD restart rspamd-mailcow"
 fi
 
@@ -559,9 +633,9 @@ echo "================================================"
 echo -e "  ${GREEN}Installation Complete!${NC}"
 echo "================================================"
 echo ""
-echo "Configuration: $MAILCOW_DIR/data/ionos-checker/ionos-mail-checker.php"
+echo "Configuration: $MAILCOW_DIR/data/ai-checker/ai-mail-checker.php"
 echo "  (edit the constants near the top of the file - budget, model, score caps, etc.)"
-echo "Custom trusted senders: $MAILCOW_DIR/data/ionos-checker/trusted_sender_profiles.json"
+echo "Custom trusted senders: $MAILCOW_DIR/data/ai-checker/trusted_sender_profiles.json"
 echo "  (copy from trusted_sender_profiles.json.example in the same directory)"
 echo ""
 echo "Commands:"
@@ -571,7 +645,7 @@ echo "  ai-filter-test.sh      End-to-end check"
 echo "  ai-filter-healthcheck.sh  Health check (also: install.sh --check)"
 echo "  ai-filter-repair.sh    Repair after mailcow update"
 echo ""
-echo "Logs: $COMPOSE_CMD logs -f ionos-checker"
+echo "Logs: $COMPOSE_CMD logs -f ai-checker"
 echo ""
 echo "Tip: Set log_only_mode = true in ai-filter-settings.lua to test"
 echo "     without affecting mail delivery!"

@@ -14,7 +14,7 @@ if [[ -z "${MAILCOW_DIR:-}" ]]; then
 fi
 [[ -n "${MAILCOW_DIR:-}" ]] || { echo -e "${RED}Mailcow directory not found${NC}"; exit 1; }
 
-LOG_DIR="$MAILCOW_DIR/data/logs/ionos-checker"
+LOG_DIR="$MAILCOW_DIR/data/logs/ai-checker"
 STATS_LOG="$LOG_DIR/stats.log"
 ERROR_LOG="$LOG_DIR/errors.log"
 BUDGET_FILE="$LOG_DIR/monthly_budget.json"

@@ -4,7 +4,7 @@
 
 ai_filter_settings = {
   -- URL of the AI checker service
-  checker_url = 'http://ionos-checker:8080/ionos-mail-checker.php',
+  checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
 
   -- Skip AI check if Rspamd score is already above/below these values
   skip_score_above = 14.0,
