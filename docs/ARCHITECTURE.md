@@ -168,10 +168,14 @@ are summed up.
 
 ## Update Resilience
 
-The filter is a single untracked file in `data/conf/rspamd/plugins.d/`.
-Rspamd loads every `*.lua` from that directory on its own, so nothing has to
-reference it, and mailcow's own README there names it as the place for custom
-modules.
+The filter is a single untracked file in `data/conf/rspamd/plugins.d/`,
+enabled by a two-line section in `data/conf/rspamd/rspamd.conf.local`.
+
+Both parts are needed. `plugins.d` is listed as `try_path` in rspamd's
+`modules` section, so the file is found - but rspamd treats it as a module
+and disables any module without a configuration section of its own. A
+`local.d/<name>.conf` does not work for custom modules; the section has to be
+at top level, which is what `rspamd.conf.local` is for.
 
 Why that survives, from mailcow's `update.sh`:
 

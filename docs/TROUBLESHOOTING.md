@@ -42,8 +42,13 @@ A mailcow update should not affect the filter - it is an untracked file in
 
 ```bash
 ls -la /opt/mailcow-dockerized/data/conf/rspamd/plugins.d/ai-content-filter.lua
+grep -A2 ai-content-filter /opt/mailcow-dockerized/data/conf/rspamd/rspamd.conf.local
 docker compose logs rspamd-mailcow | grep "AI Content Filter initialized"
 ```
+
+Both the file and the section matter. Without the section rspamd finds the
+file, logs `disabling unconfigured lua module`, and carries on without it -
+no error, no symbol, no analysis.
 
 If the file is gone, reinstalling puts it back:
 ```bash

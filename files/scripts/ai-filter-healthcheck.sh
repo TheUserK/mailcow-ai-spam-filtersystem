@@ -48,7 +48,17 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-# 2. No leftovers from the previous arrangement, which would load the filter
+# 2. The module has to be enabled explicitly - rspamd disables any module in
+# plugins.d that has no configuration section, quietly.
+if grep -q 'ai-content-filter' data/conf/rspamd/rspamd.conf.local 2>/dev/null; then
+    echo -e "${GREEN}[OK]${NC} Module enabled in rspamd.conf.local"
+else
+    echo -e "${RED}[FAIL]${NC} Module NOT enabled in rspamd.conf.local"
+    echo "       rspamd loads the file and then disables it. Run: install.sh --reinstall"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# 3. No leftovers from the previous arrangement, which would load the filter
 # a second time.
 STALE=""
 [[ -f "data/conf/rspamd/lua/ai-content-filter.lua" ]] && STALE="lua/ai-content-filter.lua"
