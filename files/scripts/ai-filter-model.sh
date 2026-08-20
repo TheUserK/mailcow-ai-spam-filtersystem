@@ -431,15 +431,15 @@ settimeout)
         echo -e "${RED}--timeout braucht eine ganze Zahl ab 5${NC}"
         exit 1
     fi
-    # Der Checker versucht es zweimal. Zwei volle Timeouts muessen unter
-    # Rspamds http_timeout bleiben, sonst wartet er auf eine Antwort, die
-    # niemand mehr entgegennimmt - genau der Fall vom 20.08.
-    if (( ARG * 2 >= 30 )); then
+    # Der bindende Wert ist NICHT http_timeout des Moduls, sondern Rspamds
+    # globaler task_timeout - bei mailcow 25s. Laeuft der ab, wird die Mail
+    # per SOFT REJECT abgewiesen, nicht bloss unbewertet zugestellt.
+    if (( ARG >= 22 )); then
         echo
-        echo -e "${YELLOW}[WARN]${NC} Rspamd wartet nur 30s auf den Checker, und der Checker"
-        echo    "        versucht es bei einem Fehler ein zweites Mal - im schlimmsten"
-        echo    "        Fall also $((ARG * 2))s. Erhoehe http_timeout entsprechend in:"
-        echo    "        data/conf/rspamd/lua/ai-filter-settings.lua"
+        echo -e "${YELLOW}[WARN]${NC} Rspamd bricht die ganze Aufgabe nach 25s ab (task_timeout)"
+        echo    "        und weist die Mail dann per SOFT REJECT ab. Bei ${ARG}s bleibt kaum"
+        echo    "        Luft fuer den Rest der Analyse - 20s oder weniger sind sicher."
+        echo    "        Hoeher nur, wenn du task_timeout in mailcow mit anhebst."
     fi
     echo
     echo "Timeout: ${TIMEOUT}s  ->  ${ARG}s"

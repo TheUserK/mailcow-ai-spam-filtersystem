@@ -721,8 +721,24 @@ PROMPT;
     // genau einmal ohne response_format wiederholt. Nicht jeder
     // OpenAI-kompatible Endpoint kann Structured Outputs, und ein
     // Anbieterwechsel darf den Filter nicht stillegen.
+    // Zeitbudget statt Versuchsbudget. Rspamd bricht die gesamte Aufgabe
+    // nach task_timeout ab (bei mailcow 25 s) und erzwingt dann ein SOFT
+    // REJECT - die Mail wird abgewiesen, nicht bloss unbewertet gelassen.
+    // Zwei volle Timeouts hintereinander reissen diese Grenze immer, egal
+    // wie kurz das einzelne Timeout gesetzt ist. Also wird nur noch dann
+    // ein zweites Mal gefragt, wenn dafuer auch Zeit uebrig ist.
+    $deadline = microtime(true) + API_TIMEOUT;
+
     $result = null; $httpCode = 0; $curlErr = ''; $schemaDropped = false;
     for ($attempt = 1; $attempt <= 2; $attempt++) {
+        $remaining = (int)ceil($deadline - microtime(true));
+        if ($attempt > 1 && $remaining < 3) {
+            logError($requestId, 'No time left for a second attempt', [
+                'http_code' => $httpCode,
+                'budget'    => API_TIMEOUT,
+            ]);
+            break;
+        }
         $ch = curl_init(AI_API_ENDPOINT);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
@@ -732,7 +748,7 @@ PROMPT;
                 'Content-Type: application/json',
             ],
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => API_TIMEOUT,
+            CURLOPT_TIMEOUT        => max(3, $remaining),
             CURLOPT_CONNECTTIMEOUT => CONNECT_TIMEOUT,
             CURLOPT_SSL_VERIFYPEER => true,
         ]);
