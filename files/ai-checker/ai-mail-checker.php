@@ -807,7 +807,20 @@ PROMPT;
     }
 
     if (!is_array($analysis) || !isset($analysis['spam_probability'])) {
-        logError($requestId, 'Failed to parse AI response', ['content' => mb_substr($content, 0, 300)]);
+        // finish_reason und Tokenverbrauch mitschreiben. Ohne die beiden
+        // sieht ein leerer Inhalt genauso aus wie Muell vom Anbieter -
+        // dabei ist "reasoning hat das Budget aufgebraucht" (finish_reason
+        // = length, completion_tokens am Limit) ein voellig anderer Fehler
+        // mit einer voellig anderen Abhilfe.
+        logError($requestId, 'Failed to parse AI response', [
+            'content'          => mb_substr($content, 0, 300),
+            'content_empty'    => ($content === ''),
+            'finish_reason'    => $apiResponse['choices'][0]['finish_reason'] ?? '?',
+            'completion_tokens' => $apiResponse['usage']['completion_tokens'] ?? null,
+            'reasoning_tokens' => $apiResponse['usage']['completion_tokens_details']['reasoning_tokens'] ?? null,
+            'model'            => AI_MODEL,
+            'reasoning_effort' => AI_REASONING_EFFORT !== '' ? AI_REASONING_EFFORT : '(provider default)',
+        ]);
         return neutralResponse('parse-error');
     }
 
