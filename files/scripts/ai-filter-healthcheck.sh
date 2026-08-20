@@ -81,6 +81,28 @@ else
     echo -e "${YELLOW}[WARN]${NC} ai-filter-settings.lua missing (using defaults)"
 fi
 
+# 3b. The timeout chain. api < http < task, or a slow answer stops being a
+#     missing verdict and becomes a soft reject - a deferred mail.
+CHAIN_API=$(sed -n 's/^[[:space:]]*api_timeout[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+    data/ai-checker/provider.conf 2>/dev/null | head -1)
+CHAIN_API=${CHAIN_API:-20}
+CHAIN_HTTP=$(sed -n 's/^[[:space:]]*http_timeout[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+    data/conf/rspamd/lua/ai-filter-settings.lua 2>/dev/null | head -1)
+CHAIN_TASK=$(sed -n 's/^[[:space:]]*task_timeout[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+    data/conf/rspamd/local.d/options.inc 2>/dev/null | head -1)
+CHAIN_TASK=${CHAIN_TASK:-25}
+
+if [[ -z "$CHAIN_HTTP" ]]; then
+    echo -e "${YELLOW}[WARN]${NC} http_timeout not readable - skipping timeout chain check"
+elif (( CHAIN_API < CHAIN_HTTP && CHAIN_HTTP < CHAIN_TASK )); then
+    echo -e "${GREEN}[OK]${NC} Timeout chain sane: ${CHAIN_API}s < ${CHAIN_HTTP}s < ${CHAIN_TASK}s"
+else
+    echo -e "${RED}[FAIL]${NC} Timeout chain broken: api=${CHAIN_API}s http=${CHAIN_HTTP}s task=${CHAIN_TASK}s"
+    echo -e "       Slow answers will be SOFT REJECTED instead of delivered unscored."
+    echo -e "       ${YELLOW}Fix:${NC} ai-filter-model.sh --timeout ${CHAIN_API}"
+    ERRORS=$((ERRORS + 1))
+fi
+
 # 4. Check the API key - either in the shipped default or in a profile
 PROVIDER_CONF="data/ai-checker/provider.conf"
 if [[ -f "data/ai-checker/ai-mail-checker.php" ]]; then

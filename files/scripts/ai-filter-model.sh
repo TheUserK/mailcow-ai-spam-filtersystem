@@ -19,7 +19,8 @@ Usage: ai-filter-model.sh [OPTION]
   --use PROVIDER     switch provider: ionos | hetzner
   --cost EUR         cost per API call, feeds the monthly budget guard
   --reasoning LEVEL  low | medium | high - trades answer time for thinking
-  --timeout SEC      how long the API may take (must stay under rspamd's 30s)
+  --timeout SEC      how long the API may take - also adjusts rspamd's
+                     http_timeout and task_timeout so the chain stays sane
   --test             send one request with the current settings, change nothing
   --reset            drop the profile, back to the shipped defaults
   -h, --help         this text
@@ -86,6 +87,8 @@ cd "$MAILCOW_DIR" || exit 1
 CHECKER="data/ai-checker/ai-mail-checker.php"
 CONF="data/ai-checker/provider.conf"
 PROFILE_DIR="data/ai-checker/profiles"
+LUA_SETTINGS="data/conf/rspamd/lua/ai-filter-settings.lua"
+RSPAMD_OPTIONS="data/conf/rspamd/local.d/options.inc"
 
 [[ -f "$CHECKER" ]] || { echo -e "${RED}Checker not installed:${NC} $MAILCOW_DIR/$CHECKER"; exit 1; }
 
@@ -225,6 +228,87 @@ EOF
     printf '%s\n' "$token" > "$PROFILE_DIR/$name.token"
     chmod 600 "$PROFILE_DIR/$name.token"
     chown root:root "$PROFILE_DIR/$name.token" 2>/dev/null || true
+}
+
+
+# --- Die Timeout-Kette ------------------------------------------------
+# Drei Uhren laufen gleichzeitig, und ihre Reihenfolge entscheidet, WIE
+# der Filter kaputtgeht:
+#
+#   api_timeout  <  http_timeout  <  task_timeout
+#
+# Laeuft http_timeout zuerst ab, faellt das Lua-Modul offen aus und die
+# Mail wird ohne KI-Bewertung zugestellt - unschoen, aber harmlos.
+# Laeuft task_timeout zuerst ab, weist Rspamd die Mail per SOFT REJECT
+# ab. Deshalb darf die Reihenfolge nie kippen, und deshalb setzt dieses
+# Skript alle drei Werte gemeinsam statt einen einzeln.
+HTTP_MARGIN=3      # was der Checker neben dem API-Aufruf noch braucht
+TASK_MARGIN=8      # was Rspamd neben dem KI-Aufruf noch braucht
+
+http_timeout_for() { echo $(( $1 + HTTP_MARGIN )); }
+task_timeout_for() { echo $(( $1 + HTTP_MARGIN + TASK_MARGIN )); }
+
+current_http_timeout() {
+    local v=""
+    [[ -f "$LUA_SETTINGS" ]] && v=$(sed -n 's/^[[:space:]]*http_timeout[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/p' "$LUA_SETTINGS" | head -1)
+    echo "${v:-?}"
+}
+current_task_timeout() {
+    local v=""
+    [[ -f "$RSPAMD_OPTIONS" ]] && v=$(sed -n 's/^[[:space:]]*task_timeout[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$RSPAMD_OPTIONS" | head -1)
+    # Ohne eigenen Eintrag gilt mailcows Vorgabe.
+    echo "${v:-25 (Vorgabe)}"
+}
+
+apply_timeout_chain() {
+    local api="$1"
+    local http; http=$(http_timeout_for "$api")
+    local task; task=$(task_timeout_for "$api")
+
+    # 1. Lua-Settings
+    if [[ -f "$LUA_SETTINGS" ]]; then
+        cp "$LUA_SETTINGS" "$LUA_SETTINGS.backup.$(date +%s)"
+        sed -i "s/^\([[:space:]]*http_timeout[[:space:]]*=[[:space:]]*\)[0-9.]*.*/\1${http}.0,   -- muss unter task_timeout (${task}s) bleiben/" \
+            "$LUA_SETTINGS"
+        echo -e "${GREEN}[OK]${NC}   http_timeout = ${http}s  ($LUA_SETTINGS)"
+    else
+        echo -e "${YELLOW}[WARN]${NC} $LUA_SETTINGS fehlt - http_timeout nicht gesetzt"
+    fi
+
+    # 2. Rspamds globaler task_timeout. local.d ueberlebt mailcow-Updates.
+    mkdir -p "$(dirname "$RSPAMD_OPTIONS")"
+    touch "$RSPAMD_OPTIONS"
+    if grep -q '^[[:space:]]*task_timeout' "$RSPAMD_OPTIONS"; then
+        cp "$RSPAMD_OPTIONS" "$RSPAMD_OPTIONS.backup.$(date +%s)"
+        sed -i "s/^\([[:space:]]*task_timeout[[:space:]]*=[[:space:]]*\)[0-9]*.*/\1${task}s;/" "$RSPAMD_OPTIONS"
+    else
+        printf '\n# Gesetzt von ai-filter-model.sh: muss ueber http_timeout des\n# AI-Filters liegen, sonst weist Rspamd langsame Mails per soft\n# reject ab statt sie unbewertet zuzustellen.\ntask_timeout = %ss;\n' \
+            "$task" >> "$RSPAMD_OPTIONS"
+    fi
+    echo -e "${GREEN}[OK]${NC}   task_timeout = ${task}s  ($RSPAMD_OPTIONS)"
+
+    # 3. Durchsatz. Der Engpass sind die PHP-Worker, nicht die Uhren - aber
+    #    das Container-Neuerstellen und den Speicherbedarf entscheidet der
+    #    Betreiber, nicht dieses Skript.
+    local workers burst
+    workers=$(grep -oP 'PHP_CLI_SERVER_WORKERS=\K[0-9]+' docker-compose.override.yml 2>/dev/null | head -1)
+    workers=${workers:-4}
+    burst=$(( workers * task / api ))
+    if (( api > 10 )); then
+        echo
+        echo -e "${DIM}Durchsatz: ${workers} Worker a ${api}s bedienen etwa $(( workers * 60 / api )) Mails/Minute.${NC}"
+        echo -e "${DIM}Ein Schwung von mehr als ~${burst} gleichzeitigen Mails laeuft in den${NC}"
+        echo -e "${DIM}task_timeout. Falls das vorkommt, PHP_CLI_SERVER_WORKERS erhoehen:${NC}"
+        echo -e "${DIM}  \$EDITOR $MAILCOW_DIR/docker-compose.override.yml${NC}"
+        echo -e "${DIM}  $COMPOSE_CMD up -d ai-checker${NC}"
+    fi
+}
+
+restart_rspamd() {
+    echo -e "${DIM}Starte rspamd neu ...${NC}"
+    $COMPOSE_CMD restart rspamd-mailcow >/dev/null 2>&1 \
+        && echo -e "${GREEN}[OK]${NC}   rspamd neu gestartet" \
+        || echo -e "${YELLOW}[WARN]${NC} Neustart fehlgeschlagen - bitte manuell: $COMPOSE_CMD restart rspamd-mailcow"
 }
 
 restart_checker() {
@@ -417,9 +501,15 @@ setreasoning)
     echo -e "${GREEN}[OK]${NC}   Testanfrage in ${ELAPSED}s"
     # Eine Messung, die ueber dem Timeout liegt, wuerde im Betrieb jede
     # Mail unbewertet lassen - lieber hier sagen als spaeter im Log finden.
+    # Ein Drittel Luft auf die Messung: die Antwortzeit schwankt, und ein
+    # knapp bemessenes Budget faellt genau bei Last aus.
+    SUGGEST=$(( (ELAPSED * 4 + 2) / 3 ))
     if (( ELAPSED > TIMEOUT )); then
-        echo -e "${YELLOW}[WARN]${NC} laenger als das Timeout von ${TIMEOUT}s."
-        echo    "        Erhoehe es mit --timeout, sonst faellt der Filter offen aus."
+        echo -e "${YELLOW}[WARN]${NC} laenger als das Budget von ${TIMEOUT}s - so bleibt jede Mail unbewertet."
+        echo    "        Passend waere:  ai-filter-model.sh --timeout $SUGGEST"
+    elif (( ELAPSED * 4 > TIMEOUT * 3 )); then
+        echo -e "${YELLOW}[HINWEIS]${NC} nur wenig Luft zum Budget von ${TIMEOUT}s."
+        echo    "        Mehr Reserve mit:  ai-filter-model.sh --timeout $SUGGEST"
     fi
     write_profile "$ENDPOINT" "$MODEL" "$TOKEN" "$COST" "$ARG" "$TIMEOUT"
     echo -e "${GREEN}[OK]${NC}   Profil aktualisiert"
@@ -431,21 +521,29 @@ settimeout)
         echo -e "${RED}--timeout braucht eine ganze Zahl ab 5${NC}"
         exit 1
     fi
-    # Der bindende Wert ist NICHT http_timeout des Moduls, sondern Rspamds
-    # globaler task_timeout - bei mailcow 25s. Laeuft der ab, wird die Mail
-    # per SOFT REJECT abgewiesen, nicht bloss unbewertet zugestellt.
-    if (( ARG >= 22 )); then
-        echo
-        echo -e "${YELLOW}[WARN]${NC} Rspamd bricht die ganze Aufgabe nach 25s ab (task_timeout)"
-        echo    "        und weist die Mail dann per SOFT REJECT ab. Bei ${ARG}s bleibt kaum"
-        echo    "        Luft fuer den Rest der Analyse - 20s oder weniger sind sicher."
-        echo    "        Hoeher nur, wenn du task_timeout in mailcow mit anhebst."
+    if (( ARG > 120 )); then
+        echo -e "${RED}Ueber 120s ist keine sinnvolle Zustellzeit mehr${NC}"
+        exit 1
     fi
+
+    NEW_HTTP=$(http_timeout_for "$ARG")
+    NEW_TASK=$(task_timeout_for "$ARG")
+
     echo
-    echo "Timeout: ${TIMEOUT}s  ->  ${ARG}s"
+    echo "Timeout-Kette:"
+    printf '  %-14s %11ss  ->  %4ss   (Profil)\n'       'api_timeout'  "$TIMEOUT" "$ARG"
+    printf '  %-14s %12s  ->  %4ss   (Lua-Settings)\n'  'http_timeout' "$(current_http_timeout)" "$NEW_HTTP"
+    printf '  %-14s %12s  ->  %4ss   (rspamd)\n'        'task_timeout' "$(current_task_timeout)" "$NEW_TASK"
+    echo
+    echo -e "${DIM}Reihenfolge bleibt gewahrt: laeuft die Zeit ab, faellt der Filter${NC}"
+    echo -e "${DIM}offen aus und die Mail wird zugestellt - kein soft reject.${NC}"
+    echo
+
     write_profile "$ENDPOINT" "$MODEL" "$TOKEN" "$COST" "$REASONING" "$ARG"
-    echo -e "${GREEN}[OK]${NC}   Profil aktualisiert"
+    echo -e "${GREEN}[OK]${NC}   api_timeout = ${ARG}s  ($CONF)"
+    apply_timeout_chain "$ARG"
     restart_checker
+    restart_rspamd
     ;;
 
 reset)
