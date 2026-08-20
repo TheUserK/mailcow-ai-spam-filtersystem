@@ -76,7 +76,13 @@ extract_php_api_key() {
     local php_file="$1"
     [[ -f "$php_file" ]] || return 1
     local key
+    # Erst der aktuelle Name, dann der alte. Bis einschliesslich v3.1 hiess
+    # die Konstante AI_API_TOKEN; ohne diesen Rueckfall fragt ein Upgrade
+    # von dort erneut nach dem Schluessel, obwohl er laengst da ist.
     key=$(grep -oP "define\('AI_API_TOKEN_DEFAULT',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
+    if [[ -z "$key" ]]; then
+        key=$(grep -oP "define\('AI_API_TOKEN',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
+    fi
     if [[ -n "$key" && "$key" != "YOUR_AI_API_KEY_HERE" ]]; then
         echo "$key"
         return 0
