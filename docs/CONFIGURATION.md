@@ -86,6 +86,24 @@ but a burst of twenty arriving together puts the last one past rspamd's
 Leave `reasoning_effort` empty to let the provider decide (IONOS defaults to
 `medium`).
 
+### The timeout chain
+
+Three clocks run at once, and their order decides *how* the filter breaks:
+
+```
+api_timeout  <  http_timeout  <  task_timeout
+   (profile)     (lua settings)    (rspamd)
+```
+
+If `http_timeout` expires first, the Lua module fails open and the mail is
+delivered without an AI verdict - unfortunate but harmless. If `task_timeout`
+expires first, rspamd forces a **soft reject** and the mail is deferred with a
+`4.7.1`. The order must therefore never invert.
+
+`ai-filter-model.sh --timeout N` sets all three together, keeping fixed margins,
+and restarts both containers. `ai-filter-healthcheck.sh` fails if the order is
+ever broken by hand.
+
 `api_timeout` is a **total** budget, not a per-attempt one. The binding limit
 is not the module's `http_timeout` but rspamd's global `task_timeout`, 25 s on
 mailcow. When that expires rspamd forces a **soft reject** - the mail is
