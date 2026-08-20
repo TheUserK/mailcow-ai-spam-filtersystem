@@ -99,9 +99,9 @@ top of the deployed checker script:
 `/opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php`
 
 ```php
-define('AI_API_ENDPOINT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
-define('AI_API_TOKEN', '...');       // filled in by install.sh
-define('AI_MODEL', 'openai/gpt-oss-120b');
+define('AI_API_ENDPOINT_DEFAULT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
+define('AI_API_TOKEN_DEFAULT', '...');   // filled in by install.sh
+define('AI_MODEL_DEFAULT', 'openai/gpt-oss-120b');
 define('MONTHLY_BUDGET_EUR', 50);
 define('MAX_SPAM_POINTS', 4.0);         // max score for regular spam/marketing
 define('MAX_HAM_POINTS', 3.0);          // max score deduction for confident ham
@@ -111,6 +111,40 @@ define('MAX_PHISHING_POINTS', 10.0);    // max score for phishing/fraud - delibe
 Edit the file directly and restart the container. To add your own trusted senders (business partners, internal tools, ...) without touching the code, copy `trusted_sender_profiles.json.example` to `trusted_sender_profiles.json` in the same directory and list their domains.
 
 Rspamd-side behavior (which score range triggers an AI call, log-only mode, sender whitelist that skips the AI call entirely) is configured in `/opt/mailcow-dockerized/data/conf/rspamd/lua/ai-filter-settings.lua`.
+
+### Changing the model or the AI provider
+
+Don't edit the endpoint by hand - use the helper. It verifies every change
+against the live API first, and writes nothing if the test request fails:
+
+```bash
+ai-filter-model.sh                          # what is active right now
+ai-filter-model.sh --models                 # what this provider offers
+ai-filter-model.sh --model Qwen/Qwen3.5-397B-A17B
+ai-filter-model.sh --test                   # probe without changing anything
+ai-filter-model.sh --reset                  # back to the shipped defaults
+```
+
+The choice is stored in `data/ai-checker/provider.conf` (root, `0600` - it
+holds your API token) and takes precedence over the `_DEFAULT` constants above.
+Because it is a separate file, `install.sh --reinstall` cannot silently reset it.
+
+The API is OpenAI-compatible, so other providers work too:
+
+```bash
+ai-filter-model.sh --use hetzner
+```
+
+> [!WARNING]
+> Switching provider means mail content is sent to a **different processor**.
+> That needs an Art. 28 GDPR data processing agreement with them, an update to
+> your Art. 30 records and to your privacy policy - before you switch, not
+> after. The script states this and requires you to type the provider name; it
+> cannot be waved through with Enter.
+
+Each provider keeps its own token, so switching back does not ask again. If a
+provider does not support structured outputs, the checker notices the `400` and
+retries once without the schema rather than failing the analysis.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
@@ -147,6 +181,7 @@ ai-filter-log.sh -e               # errors.log instead
 ai-filter-stats.sh                # Summary: sources, categories, score spread, budget
 ai-filter-test.sh                 # End-to-end check against the running checker
 ai-filter-healthcheck.sh          # Health check (can run via cron)
+ai-filter-model.sh                # Which model/provider is active
 install.sh --check                # Same health check
 ```
 

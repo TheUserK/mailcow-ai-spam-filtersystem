@@ -76,7 +76,7 @@ extract_php_api_key() {
     local php_file="$1"
     [[ -f "$php_file" ]] || return 1
     local key
-    key=$(grep -oP "define\('AI_API_TOKEN',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
+    key=$(grep -oP "define\('AI_API_TOKEN_DEFAULT',\s*'\K[^']*" "$php_file" 2>/dev/null | head -1)
     if [[ -n "$key" && "$key" != "YOUR_AI_API_KEY_HERE" ]]; then
         echo "$key"
         return 0
@@ -239,7 +239,7 @@ cp "$SCRIPT_DIR/files/ai-checker/Dockerfile" data/ai-checker/
 # config.ini). Only the copy under data/ai-checker/ is touched - the
 # template in this repo keeps an empty token.
 AI_API_KEY_ESCAPED=$(printf '%s' "$AI_API_KEY" | sed -e 's/[\&|]/\\&/g')
-sed -i "s|define('AI_API_TOKEN', '')|define('AI_API_TOKEN', '$AI_API_KEY_ESCAPED')|" \
+sed -i "s|define('AI_API_TOKEN_DEFAULT', '')|define('AI_API_TOKEN_DEFAULT', '$AI_API_KEY_ESCAPED')|" \
     data/ai-checker/ai-mail-checker.php
 
 chmod 644 data/ai-checker/router.php data/ai-checker/trusted_sender_profiles.json.example data/ai-checker/Dockerfile
@@ -471,6 +471,7 @@ echo "  ai-filter-log.sh       Recent verdicts (-h for filters)"
 echo "  ai-filter-stats.sh     Summary"
 echo "  ai-filter-test.sh      End-to-end check"
 echo "  ai-filter-healthcheck.sh  Health check (also: install.sh --check)"
+echo "  ai-filter-model.sh     Show or change the model / AI provider"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ai-checker"
 echo ""

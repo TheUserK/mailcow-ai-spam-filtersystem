@@ -17,18 +17,36 @@ After changes to the Lua settings or filter, restart Rspamd:
 docker compose restart rspamd-mailcow
 ```
 
+## Provider profile (provider.conf)
+
+The three `_DEFAULT` constants below are the shipped values. If
+`data/ai-checker/provider.conf` exists, its keys win:
+
+```ini
+endpoint = https://openai.inference.de-txl.ionos.com/v1/chat/completions
+model = openai/gpt-oss-120b
+token = eyJ...
+cost_per_call = 0.00034
+```
+
+Do not write this file by hand - `ai-filter-model.sh` creates it, tests the
+settings against the live API before writing, and sets `root`/`0600` because
+the file holds your API token. `ai-filter-healthcheck.sh` fails if those
+permissions are wrong. `install.sh` never touches the file, so a `--reinstall`
+keeps your choice.
+
 ## ai-mail-checker.php constants
 
 | Constant | Default | Description |
 |---|---|---|
-| `AI_API_ENDPOINT` | `https://openai.inference.de-txl.ionos.com/v1/chat/completions` | OpenAI-compatible API endpoint |
-| `AI_API_TOKEN` | (filled in by install.sh) | Your IONOS API key |
-| `AI_MODEL` | `openai/gpt-oss-120b` | Model name |
+| `AI_API_ENDPOINT_DEFAULT` | `https://openai.inference.de-txl.ionos.com/v1/chat/completions` | OpenAI-compatible API endpoint |
+| `AI_API_TOKEN_DEFAULT` | (filled in by install.sh) | Your IONOS API key |
+| `AI_MODEL_DEFAULT` | `openai/gpt-oss-120b` | Model name |
 | `API_TIMEOUT` | `20` | API request timeout (seconds) |
 | `CONNECT_TIMEOUT` | `5` | Connection timeout (seconds) |
 | `MAILCOW_DB_HOST` / `MAILCOW_DB_NAME` / `MAILCOW_DB_USER` | `mysql` / `$MAILCOW_DBNAME` / `$MAILCOW_DBUSER` | Used for the internal-mail lookup. Name, user and password all come from container env vars fed by mailcow's `DBNAME`/`DBUSER`/`DBPASS` in `docker-compose.override.yml` |
 | `MONTHLY_BUDGET_EUR` | `50` | Monthly budget in EUR |
-| `AVG_COST_PER_CALL_EUR` | `0.00034` | Estimated cost per API call, used to derive the monthly call limit |
+| `AVG_COST_PER_CALL_EUR` | `0.00034` | Estimated cost per API call, used to derive the monthly call limit. Depends on the model, so a provider profile overrides it; `0` disables the limit |
 | `MAX_SPAM_POINTS` | `4.0` | Max score the AI can add for `spam`/`marketing`/`pharma` |
 | `MAX_HAM_POINTS` | `3.0` | Max score the AI can *subtract* for confident ham |
 | `MAX_PHISHING_POINTS` | `10.0` | Max score for `phishing`/`fraud` - deliberately kept **below** Rspamd's reject threshold (15) so the AI can never reject a mail on its own |

@@ -84,9 +84,17 @@ Check `stats.log` for the `analysis_source` field (`local-precheck`, `local`, `a
 ### Invalid or Missing API Key
 
 ```bash
-# Check the key is embedded in ai-mail-checker.php
-grep "AI_API_TOKEN" /opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php
+# Which provider, model and token state is actually in effect
+ai-filter-model.sh
+
+# Probe the API with the current settings - changes nothing
+ai-filter-model.sh --test
 ```
+
+`ai-filter-model.sh --test` is the reliable check: it asks the API rather than
+reading a file, so it also catches an expired token. IONOS tokens are JWTs with
+an expiry between 1 hour and 365 days - when one runs out, the filter stops
+scoring and only `errors.log` shows it.
 
 ### Budget Exceeded
 

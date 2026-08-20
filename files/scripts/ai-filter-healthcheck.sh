@@ -81,9 +81,32 @@ else
     echo -e "${YELLOW}[WARN]${NC} ai-filter-settings.lua missing (using defaults)"
 fi
 
-# 4. Check API key is embedded in ai-mail-checker.php
+# 4. Check the API key - either in the shipped default or in a profile
+PROVIDER_CONF="data/ai-checker/provider.conf"
 if [[ -f "data/ai-checker/ai-mail-checker.php" ]]; then
-    if grep -qP "define\('AI_API_TOKEN',\s*''\)" data/ai-checker/ai-mail-checker.php; then
+    if [[ -f "$PROVIDER_CONF" ]]; then
+        # Ein Profil hat Vorrang; dann darf die PHP-Konstante leer sein.
+        PROFILE_TOKEN=$(sed -n 's/^[[:space:]]*token[[:space:]]*=[[:space:]]*//p' "$PROVIDER_CONF" | head -1)
+        PROFILE_MODEL=$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*//p' "$PROVIDER_CONF" | head -1)
+        if [[ -z "$PROFILE_TOKEN" ]]; then
+            echo -e "${RED}[FAIL]${NC} provider.conf has no API token"
+            ERRORS=$((ERRORS + 1))
+        else
+            echo -e "${GREEN}[OK]${NC} Provider profile active: ${PROFILE_MODEL:-?}"
+        fi
+
+        # Die Datei traegt einen Zugangsschluessel. Falsche Rechte darauf
+        # sind still und faellt sonst niemandem auf.
+        PERM=$(stat -c '%a' "$PROVIDER_CONF" 2>/dev/null)
+        OWNER=$(stat -c '%U' "$PROVIDER_CONF" 2>/dev/null)
+        if [[ "$PERM" != "600" || "$OWNER" != "root" ]]; then
+            echo -e "${RED}[FAIL]${NC} provider.conf is $OWNER/$PERM - must be root/600 (holds the API token)"
+            echo -e "       ${YELLOW}Fix:${NC} chown root:root $PROVIDER_CONF && chmod 600 $PROVIDER_CONF"
+            ERRORS=$((ERRORS + 1))
+        else
+            echo -e "${GREEN}[OK]${NC} provider.conf permissions are root/600"
+        fi
+    elif grep -qP "define\('AI_API_TOKEN_DEFAULT',\s*''\)" data/ai-checker/ai-mail-checker.php; then
         echo -e "${RED}[FAIL]${NC} API key not configured in ai-mail-checker.php"
         ERRORS=$((ERRORS + 1))
     else
