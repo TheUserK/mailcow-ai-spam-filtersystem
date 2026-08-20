@@ -17,6 +17,42 @@ After changes to the Lua settings or filter, restart Rspamd:
 docker compose restart rspamd-mailcow
 ```
 
+## Brand impersonation: two paths
+
+A rejection needs structural evidence that does not come from the model.
+Brand impersonation supplies it in two ways:
+
+**The list** (`getImpersonationBrands()`). For well-known brands it maps the
+name to the domains that brand legitimately sends from. A claim in the display
+name that does not match one of them scores 6.0 (typosquat) or 7.0 (foreign
+domain). Matching requires that no letter sits directly before or after the
+brand name, so `ing` does not fire on "Marketing" or "Holding".
+
+Free mailbox domains deliberately do **not** belong on this list. Anyone can
+register at `outlook.com` and set their display name to "Microsoft".
+
+**The list-free path** (`claimedBrandMismatch()`). The model returns
+`claimed_brand` - who the mail claims to be from. Code, not the model, then
+checks whether that name appears as a label of the sender's organisational
+domain. A list can never hold every regional bank; this path covers the rest.
+
+It only counts as evidence when authentication is **not** strong. Companies
+send through Mailchimp, Brevo and Sendgrid all the time and claim their own
+name from a foreign domain - but that mail is SPF/DKIM-clean. Without this
+coupling the check would fire on every ESP customer.
+
+The two never stack: if the list already matched, the generic path stays quiet,
+so one fact cannot pose as two independent pieces of evidence.
+
+`claimed_brand` is written to `stats.log`, and a hit shows up as evidence
+`brand-claim-mismatch`:
+
+```bash
+ai-filter-log.sh -R
+jq -r 'select(.evidence|index("brand-claim-mismatch"))|[.from,.claimed_brand]|@tsv' \
+  /opt/mailcow-dockerized/data/logs/ai-checker/stats.log
+```
+
 ## Provider profile (provider.conf)
 
 The three `_DEFAULT` constants below are the shipped values. If

@@ -214,6 +214,7 @@ logStats($requestId, [
     'analysis_source' => $result['analysis_source'] ?? 'ai',
     'evidence' => $result['evidence'] ?? [],
     'reject_eligible' => !empty($result['reject_eligible']),
+    'claimed_brand' => $result['claimed_brand'] ?? '',
     'matched_profile' => $localResult['matched_profile'] ?? '',
     'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
     'url_domains' => $mail['url_domains'],
@@ -591,8 +592,20 @@ Passwort-Reset AUSGIBT, es aber nicht ist, ist "phishing" - niemals
 Im Zweifel die geschuetztere Kategorie waehlen. Ausnahme: Bei "clickbait"
 darfst du dich klar festlegen - ein Fehlurteil kostet dort niemanden etwas.
 
+ABSENDER-BEHAUPTUNG - "claimed_brand":
+Als welches Unternehmen oder welche Organisation gibt sich diese Mail aus?
+Trage den Namen so ein, wie er behauptet wird ("N26", "Sparkasse",
+"Trade Republic", "Volksbank Mittelhessen"). Es zaehlt nur, wofuer sich der
+ABSENDER ausgibt - nicht, welche Firmen im Text vorkommen. Eine Rechnung, die
+ein anderes Unternehmen erwaehnt, behauptet nicht, von ihm zu sein.
+Leer lassen, wenn die Mail keine Organisation vorgibt zu sein (Privatmail,
+namenlose Massenmail). Keine Gattungsbegriffe wie "Ihre Bank" oder "Support".
+
+Diese Angabe wird maschinell gegen die tatsaechliche Absenderdomain geprueft.
+Rate nicht - im Zweifel leer lassen.
+
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
-{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
 
 Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
 "reasoning" hoechstens 150 Zeichen - laengere Antworten werden abgeschnitten.
@@ -673,12 +686,13 @@ PROMPT;
                                 'clickbait', 'spam', 'pharma', 'phishing', 'fraud',
                             ],
                         ],
+                        'claimed_brand' => ['type' => 'string'],
                         'red_flags' => ['type' => 'array', 'items' => ['type' => 'string']],
                         'reasoning' => ['type' => 'string'],
                     ],
                     'required' => [
                         'spam_probability', 'confidence', 'category',
-                        'red_flags', 'reasoning',
+                        'claimed_brand', 'red_flags', 'reasoning',
                     ],
                     'additionalProperties' => false,
                 ],
@@ -793,7 +807,7 @@ PROMPT;
     // --- Wie hart darf diese Mail behandelt werden? ---
     $policy     = categoryPolicy($category);
     $confidence = floatval($analysis['confidence'] ?? 0.5);
-    $evidence   = collectStructuralEvidence($mail, $localContext);
+    $evidence   = collectStructuralEvidence($mail, $localContext, $analysis);
 
     // Ein Reject verlangt die Zustimmung einer zweiten, unabhaengigen Quelle.
     // Die KI allein reicht nicht: sie kann sich irren, und ein Reject ist die
@@ -844,6 +858,7 @@ PROMPT;
         'analysis_source' => 'ai',
         'evidence'        => $evidence,
         'reject_eligible' => $rejectEligible,
+        'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
     ];
 }
 
@@ -896,7 +911,7 @@ function categoryPolicy($category) {
 //  einer davon zutreffen: eine zweite, unabhaengige Quelle soll dem Urteil
 //  zustimmen, damit ein Modellfehler allein keine Mail verwirft.
 // ---------------------------------------------------------------------
-function collectStructuralEvidence(array $mail, array $localContext) {
+function collectStructuralEvidence(array $mail, array $localContext, array $analysis = []) {
     $evidence = [];
 
     if (allUrlsAreCloudStorage($mail['url_domains'])) {
@@ -913,6 +928,12 @@ function collectStructuralEvidence(array $mail, array $localContext) {
     }
     if (!empty(findShortenerDomains($mail['url_domains']))) {
         $evidence[] = 'url-shortener';
+    }
+    // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
+    // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
+    if (floatval($localContext['impersonation_score'] ?? 0) <= 0
+        && claimedBrandMismatch($mail, $analysis)) {
+        $evidence[] = 'brand-claim-mismatch';
     }
 
     return $evidence;
@@ -1276,11 +1297,14 @@ function getImpersonationBrands() {
         'booking'         => ['booking.com'],
         'booking.com'     => ['booking.com'],
         'western digital' => ['westerndigital.com', 'wd.com'],
-        'microsoft'       => ['microsoft.com', 'office.com', 'live.com', 'outlook.com', 'microsoftonline.com'],
+        // Bewusst OHNE live.com/outlook.com: das sind freie Postfachdomains.
+        // Wer dort ein Konto anlegt, setzt seinen Anzeigenamen selbst auf
+        // "Microsoft" - als Freibrief taugen sie nicht.
+        'microsoft'       => ['microsoft.com', 'office.com', 'microsoftonline.com'],
         'apple'           => ['apple.com', 'icloud.com'],
         'netflix'         => ['netflix.com'],
         'ebay'            => ['ebay.de', 'ebay.com'],
-        'google'          => ['google.com', 'google.de', 'googlemail.com', 'googlegroups.com'],
+        'google'          => ['google.com', 'google.de', 'googlegroups.com'],
         'dhl'             => ['dhl.de', 'dhl.com', 'dpdhl.com'],
         'dpd'             => ['dpd.de', 'dpd.com'],
         'ups'             => ['ups.com'],
@@ -1337,6 +1361,93 @@ function getImpersonationBrands() {
         'deutsche post'   => ['deutschepost.de', 'dpdhl.com'],
         'elster'          => ['elster.de'],
     ];
+}
+
+// ---------------------------------------------------------------------
+//  Der listenlose Gegenpart zu detectBrandImpersonation(). Eine Liste
+//  kann nie jede Bank, jedes Fintech und jede Regionalkasse kennen - die
+//  N26-Phishing-Mail vom 20.08. kam genau durch diese Luecke.
+//
+//  Hier nennt die KI die behauptete Marke, geprueft wird sie aber
+//  maschinell: steckt der Name in der tatsaechlichen Absenderdomain?
+//  Die KI liefert nur die Behauptung, das Urteil faellt Code - damit
+//  bleibt der Beleg unabhaengig genug fuer den Reject-Gate.
+//
+//  Der entscheidende Schutz ist die Kopplung an die Auth-Staerke: Firmen
+//  versenden staendig ueber Dienstleister (Mailchimp, Brevo, Sendgrid)
+//  und behaupten dabei ihren eigenen Namen aus fremder Domain. Solche
+//  Post ist SPF/DKIM-sauber. Nur wenn die Authentifizierung NICHT stark
+//  ist, zaehlt eine Abweichung als Beleg.
+// ---------------------------------------------------------------------
+function claimedBrandMismatch(array $mail, array $analysis) {
+    $token = brandToken((string)($analysis['claimed_brand'] ?? ''));
+
+    // Zu kurz ist keine Marke ("AG", "eG"), und Gattungsbegriffe sind es
+    // erst recht nicht - die wuerden gegen jede Domain "abweichen".
+    if (mb_strlen($token) < 3 || isGenericSenderClaim($token)) {
+        return false;
+    }
+
+    $domain = normalizeHost($mail['from_domain']);
+    if ($domain === '') {
+        return false;
+    }
+
+    // Traegt die Absenderdomain die Marke selbst? Dann passen Behauptung
+    // und Absender zusammen. Bewusst nur die letzten beiden Label und nur
+    // als ganzes Label: "paypal.com.evil.ru" darf sich nicht durch ein
+    // vorangestelltes "paypal" freikaufen, und "n26-sicherheit.de" ist
+    // eben nicht "n26".
+    foreach (organisationalLabels($domain) as $label) {
+        if (brandToken($label) === $token) {
+            return false;
+        }
+    }
+
+    // Bekannte, legitime Abweichung? Amazon versendet aus amazonses.com,
+    // Microsoft aus outlook.com. Dafuer - und nur noch dafuer - dient die
+    // Markenliste hier.
+    foreach (getImpersonationBrands() as $brand => $realDomains) {
+        $known = brandToken($brand);
+        if ($known === '' || mb_strpos($token, $known) === false) {
+            continue;
+        }
+        foreach ($realDomains as $rd) {
+            $rd = normalizeHost($rd);
+            if ($domain === $rd || endsWith($domain, '.' . $rd)) {
+                return false;
+            }
+        }
+    }
+
+    return evaluateAuthStrength($mail) !== 'strong';
+}
+
+// Normalisiert einen Marken- oder Domainnamen auf reine Buchstaben und
+// Ziffern in Kleinschreibung: "Trade Republic" -> "traderepublic".
+function brandToken($value) {
+    return mb_strtolower(preg_replace('/[^\p{L}\p{N}]+/u', '', (string)$value));
+}
+
+// Die letzten beiden Label einer Domain - eine Naeherung fuer die
+// registrierbare Domain, ohne Public Suffix List. Bei "n26.co.uk" greift
+// sie daneben; solche Faelle deckt die Markenliste oben ab.
+function organisationalLabels($domain) {
+    $parts = explode('.', $domain);
+    return array_slice($parts, -2);
+}
+
+// Wofuer sich halb Deutschland ausgibt, ist keine Marke. Ohne diese
+// Bremse wuerde jedes "Kundenservice" gegen jede Domain abweichen.
+function isGenericSenderClaim($token) {
+    static $generic = [
+        'bank', 'ihrebank', 'sparkasse2', 'support', 'kundenservice',
+        'kundendienst', 'service', 'team', 'info', 'noreply', 'kontakt',
+        'sicherheit', 'security', 'admin', 'administrator', 'buchhaltung',
+        'rechnung', 'versand', 'newsletter', 'mailer', 'postmaster',
+        'finanzamt2', 'onlinebanking', 'zahlungsdienst',
+    ];
+    return in_array($token, $generic, true);
 }
 
 // ---------------------------------------------------------------------
@@ -1506,6 +1617,7 @@ function logStats($requestId, $data) {
         // im Schattenmodus nachvollziehen, welche Mails abgewiesen wuerden.
         'evidence' => normalizeStringList($data['evidence'] ?? []),
         'reject_eligible' => !empty($data['reject_eligible']),
+        'claimed_brand' => mb_substr((string)($data['claimed_brand'] ?? ''), 0, 60),
     ];
 
     // Betreff und Body sind Inhaltsdaten - nur mitschreiben, wenn der
