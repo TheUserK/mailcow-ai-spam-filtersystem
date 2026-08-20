@@ -63,7 +63,29 @@ endpoint = https://openai.inference.de-txl.ionos.com/v1/chat/completions
 model = openai/gpt-oss-120b
 token = eyJ...
 cost_per_call = 0.00034
+reasoning_effort = low
+api_timeout = 25
 ```
+
+`reasoning_effort` and `api_timeout` exist because answer time is a property of
+the model, not of the code. Measured against IONOS:
+
+| Model | reasoning_effort | Answer time |
+|---|---|---|
+| `openai/gpt-oss-120b` | medium | 1.6 s |
+| `openai/gpt-oss-120b` | low | 0.5 s |
+| `Qwen/Qwen3.5-397B-A17B` | medium | 26.5 s |
+| `Qwen/Qwen3.5-397B-A17B` | low | 14.6 s |
+
+This matters more than it looks. The checker sits synchronously in the delivery
+path with four PHP workers, so sustained throughput is roughly
+`workers / answer time`. At 26 s that is nine mails a minute - fine on average,
+but a burst of twenty arriving together puts the last one past rspamd's
+`http_timeout`, and the filter fails open exactly when a spam wave hits.
+
+Leave `reasoning_effort` empty to let the provider decide (IONOS defaults to
+`medium`). Keep `api_timeout` times two below rspamd's `http_timeout`: the
+checker retries once, so a failing call blocks for twice the timeout.
 
 `cost_per_call` is what the budget guard divides `MONTHLY_BUDGET_EUR` by, so it
 has to match the model you are actually paying for - switching model does not

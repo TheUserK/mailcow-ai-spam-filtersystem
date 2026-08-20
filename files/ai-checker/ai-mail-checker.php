@@ -66,8 +66,20 @@ define('AI_MODEL',        providerSetting('model')    ?: AI_MODEL_DEFAULT);
 // ---------------------------------------------------------------------
 //  Timeouts (Sekunden)
 // ---------------------------------------------------------------------
-define('API_TIMEOUT',     20);
+// Wie lange die API brauchen darf. Haengt stark am Modell: gpt-oss-120b
+// antwortet in rund 1,5 s, Qwen3.5-397B je nach reasoning_effort in 15-27 s.
+// Rspamd bricht seinerseits nach http_timeout (Vorgabe 30 s) ab - dieser
+// Wert muss darunter bleiben, sonst wartet der Checker auf eine Antwort,
+// die niemand mehr entgegennimmt.
+define('API_TIMEOUT', providerSetting('api_timeout') !== ''
+    ? max(5, (int)providerSetting('api_timeout'))
+    : 20);
 define('CONNECT_TIMEOUT',  5);
+
+// low | medium | high. Steuert, wie lange das Modell vor der Antwort
+// nachdenkt - und damit direkt die Antwortzeit. Leer lassen heisst: Feld
+// nicht mitschicken, der Anbieter nimmt seine Vorgabe (bei IONOS medium).
+define('AI_REASONING_EFFORT', providerSetting('reasoning_effort'));
 
 // ---------------------------------------------------------------------
 //  Mailcow-DB (fuer interne-Mail-Erkennung)
@@ -699,6 +711,10 @@ PROMPT;
             ],
         ],
     ];
+
+    if (AI_REASONING_EFFORT !== '') {
+        $payload['reasoning_effort'] = AI_REASONING_EFFORT;
+    }
 
     // --- Ein Call, ein Retry. ---
     // Ausnahme: lehnt ein Anbieter das Schema mit einem 400er ab, wird
