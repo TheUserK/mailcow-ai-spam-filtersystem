@@ -25,7 +25,7 @@ else
     checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
     skip_score_above = 14.0,
     skip_score_below = -10.0,
-    http_timeout = 30.0,
+    http_timeout = 22.0,   -- muss unter Rspamds task_timeout (25s) bleiben
     log_only_mode = false,
     whitelist_domains = {},
     whitelist_senders = {},

@@ -11,7 +11,7 @@ ai_filter_settings = {
   skip_score_below = -10.0,
 
   -- HTTP timeout for AI check (seconds)
-  http_timeout = 30.0,
+  http_timeout = 22.0,   -- muss unter Rspamds task_timeout (25s) bleiben
 
   -- Log-only mode: log what the AI would have added but don't apply the score
   log_only_mode = false,

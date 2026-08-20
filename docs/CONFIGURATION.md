@@ -84,8 +84,15 @@ but a burst of twenty arriving together puts the last one past rspamd's
 `http_timeout`, and the filter fails open exactly when a spam wave hits.
 
 Leave `reasoning_effort` empty to let the provider decide (IONOS defaults to
-`medium`). Keep `api_timeout` times two below rspamd's `http_timeout`: the
-checker retries once, so a failing call blocks for twice the timeout.
+`medium`).
+
+`api_timeout` is a **total** budget, not a per-attempt one. The binding limit
+is not the module's `http_timeout` but rspamd's global `task_timeout`, 25 s on
+mailcow. When that expires rspamd forces a **soft reject** - the mail is
+deferred with a `4.7.1`, not merely delivered unscored. A retry after a full
+timeout would always blow past it, so the checker only asks a second time if
+there is time left in the budget. Keep `api_timeout` at 20 s or below unless
+you raise `task_timeout` in mailcow as well.
 
 `cost_per_call` is what the budget guard divides `MONTHLY_BUDGET_EUR` by, so it
 has to match the model you are actually paying for - switching model does not
