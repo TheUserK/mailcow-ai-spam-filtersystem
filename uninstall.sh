@@ -67,16 +67,19 @@ if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     echo -e "${GREEN}[OK]${NC} Groups config cleaned"
 fi
 
-# Remove PHP scripts + config.ini leftover (either may contain your API key:
-# ai-mail-checker.php as of v3, config.ini on pre-v3 installs)
-read -p "Delete ai-mail-checker.php, router.php and config.ini (contains your API key)? (y/N): " delete_php
+# Remove PHP scripts + config leftovers. Any of these can hold your API key:
+# ai-mail-checker.php as of v3, provider.conf and profiles/ once a provider
+# was switched, config.ini on pre-v3 installs.
+read -p "Delete ai-mail-checker.php, router.php, provider.conf and profiles (contain your API key)? (y/N): " delete_php
 if [[ $delete_php =~ ^[Yy]$ ]]; then
     rm -f data/ai-checker/*.php
     rm -f data/ai-checker/config.ini
+    rm -f data/ai-checker/provider.conf
+    rm -rf data/ai-checker/profiles
     rm -f data/ai-checker/Dockerfile
     echo -e "${GREEN}[OK]${NC} PHP scripts and config deleted"
 else
-    echo -e "${YELLOW}[INFO]${NC} PHP scripts and config.ini preserved (contains your API key)"
+    echo -e "${YELLOW}[INFO]${NC} PHP scripts, provider.conf and profiles preserved (contain your API key)"
 fi
 
 rm -f data/ai-checker/trusted_sender_profiles.json.example

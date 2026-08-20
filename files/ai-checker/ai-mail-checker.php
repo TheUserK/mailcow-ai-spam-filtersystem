@@ -25,12 +25,44 @@ ini_set('error_log', '/var/log/ai-checker/php-errors.log');
 header('Content-Type: application/json');
 
 // ---------------------------------------------------------------------
-//  KI-Anbieter. Die API ist OpenAI-kompatibel - jeder Anbieter mit
-//  diesem Format laesst sich hier eintragen.
+//  Provider-Profil. ai-filter-model.sh legt diese Datei an; fehlt sie,
+//  gelten die Vorgaben unten unveraendert weiter. Sie liegt im
+//  schreibgeschuetzt eingehaengten /app, gehoert root und ist 0600 -
+//  denn sie enthaelt den API-Token.
 // ---------------------------------------------------------------------
-define('AI_API_ENDPOINT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
-define('AI_API_TOKEN', '');
-define('AI_MODEL',        'openai/gpt-oss-120b');
+define('PROVIDER_CONF', '/app/provider.conf');
+
+function providerSetting($key) {
+    static $conf = null;
+
+    if ($conf === null) {
+        $conf = [];
+        if (is_readable(PROVIDER_CONF)) {
+            $parsed = parse_ini_file(PROVIDER_CONF, false, INI_SCANNER_RAW);
+            if (is_array($parsed)) {
+                $conf = $parsed;
+            }
+        }
+    }
+
+    $value = $conf[$key] ?? '';
+    return is_string($value) ? trim($value) : '';
+}
+
+// ---------------------------------------------------------------------
+//  KI-Anbieter. Die API ist OpenAI-kompatibel - jeder Anbieter mit
+//  diesem Format laesst sich hier eintragen. Die _DEFAULT-Konstanten
+//  sind der Auslieferungszustand; install.sh traegt den Token dort ein.
+//  Ein Profil in provider.conf hat Vorrang.
+// ---------------------------------------------------------------------
+define('AI_API_ENDPOINT_DEFAULT', 'https://openai.inference.de-txl.ionos.com/v1/chat/completions');
+define('AI_API_TOKEN_DEFAULT', '');
+define('AI_MODEL_DEFAULT',        'openai/gpt-oss-120b');
+
+define('AI_API_ENDPOINT', providerSetting('endpoint') ?: AI_API_ENDPOINT_DEFAULT);
+define('AI_API_TOKEN',    providerSetting('token')    ?: AI_API_TOKEN_DEFAULT);
+define('AI_MODEL',        providerSetting('model')    ?: AI_MODEL_DEFAULT);
+
 // ---------------------------------------------------------------------
 //  Timeouts (Sekunden)
 // ---------------------------------------------------------------------
@@ -50,8 +82,15 @@ define('MAILCOW_DB_USER', getenv('MAILCOW_DBUSER') ?: 'mailcow');
 define('STATS_LOG', '/var/log/ai-checker/stats.log');
 define('ERROR_LOG', '/var/log/ai-checker/errors.log');
 define('MONTHLY_BUDGET_EUR',    50);
-define('AVG_COST_PER_CALL_EUR', 0.00034);
-define('MAX_CALLS_PER_MONTH', (int)(MONTHLY_BUDGET_EUR / AVG_COST_PER_CALL_EUR));
+define('AVG_COST_PER_CALL_EUR',
+    providerSetting('cost_per_call') !== ''
+        ? (float)providerSetting('cost_per_call')
+        : 0.00034);
+// Ein kostenloser Anbieter (cost_per_call = 0) wuerde hier durch Null
+// teilen. Dann gibt es schlicht keine Budgetgrenze zu ziehen.
+define('MAX_CALLS_PER_MONTH', AVG_COST_PER_CALL_EUR > 0
+    ? (int)(MONTHLY_BUDGET_EUR / AVG_COST_PER_CALL_EUR)
+    : PHP_INT_MAX);
 define('BUDGET_FILE', '/var/log/ai-checker/monthly_budget.json');
 
 // Betreff und Body-Auszug in stats.log schreiben? Das sind Inhaltsdaten von
@@ -607,11 +646,52 @@ PROMPT;
             ['role' => 'user',   'content' => $userPrompt],
         ],
         'temperature' => 0.0,
-        'max_tokens'  => 600,
+        // max_tokens ist bei IONOS deprecated und faellt ohne Wert auf 16
+        // zurueck. Das Budget ist bewusst grosszuegig: Reasoning-Modelle
+        // denken erst und antworten dann - bei 600 stand das Urteil zwar
+        // laengst fest, aber das JSON brach mitten im "reasoning" ab.
+        // Abgerechnet wird ohnehin nur, was tatsaechlich erzeugt wird.
+        'max_completion_tokens' => 2000,
+        // Structured Outputs: das Modell KANN kein anderes Format mehr
+        // liefern. Ersetzt das Bitten im Systemprompt durch eine Zusage
+        // des Anbieters.
+        'response_format' => [
+            'type' => 'json_schema',
+            'json_schema' => [
+                'name'   => 'mail_verdict',
+                'strict' => true,
+                'schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'spam_probability' => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
+                        'confidence'       => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
+                        'category'         => [
+                            'type' => 'string',
+                            'enum' => [
+                                'legitimate', 'transactional', 'personal',
+                                'newsletter', 'marketing',
+                                'clickbait', 'spam', 'pharma', 'phishing', 'fraud',
+                            ],
+                        ],
+                        'red_flags' => ['type' => 'array', 'items' => ['type' => 'string']],
+                        'reasoning' => ['type' => 'string'],
+                    ],
+                    'required' => [
+                        'spam_probability', 'confidence', 'category',
+                        'red_flags', 'reasoning',
+                    ],
+                    'additionalProperties' => false,
+                ],
+            ],
+        ],
     ];
 
     // --- Ein Call, ein Retry. ---
-    $result = null; $httpCode = 0; $curlErr = '';
+    // Ausnahme: lehnt ein Anbieter das Schema mit einem 400er ab, wird
+    // genau einmal ohne response_format wiederholt. Nicht jeder
+    // OpenAI-kompatible Endpoint kann Structured Outputs, und ein
+    // Anbieterwechsel darf den Filter nicht stillegen.
+    $result = null; $httpCode = 0; $curlErr = ''; $schemaDropped = false;
     for ($attempt = 1; $attempt <= 2; $attempt++) {
         $ch = curl_init(AI_API_ENDPOINT);
         curl_setopt_array($ch, [
@@ -632,6 +712,21 @@ PROMPT;
         curl_close($ch);
 
         if ($httpCode === 200) break;
+
+        if ($httpCode === 400 && !$schemaDropped && isset($payload['response_format'])) {
+            unset($payload['response_format']);
+            $schemaDropped = true;
+            logError($requestId, 'Provider rejected response_format - retrying without schema', [
+                'endpoint' => AI_API_ENDPOINT,
+                'model'    => AI_MODEL,
+            ]);
+            // Zaehlt nicht als Netzwerkversuch: sonst haette eine Mail bei
+            // einem spaeteren 5xx drei Anlaeufe a API_TIMEOUT, und rspamd
+            // liefe uns vorher in seinen eigenen http_timeout.
+            $attempt--;
+            continue;
+        }
+
         if ($httpCode >= 400 && $httpCode < 500) break;  // Client-Fehler: kein Retry
         usleep(500 * 1000);
     }
@@ -1181,11 +1276,11 @@ function getImpersonationBrands() {
         'booking'         => ['booking.com'],
         'booking.com'     => ['booking.com'],
         'western digital' => ['westerndigital.com', 'wd.com'],
-        'microsoft'       => ['microsoft.com', 'office.com', 'live.com'],
+        'microsoft'       => ['microsoft.com', 'office.com', 'live.com', 'outlook.com', 'microsoftonline.com'],
         'apple'           => ['apple.com', 'icloud.com'],
         'netflix'         => ['netflix.com'],
         'ebay'            => ['ebay.de', 'ebay.com'],
-        'google'          => ['google.com', 'google.de'],
+        'google'          => ['google.com', 'google.de', 'googlemail.com', 'googlegroups.com'],
         'dhl'             => ['dhl.de', 'dhl.com', 'dpdhl.com'],
         'dpd'             => ['dpd.de', 'dpd.com'],
         'ups'             => ['ups.com'],
@@ -1201,7 +1296,68 @@ function getImpersonationBrands() {
         'postbank'        => ['postbank.de'],
         'telekom'         => ['telekom.de', 't-online.de'],
         'vodafone'        => ['vodafone.de'],
+        'o2'              => ['o2online.de', 'telefonica.de'],
+        '1und1'           => ['1und1.de', 'ionos.de'],
+
+        // Direktbanken und Fintechs. Genau die Ecke, aus der die
+        // "Ihr Konto wurde gesperrt"-Mails kommen - und die hier lange
+        // gefehlt hat, weshalb solche Mails keine Struktur-Evidenz
+        // bekamen und damit nie abgewiesen werden konnten.
+        'n26'             => ['n26.com', 'n26.de'],
+        'revolut'         => ['revolut.com'],
+        'wise'            => ['wise.com', 'transferwise.com'],
+        'trade republic'  => ['traderepublic.com'],
+        'traderepublic'   => ['traderepublic.com'],
+        'klarna'          => ['klarna.com', 'klarna.de'],
+        'comdirect'       => ['comdirect.de'],
+        'consorsbank'     => ['consorsbank.de'],
+        'targobank'       => ['targobank.de'],
+        'norisbank'       => ['norisbank.de'],
+        'hypovereinsbank' => ['hypovereinsbank.de', 'unicredit.de'],
+        'santander'       => ['santander.de', 'santander.com'],
+        'sparda'          => ['sparda.de'],
+        'bunq'            => ['bunq.com'],
+
+        // Krypto-Boersen: Kontosperrungen und "Verifizierung noetig"
+        'coinbase'        => ['coinbase.com'],
+        'binance'         => ['binance.com'],
+        'kraken'          => ['kraken.com'],
+
+        // Plattformen mit Konto und Zahlungsdaten
+        'whatsapp'        => ['whatsapp.com'],
+        'instagram'       => ['instagram.com'],
+        'facebook'        => ['facebook.com', 'facebookmail.com'],
+        'linkedin'        => ['linkedin.com'],
+        'spotify'         => ['spotify.com'],
+        'disney'          => ['disney.com', 'disneyplus.com'],
+        'adobe'           => ['adobe.com'],
+        'zalando'         => ['zalando.de', 'zalando.com'],
+
+        // Post und Behoerden
+        'deutsche post'   => ['deutschepost.de', 'dpdhl.com'],
+        'elster'          => ['elster.de'],
     ];
+}
+
+// ---------------------------------------------------------------------
+//  Wird die Marke wirklich behauptet - oder steckt sie nur zufaellig in
+//  einem laengeren Wort? "ing" in "Marketing", "Holding", "Consulting",
+//  "ups" in "Backups", "google" in "googlegroups.com": mit blossem
+//  Teilstring-Vergleich bekam jede dieser voellig legitimen Firmen einen
+//  Impersonation-Score von 7.0 und damit die Reject-Evidenz.
+//
+//  Regel: unmittelbar vor und nach der Marke darf kein BUCHSTABE stehen.
+//  Ziffern und Trennzeichen zaehlen als Grenze, damit "paypal-service@",
+//  "N26" und "1und1" weiter greifen.
+//
+//  Bewusst in Kauf genommen: "paypalservice@..." ohne Trennzeichen wird
+//  so nicht mehr erkannt. Das ist der richtige Tausch - eine faelschlich
+//  abgewiesene Geschaeftsmail wiegt schwerer als ein Phishing, das die KI
+//  ohnehin noch bewertet, nur eben ohne automatisches Reject.
+// ---------------------------------------------------------------------
+function brandIsClaimed($claimSurface, $brand) {
+    $pattern = '/(?<![\p{L}])' . preg_quote($brand, '/') . '(?![\p{L}])/u';
+    return (bool)preg_match($pattern, $claimSurface);
 }
 
 // ---------------------------------------------------------------------
@@ -1225,7 +1381,7 @@ function detectBrandImpersonation(array $mail) {
 
     foreach ($brands as $brand => $realDomains) {
         // Wird die Marke im Absendernamen ueberhaupt behauptet?
-        if (mb_strpos($claimSurface, $brand) === false) {
+        if (!brandIsClaimed($claimSurface, $brand)) {
             continue;
         }
 

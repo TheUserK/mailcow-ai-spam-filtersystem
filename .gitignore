@@ -12,3 +12,7 @@ trusted_sender_profiles.json
 
 # Backups, die install.sh anlegt
 docker-compose.override.yml.backup.*
+
+# Anbieterprofil des Filters: enthaelt den API-Token
+provider.conf
+profiles/
