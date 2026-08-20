@@ -18,6 +18,8 @@ Usage: ai-filter-model.sh [OPTION]
   --model ID         switch to another model of the same provider
   --use PROVIDER     switch provider: ionos | hetzner
   --cost EUR         cost per API call, feeds the monthly budget guard
+  --reasoning LEVEL  low | medium | high - trades answer time for thinking
+  --timeout SEC      how long the API may take (must stay under rspamd's 30s)
   --test             send one request with the current settings, change nothing
   --reset            drop the profile, back to the shipped defaults
   -h, --help         this text
@@ -61,6 +63,8 @@ while [[ $# -gt 0 ]]; do
         --model)   ACTION=setmodel; ARG="${2:-}"; shift 2 ;;
         --use)     ACTION=useprovider; ARG="${2:-}"; shift 2 ;;
         --cost)    ACTION=setcost; ARG="${2:-}"; shift 2 ;;
+        --reasoning) ACTION=setreasoning; ARG="${2:-}"; shift 2 ;;
+        --timeout) ACTION=settimeout; ARG="${2:-}"; shift 2 ;;
         --test)    ACTION=test; shift ;;
         --reset)   ACTION=reset; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -111,6 +115,8 @@ ENDPOINT=$(setting endpoint AI_API_ENDPOINT_DEFAULT)
 MODEL=$(setting model AI_MODEL_DEFAULT)
 TOKEN=$(setting token AI_API_TOKEN_DEFAULT)
 COST=$(conf_value cost_per_call || echo "0.00034")
+REASONING=$(conf_value reasoning_effort || echo "")
+TIMEOUT=$(conf_value api_timeout || echo "20")
 
 provider_name() {
     case "$1" in
@@ -139,16 +145,17 @@ list_models() {
 # erst im Betrieb an fehlgeschlagenen Analysen zeigt.
 test_call() {
     local endpoint="$1" token="$2" model="$3"
-    curl -s --max-time 30 "$endpoint" \
+    curl -s --max-time 120 "$endpoint" \
         -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-        -d "$(jq -n --arg m "$model" '{
+        -d "$(jq -n --arg m "$model" --arg r "${REASONING:-}" '{
               model: $m,
+              reasoning_effort: (if $r == "" then null else $r end),
               messages: [{role:"user", content:"Antworte im vorgegebenen Schema mit ok=true."}],
               max_completion_tokens: 200,
               response_format: {type:"json_schema", json_schema:{name:"probe", strict:true,
                 schema:{type:"object", properties:{ok:{type:"boolean"}},
                         required:["ok"], additionalProperties:false}}}
-            }')"
+            } | with_entries(select(.value != null))')"
 }
 
 run_test() {
@@ -197,6 +204,7 @@ run_test() {
 
 write_profile() {
     local endpoint="$1" model="$2" token="$3" cost="$4"
+    local reasoning="${5-$REASONING}" timeout="${6-$TIMEOUT}"
     mkdir -p "$PROFILE_DIR"
     umask 077
     cat > "$CONF" <<EOF
@@ -207,6 +215,8 @@ endpoint = $endpoint
 model = $model
 token = $token
 cost_per_call = $cost
+reasoning_effort = $reasoning
+api_timeout = $timeout
 EOF
     chmod 600 "$CONF"
     chown root:root "$CONF" 2>/dev/null || true
@@ -234,6 +244,8 @@ status)
     echo    "Modell:   $MODEL"
     echo -e "Token:    $(mask_token "$TOKEN")"
     echo    "Kosten:   $COST EUR pro Anfrage"
+    echo    "Reasoning: ${REASONING:-(Vorgabe des Anbieters)}"
+    echo    "Timeout:  ${TIMEOUT}s"
     if [[ -d "$PROFILE_DIR" ]]; then
         echo "Profile:  $(ls "$PROFILE_DIR"/*.token 2>/dev/null | xargs -rn1 basename | sed 's/\.token$//' | paste -sd', ' -)"
     fi
@@ -384,6 +396,54 @@ setcost)
     echo
 
     write_profile "$ENDPOINT" "$MODEL" "$TOKEN" "$ARG"
+    echo -e "${GREEN}[OK]${NC}   Profil aktualisiert"
+    restart_checker
+    ;;
+
+setreasoning)
+    if [[ ! $ARG =~ ^(low|medium|high)$ ]]; then
+        echo -e "${RED}--reasoning braucht low, medium oder high${NC}"
+        exit 1
+    fi
+    echo
+    echo "Reasoning: ${REASONING:-(Vorgabe)}  ->  $ARG"
+    echo -e "${DIM}Antwortzeit messen ...${NC}"
+    START=$(date +%s)
+    if ! REASONING="$ARG" run_test "$ENDPOINT" "$TOKEN" "$MODEL" >/dev/null 2>&1; then
+        echo -e "${RED}[FAIL]${NC} Testanfrage fehlgeschlagen - nichts geaendert"
+        exit 1
+    fi
+    ELAPSED=$(( $(date +%s) - START ))
+    echo -e "${GREEN}[OK]${NC}   Testanfrage in ${ELAPSED}s"
+    # Eine Messung, die ueber dem Timeout liegt, wuerde im Betrieb jede
+    # Mail unbewertet lassen - lieber hier sagen als spaeter im Log finden.
+    if (( ELAPSED > TIMEOUT )); then
+        echo -e "${YELLOW}[WARN]${NC} laenger als das Timeout von ${TIMEOUT}s."
+        echo    "        Erhoehe es mit --timeout, sonst faellt der Filter offen aus."
+    fi
+    write_profile "$ENDPOINT" "$MODEL" "$TOKEN" "$COST" "$ARG" "$TIMEOUT"
+    echo -e "${GREEN}[OK]${NC}   Profil aktualisiert"
+    restart_checker
+    ;;
+
+settimeout)
+    if [[ ! $ARG =~ ^[0-9]+$ ]] || (( ARG < 5 )); then
+        echo -e "${RED}--timeout braucht eine ganze Zahl ab 5${NC}"
+        exit 1
+    fi
+    # Der Checker versucht es zweimal. Zwei volle Timeouts muessen unter
+    # Rspamds http_timeout bleiben, sonst wartet er auf eine Antwort, die
+    # niemand mehr entgegennimmt - genau der Fall vom 20.08.
+    if (( ARG * 2 >= 30 )); then
+        echo
+        echo -e "${YELLOW}[WARN]${NC} Rspamd wartet nur 30s auf den Checker, und der Checker"
+        echo    "        versucht es bei einem Fehler ein zweites Mal - im schlimmsten"
+        echo    "        Fall also $((ARG * 2))s. Erhoehe http_timeout entsprechend in:"
+        echo    "        data/conf/rspamd/lua/ai-filter-settings.lua"
+    fi
+    echo
+    echo "Timeout: ${TIMEOUT}s  ->  ${ARG}s"
+    write_profile "$ENDPOINT" "$MODEL" "$TOKEN" "$COST" "$REASONING" "$ARG"
     echo -e "${GREEN}[OK]${NC}   Profil aktualisiert"
     restart_checker
     ;;

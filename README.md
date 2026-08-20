@@ -122,6 +122,8 @@ ai-filter-model.sh                          # what is active right now
 ai-filter-model.sh --models                 # what this provider offers
 ai-filter-model.sh --model Qwen/Qwen3.5-397B-A17B
 ai-filter-model.sh --cost 0.0016            # price per call, feeds the budget guard
+ai-filter-model.sh --reasoning low          # less thinking, much faster answers
+ai-filter-model.sh --timeout 25             # how long the API may take
 ai-filter-model.sh --test                   # probe without changing anything
 ai-filter-model.sh --reset                  # back to the shipped defaults
 ```
