@@ -1438,14 +1438,25 @@ function claimedBrandMismatch(array $mail, array $analysis) {
         return false;
     }
 
-    // Traegt die Absenderdomain die Marke selbst? Dann passen Behauptung
-    // und Absender zusammen. Bewusst nur die letzten beiden Label und nur
-    // als ganzes Label: "paypal.com.evil.ru" darf sich nicht durch ein
-    // vorangestelltes "paypal" freikaufen, und "n26-sicherheit.de" ist
-    // eben nicht "n26".
-    foreach (organisationalLabels($domain) as $label) {
-        if (brandToken($label) === $token) {
+    // Traegt die Absenderdomain die Marke? Firmennamen sind fast nie mit
+    // ihrer Domain identisch: "Albana Hotel & Suites Silvaplana" versendet
+    // aus hotelalbana.ch. Ein Vergleich auf Gleichheit hat genau diesen
+    // echten Newsletter am 20.08. als Betrug ausgewiesen.
+    //
+    // Deshalb wortweise: Gattungsbegriffe raus, und wenn ein wesentliches
+    // Wort in der Domain vorkommt, gehoeren Behauptung und Absender
+    // zusammen. Geprueft wird nur gegen die letzten beiden Label, damit
+    // "paypal.com.evil.ru" sich nicht durch das vorangestellte "paypal"
+    // freikaufen kann.
+    $orgDomain = brandToken(implode('', organisationalLabels($domain)));
+    if ($orgDomain !== '') {
+        if (mb_strpos($orgDomain, $token) !== false) {
             return false;
+        }
+        foreach (significantBrandWords($analysis['claimed_brand'] ?? '') as $word) {
+            if (mb_strpos($orgDomain, $word) !== false) {
+                return false;
+            }
         }
     }
 
@@ -1466,6 +1477,35 @@ function claimedBrandMismatch(array $mail, array $analysis) {
     }
 
     return evaluateAuthStrength($mail) !== 'strong';
+}
+
+// Zerlegt eine Markenbehauptung in ihre aussagekraeftigen Woerter.
+// Rechtsformen und Branchenwoerter fliegen raus - "Hotel" oder "GmbH"
+// steckt in tausenden Domains und wuerde jede Pruefung entwerten.
+// Uebrig bleibt, was die Firma tatsaechlich identifiziert.
+function significantBrandWords($claim) {
+    static $filler = [
+        'hotel', 'hotels', 'suites', 'resort', 'gmbh', 'ag', 'sa', 'sarl',
+        'kg', 'ohg', 'ug', 'ltd', 'llc', 'inc', 'bv', 'nv', 'oy', 'aps',
+        'group', 'gruppe', 'holding', 'company', 'team', 'service',
+        'services', 'shop', 'store', 'online', 'deutschland', 'germany',
+        'schweiz', 'austria', 'europe', 'international', 'the', 'und', 'and',
+    ];
+
+    $words = preg_split('/[^\p{L}\p{N}]+/u', mb_strtolower((string)$claim), -1, PREG_SPLIT_NO_EMPTY);
+    $out = [];
+    foreach ($words as $w) {
+        // Unter vier Zeichen ist ein Wort zu unspezifisch, um eine
+        // Uebereinstimmung zu tragen - ausser es traegt eine Ziffer
+        // ("N26", "1und1"), dann ist es gerade sehr spezifisch.
+        if (in_array($w, $filler, true)) {
+            continue;
+        }
+        if (mb_strlen($w) >= 4 || preg_match('/\d/', $w)) {
+            $out[] = $w;
+        }
+    }
+    return $out;
 }
 
 // Normalisiert einen Marken- oder Domainnamen auf reine Buchstaben und
@@ -1585,11 +1625,29 @@ function evaluateAuthStrength(array $mail) {
         }
     }
 
-    if ($failCount > 0 || !empty($mail['signals']['forged_sender']) || !empty($mail['signals']['from_neq_envfrom'])) {
+    // DMARC schlaegt alles andere. Besteht es, ist die From-Domain
+    // nachweislich autorisiert - dann ist ein abweichender Envelope kein
+    // Verdachtsmoment, sondern der Normalfall.
+    //
+    // Genau daran ist der Hotel-Newsletter am 20.08. gescheitert: Campaign
+    // Monitor versendet als "...@cmail19.com" mit From "hotel@hotelalbana.ch".
+    // Rspamd setzt dafuer FORGED_SENDER und FROM_NEQ_ENVFROM - bei JEDEM
+    // Newsletter-Dienstleister. Diese Pruefung lief vor der DMARC-Abfrage
+    // und stufte deshalb sauber authentifizierte Post als verdaechtig ein.
+    if (($mail['auth']['dmarc'] ?? '') === 'pass') {
+        return 'strong';
+    }
+
+    if ($failCount > 0) {
         return 'suspicious';
     }
 
-    if ($passCount >= 2 || ($mail['auth']['dmarc'] ?? '') === 'pass') {
+    // Ohne DMARC-Beleg bleibt ein abweichender Absender ein Warnzeichen.
+    if (!empty($mail['signals']['forged_sender']) || !empty($mail['signals']['from_neq_envfrom'])) {
+        return 'suspicious';
+    }
+
+    if ($passCount >= 2) {
         return 'strong';
     }
 

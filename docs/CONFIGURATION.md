@@ -36,10 +36,24 @@ register at `outlook.com` and set their display name to "Microsoft".
 checks whether that name appears as a label of the sender's organisational
 domain. A list can never hold every regional bank; this path covers the rest.
 
-It only counts as evidence when authentication is **not** strong. Companies
-send through Mailchimp, Brevo and Sendgrid all the time and claim their own
-name from a foreign domain - but that mail is SPF/DKIM-clean. Without this
-coupling the check would fire on every ESP customer.
+It only counts as evidence when authentication is **not** strong, and **a
+passing DMARC alone makes it strong**. Every ESP - Campaign Monitor, Mailchimp,
+Brevo - puts its own bounce domain in the envelope, so rspamd raises
+`FORGED_SENDER` and `FROM_NEQ_ENVFROM` on perfectly legitimate newsletters. If
+those signals could still mark a DMARC-passing mail suspicious, the coupling
+would fail on exactly the senders it exists to protect.
+
+Matching is word-based, not label equality: companies are rarely named after
+their domain. "Albana Hotel & Suites Silvaplana" sends from `hotelalbana.ch`,
+and `albana` is what ties the two together. Filler words (`hotel`, `gmbh`,
+`group`, `deutschland`, ...) are dropped first so they cannot carry a match.
+
+The known limit: a lookalike domain that contains the brand name escapes this
+path - `sparkasse-tan.info` claiming "Sparkasse" is suppressed here. That is
+deliberate, because the strict alternative rejected real mail, and the list
+path catches those cases anyway. Only an *unlisted* brand with a lookalike
+domain slips through both, and there the AI still scores it - it just is not
+rejected automatically.
 
 The two never stack: if the list already matched, the generic path stays quiet,
 so one fact cannot pose as two independent pieces of evidence.
