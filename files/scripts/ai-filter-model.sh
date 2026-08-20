@@ -17,6 +17,7 @@ Usage: ai-filter-model.sh [OPTION]
   --models           list the models the active provider offers
   --model ID         switch to another model of the same provider
   --use PROVIDER     switch provider: ionos | hetzner
+  --cost EUR         cost per API call, feeds the monthly budget guard
   --test             send one request with the current settings, change nothing
   --reset            drop the profile, back to the shipped defaults
   -h, --help         this text
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --models)  ACTION=models; shift ;;
         --model)   ACTION=setmodel; ARG="${2:-}"; shift 2 ;;
         --use)     ACTION=useprovider; ARG="${2:-}"; shift 2 ;;
+        --cost)    ACTION=setcost; ARG="${2:-}"; shift 2 ;;
         --test)    ACTION=test; shift ;;
         --reset)   ACTION=reset; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -96,6 +98,10 @@ conf_value() {
 php_default() {
     grep -oP "define\('$1',\s*'\K[^']*" "$CHECKER" 2>/dev/null | head -1
 }
+monthly_budget() {
+    grep -oP "define\('MONTHLY_BUDGET_EUR',\s*\K[0-9.]+" "$CHECKER" 2>/dev/null | head -1
+}
+
 setting() {
     local from_conf; from_conf=$(conf_value "$1" || true)
     if [[ -n "$from_conf" ]]; then echo "$from_conf"; else php_default "$2"; fi
@@ -270,6 +276,9 @@ setmodel)
     echo    "sind gegen das bisherige Modell kalibriert. Ein anderes Modell meint"
     echo    "mit derselben Zahl nicht dasselbe - beobachte ai-filter-log.sh -R."
     echo
+    echo -e "${YELLOW}Hinweis:${NC} cost_per_call bleibt bei $COST EUR. Der Preis haengt am"
+    echo    "Modell - passe ihn bei Bedarf an: ai-filter-model.sh --cost <EUR>"
+    echo
     write_profile "$ENDPOINT" "$ARG" "$TOKEN" "$COST"
     echo -e "${GREEN}[OK]${NC}   Profil geschrieben: $MAILCOW_DIR/$CONF"
     restart_checker
@@ -351,6 +360,31 @@ useprovider)
     write_profile "$NEW_ENDPOINT" "$NEW_MODEL" "$NEW_TOKEN" "$NEW_COST"
     echo
     echo -e "${GREEN}[OK]${NC}   $ACTIVE  ->  $ARG ($NEW_MODEL)"
+    restart_checker
+    ;;
+
+setcost)
+    if [[ ! $ARG =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo -e "${RED}--cost braucht eine Zahl${NC}, z.B. 0.0016 (oder 0 fuer kostenlos)"
+        exit 1
+    fi
+
+    BUDGET=$(monthly_budget)
+    BUDGET=${BUDGET:-50}
+
+    echo
+    echo "Kosten pro Anfrage: $COST  ->  $ARG EUR"
+    if [[ "$ARG" == "0" || "$ARG" == "0.0" ]]; then
+        echo "Budgetbremse: aus (kostenloser Anbieter)"
+    else
+        # Die Bremse zaehlt Anfragen, nicht Euro - also ausrechnen, wie
+        # viele das beim neuen Preis sind. Sonst ist die Zahl bedeutungslos.
+        echo "Budgetbremse: $BUDGET EUR entsprechen jetzt $(awk -v b="$BUDGET" -v c="$ARG" 'BEGIN{printf "%d", b/c}') Anfragen pro Monat"
+    fi
+    echo
+
+    write_profile "$ENDPOINT" "$MODEL" "$TOKEN" "$ARG"
+    echo -e "${GREEN}[OK]${NC}   Profil aktualisiert"
     restart_checker
     ;;
 
