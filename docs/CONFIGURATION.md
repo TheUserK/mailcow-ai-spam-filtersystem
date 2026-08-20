@@ -65,6 +65,12 @@ token = eyJ...
 cost_per_call = 0.00034
 ```
 
+`cost_per_call` is what the budget guard divides `MONTHLY_BUDGET_EUR` by, so it
+has to match the model you are actually paying for - switching model does not
+change it on its own. `ai-filter-model.sh --cost 0.0016` sets it and prints how
+many calls per month that works out to. `0` disables the limit, for a provider
+that does not charge.
+
 Do not write this file by hand - `ai-filter-model.sh` creates it, tests the
 settings against the live API before writing, and sets `root`/`0600` because
 the file holds your API token. `ai-filter-healthcheck.sh` fails if those
