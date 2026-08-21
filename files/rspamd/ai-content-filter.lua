@@ -14,22 +14,41 @@ local rspamd_logger = require "rspamd_logger"
 local rspamd_http = require "rspamd_http"
 local ucl = require "ucl"
 
--- Load settings
+-- Load settings.
+--
+-- Die Datei gehoert dem Betreiber - install.sh legt sie nur an, wenn sie
+-- fehlt. Deshalb kann sie aelter sein als dieses Skript und Schluessel
+-- nicht kennen, die spaeter dazugekommen sind. Fruehere Fassungen zogen
+-- die Vorgaben nur, wenn die Datei GANZ fehlschlug; ein einzelner
+-- fehlender Schluessel blieb nil und landete so in der HTTP-Anfrage.
+-- Darum jetzt: Vorgaben immer definieren, Datei darueberlegen.
+local defaults = {
+  checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
+  skip_score_above = 14.0,
+  skip_score_below = -10.0,
+  http_timeout = 22.0,   -- muss unter Rspamds task_timeout (25s) bleiben
+  log_only_mode = false,
+  whitelist_domains = {},
+  whitelist_senders = {},
+}
+
 local settings_path = '/etc/rspamd/lua/ai-filter-settings.lua'
 local settings_chunk = loadfile(settings_path)
 if settings_chunk then
   settings_chunk()
 else
   rspamd_logger.errx(rspamd_config, 'AI Filter: Cannot load settings from %s, using defaults', settings_path)
-  ai_filter_settings = {
-    checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
-    skip_score_above = 14.0,
-    skip_score_below = -10.0,
-    http_timeout = 22.0,   -- muss unter Rspamds task_timeout (25s) bleiben
-    log_only_mode = false,
-    whitelist_domains = {},
-    whitelist_senders = {},
-  }
+end
+
+if type(ai_filter_settings) ~= 'table' then
+  ai_filter_settings = {}
+end
+
+for key, value in pairs(defaults) do
+  if ai_filter_settings[key] == nil then
+    ai_filter_settings[key] = value
+    rspamd_logger.infox(rspamd_config, 'AI Filter: %s not set in settings, using default', key)
+  end
 end
 
 local cfg = ai_filter_settings

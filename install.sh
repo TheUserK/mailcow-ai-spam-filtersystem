@@ -317,13 +317,12 @@ if [[ ! -f "data/conf/rspamd/lua/ai-filter-settings.lua" ]]; then
     cp "$SCRIPT_DIR/files/rspamd/ai-filter-settings.lua.template" data/conf/rspamd/lua/ai-filter-settings.lua
     chmod 644 data/conf/rspamd/lua/ai-filter-settings.lua
     echo -e "${GREEN}[OK]${NC} AI filter settings created"
-elif [[ "${FORCE_REPLACE:-}" == "true" ]]; then
-    cp data/conf/rspamd/lua/ai-filter-settings.lua \
-       "data/conf/rspamd/lua/ai-filter-settings.lua.backup.$(date +%s)"
-    cp "$SCRIPT_DIR/files/rspamd/ai-filter-settings.lua.template" data/conf/rspamd/lua/ai-filter-settings.lua
-    chmod 644 data/conf/rspamd/lua/ai-filter-settings.lua
-    echo -e "${GREEN}[OK]${NC} AI filter settings replaced (backup kept)"
 else
+    # Diese Datei gehoert dem Betreiber, nicht der Installation: hier stehen
+    # whitelist_domains, das Score-Band, log_only_mode - und http_timeout,
+    # das ai-filter-model.sh --timeout mitpflegt. --reinstall hat sie frueher
+    # durch die Vorlage ersetzt und damit die Timeout-Kette zerrissen.
+    # Fehlende Schluessel ergaenzt das Lua-Skript zur Laufzeit selbst.
     echo -e "${GREEN}[OK]${NC} Existing ai-filter-settings.lua preserved"
 fi
 
