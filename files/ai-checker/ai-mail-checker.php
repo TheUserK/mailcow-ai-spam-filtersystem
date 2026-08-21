@@ -227,6 +227,7 @@ logStats($requestId, [
     'evidence' => $result['evidence'] ?? [],
     'reject_eligible' => !empty($result['reject_eligible']),
     'claimed_brand' => $result['claimed_brand'] ?? '',
+    'verified_brand' => $result['verified_brand'] ?? '',
     'matched_profile' => $localResult['matched_profile'] ?? '',
     'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
     'url_domains' => $mail['url_domains'],
@@ -858,10 +859,12 @@ PROMPT;
     // Die KI allein reicht nicht: sie kann sich irren, und ein Reject ist die
     // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
     $strong = strongEvidence($evidence);
+    $verifiedBrand = verifiedBrandSender($mail);
     $rejectEligible = $policy['may_reject']
         && $confidence >= 0.80
         && !empty($strong)
         && empty($localContext['matched_profile'])
+        && $verifiedBrand === ''
         && $mail['in_reply_to'] === '';
 
     $ceiling = ($rejectEligible && AI_MAY_REJECT)
@@ -905,6 +908,7 @@ PROMPT;
         'evidence'        => $evidence,
         'reject_eligible' => $rejectEligible,
         'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
+        'verified_brand'  => $verifiedBrand,
     ];
 }
 
@@ -983,6 +987,43 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
 
     return $evidence;
+}
+
+// ---------------------------------------------------------------------
+//  Kommt die Mail nachweislich VON der Marke, deren Domain sie traegt?
+//
+//  Die Markenliste haelt zu jeder Marke ihre echten Absenderdomains. Passt
+//  eine From-Domain dazu, wirft detectBrandImpersonation() bisher einfach
+//  null zurueck - die Erkenntnis "das ist wirklich Google" verpuffte.
+//
+//  Sie ist aber das Gegenstueck zu matched_profile und gehoert genauso
+//  behandelt: Eine per DMARC beglaubigte Mail von google.com IST Google
+//  und darf nicht abgewiesen werden, egal was in ihr verlinkt ist.
+//
+//  Am 21.08. wurde genau so eine Mail verworfen. Sie verlinkte
+//  myaccount.google.com, store.google.com, g.co und c.gle - allesamt
+//  Google - und Googles eigener Kurzdienst steht auf einer Phishing-
+//  Blockliste, weil Phisher ihn missbrauchen. Der Beleg war technisch
+//  richtig und die Schlussfolgerung trotzdem falsch.
+//
+//  Ein Faelscher kommt hier nicht durch: ohne bestandenes DMARC fuer die
+//  echte Markendomain ist die Auth-Staerke nie 'strong'.
+// ---------------------------------------------------------------------
+function verifiedBrandSender(array $mail) {
+    $domain = normalizeHost($mail['from_domain']);
+    if ($domain === '' || evaluateAuthStrength($mail) !== 'strong') {
+        return '';
+    }
+
+    foreach (getImpersonationBrands() as $brand => $realDomains) {
+        foreach ($realDomains as $rd) {
+            $rd = normalizeHost($rd);
+            if ($domain === $rd || endsWith($domain, '.' . $rd)) {
+                return $brand;
+            }
+        }
+    }
+    return '';
 }
 
 // ---------------------------------------------------------------------
@@ -1746,6 +1787,9 @@ function logStats($requestId, $data) {
         'evidence' => normalizeStringList($data['evidence'] ?? []),
         'reject_eligible' => !empty($data['reject_eligible']),
         'claimed_brand' => mb_substr((string)($data['claimed_brand'] ?? ''), 0, 60),
+        // Wer hier steht, ist per DMARC als diese Marke beglaubigt und
+        // wird nie abgewiesen - das will man im Log sehen koennen.
+        'verified_brand' => mb_substr((string)($data['verified_brand'] ?? ''), 0, 40),
     ];
 
     // Betreff und Body sind Inhaltsdaten - nur mitschreiben, wenn der
