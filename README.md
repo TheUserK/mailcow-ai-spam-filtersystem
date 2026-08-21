@@ -179,6 +179,7 @@ ai-filter-log.sh -R               # Only mail that qualifies for rejection
 ai-filter-log.sh -c clickbait     # Only one category
 ai-filter-log.sh -f               # Follow live
 ai-filter-log.sh -r -n 40         # Raw JSON, same as tail | jq
+ai-filter-log.sh -n 500           # Reaches back into the rotated logs (7 days)
 ai-filter-log.sh -e               # errors.log instead
 
 ai-filter-stats.sh                # Summary: sources, categories, score spread, budget
