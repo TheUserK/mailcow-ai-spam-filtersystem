@@ -857,9 +857,10 @@ PROMPT;
     // Ein Reject verlangt die Zustimmung einer zweiten, unabhaengigen Quelle.
     // Die KI allein reicht nicht: sie kann sich irren, und ein Reject ist die
     // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
+    $strong = strongEvidence($evidence);
     $rejectEligible = $policy['may_reject']
         && $confidence >= 0.80
-        && !empty($evidence)
+        && !empty($strong)
         && empty($localContext['matched_profile'])
         && $mail['in_reply_to'] === '';
 
@@ -982,6 +983,30 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
 
     return $evidence;
+}
+
+// ---------------------------------------------------------------------
+//  Nicht jeder Beleg wiegt gleich schwer, der Reject-Gate fragte aber nur
+//  "ist ueberhaupt einer da". Drei Klassen stuetzen sich auf eine externe,
+//  vom Absender nicht beeinflussbare Quelle - eine gepflegte Markenliste,
+//  eine Reputations-Blockliste, eine gefaehrliche Dateiendung. Die duerfen
+//  eine Ablehnung allein tragen.
+//
+//  Die uebrigen sind Indizien. "brand-claim-mismatch" hat in der Praxis
+//  dreimal gefeuert und lag dreimal daneben: eine Reederei ("Scenic
+//  Eclipse" aus mail.scenic.eu), eine Schule ("Deutsche Schule Malaga"
+//  aus dinantia.email) und ein Vermessungsbuero ("Latitude Surveying Ltd"
+//  aus lats.co.nz - ihre eigene Abkuerzung). Firmen heissen eben nicht wie
+//  ihre Domain. Als Bestaetigung bleibt der Hinweis wertvoll, als
+//  alleiniger Grund fuer eine unwiderrufliche Ablehnung taugt er nicht.
+// ---------------------------------------------------------------------
+function strongEvidence(array $evidence) {
+    static $strong = [
+        'brand-impersonation',   // Markenliste mit hinterlegten Echt-Domains
+        'url-on-blocklist',      // externe Reputationsdaten
+        'dangerous-attachment',  // ausfuehrbarer Anhang
+    ];
+    return array_values(array_intersect($evidence, $strong));
 }
 
 // ---------------------------------------------------------------------

@@ -67,6 +67,29 @@ jq -r 'select(.evidence|index("brand-claim-mismatch"))|[.from,.claimed_brand]|@t
   /opt/mailcow-dockerized/data/logs/ai-checker/stats.log
 ```
 
+## Evidence: strong and weak
+
+A rejection needs structural evidence, but not every kind carries the same
+weight. Only these three can justify one on their own:
+
+| Strong - rests on a source the sender cannot influence |
+|---|
+| `brand-impersonation` - the brand list, with the brand's real domains |
+| `url-on-blocklist` - external reputation data |
+| `dangerous-attachment` - an executable attachment |
+
+The rest are hints. They still appear in `stats.log`, and they still inform the
+model, but they cannot carry a rejection alone: `brand-claim-mismatch`,
+`url-shortener`, `cloud-storage-only-links`.
+
+That split comes from production. `brand-claim-mismatch` fired three times and
+was wrong all three: a cruise line (`Scenic Eclipse` from `mail.scenic.eu`), a
+German school in Spain (`Deutsche Schule Malaga` from `dinantia.email`) and a
+New Zealand survey firm (`Latitude Surveying Ltd` from `lats.co.nz` - their own
+initials). Companies are not named after their domains, and no amount of string
+matching fixes that. As corroboration the signal is useful; as the sole reason
+to bounce a mail it is not.
+
 ## Provider profile (provider.conf)
 
 The three `_DEFAULT` constants below are the shipped values. If
