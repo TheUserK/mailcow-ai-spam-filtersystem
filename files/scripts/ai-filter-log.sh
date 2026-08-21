@@ -35,6 +35,9 @@ Examples:
   ai-filter-log.sh -c clickbait -n 50
   ai-filter-log.sh -f                # live
 
+Rotated logs are included automatically, so -n can reach back past midnight.
+Only -f is limited to the live file.
+
 MAILCOW_DIR can be set to point at a mailcow installation elsewhere.
 USAGE
 }
@@ -65,8 +68,40 @@ fi
 [[ -n "${MAILCOW_DIR:-}" ]] || { echo -e "${RED}Mailcow directory not found${NC}"; exit 1; }
 
 LOG="$MAILCOW_DIR/data/logs/ai-checker/$WHICH.log"
-[[ -f "$LOG" ]] || { echo -e "${YELLOW}No log yet:${NC} $LOG"; exit 0; }
-[[ -s "$LOG" ]] || { echo -e "${YELLOW}Log is empty${NC} (just rotated, or nothing analysed yet)"; exit 0; }
+
+# Rotierte Logs mitlesen. logrotate legt sie als .1 und .2.gz .. .7.gz ab;
+# ohne sie endete jede Abfrage an der letzten Mitternacht, egal wie gross
+# -n gewaehlt war. Aelteste zuerst, damit die Ausgabe chronologisch bleibt.
+log_sources() {
+    local f n
+    for f in "$LOG".[0-9]*; do
+        [[ -e "$f" ]] || continue
+        n=${f#"$LOG".}          # "3.gz" -> Nummer davor
+        n=${n%%.*}
+        [[ $n =~ ^[0-9]+$ ]] && printf '%s\t%s\n' "$n" "$f"
+    done | sort -k1,1rn | cut -f2-
+    [[ -f "$LOG" ]] && echo "$LOG"
+}
+
+read_logs() {
+    local f
+    while IFS= read -r f; do
+        case "$f" in
+            *.gz) zcat -- "$f" 2>/dev/null ;;
+            *)    cat  -- "$f" 2>/dev/null ;;
+        esac
+    done
+}
+
+mapfile -t LOG_FILES < <(log_sources)
+if [[ ${#LOG_FILES[@]} -eq 0 ]]; then
+    echo -e "${YELLOW}No log yet:${NC} $LOG"
+    exit 0
+fi
+if [[ -z "$(printf '%s\n' "${LOG_FILES[@]}" | read_logs | head -c1)" ]]; then
+    echo -e "${YELLOW}Log is empty${NC} (just rotated, or nothing analysed yet)"
+    exit 0
+fi
 
 # Der Checker schreibt UTC, Rspamd schreibt Lokalzeit. Damit sich beide Logs
 # nebeneinander lesen lassen, hier auf Lokalzeit umrechnen - und robust
@@ -120,7 +155,8 @@ if [[ "$RAW" != "true" ]]; then
 fi
 
 if [[ "$FOLLOW" == "true" ]]; then
+    # Mitlaufen geht nur auf der aktiven Datei - rotierte sind abgeschlossen.
     tail -n "$COUNT" -f "$LOG" | render
 else
-    tail -n "$COUNT" "$LOG" | render
+    printf '%s\n' "${LOG_FILES[@]}" | read_logs | tail -n "$COUNT" | render
 fi
