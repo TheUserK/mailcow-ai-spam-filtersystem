@@ -78,6 +78,18 @@ weight. Only these three can justify one on their own:
 | `url-on-blocklist` - external reputation data |
 | `dangerous-attachment` - an executable attachment |
 
+A mail that is **verifiably from** one of the listed brands is never rejected
+at all, whatever it links to. The brand list already holds each brand's real
+sending domains; if a DMARC-authenticated From matches one, the sender *is*
+that brand and the question of impersonation does not arise.
+
+That guard exists because a genuine Google account mail was rejected on
+21.08. It linked `myaccount.google.com`, `store.google.com`, `g.co` and
+`c.gle` - all Google - and Google's own URL shortener is on a phishing
+blocklist because phishers abuse it. The evidence was technically correct and
+the conclusion still wrong. A forged sender cannot use this door: without
+DMARC passing for the brand's real domain, auth strength is never `strong`.
+
 The rest are hints. They still appear in `stats.log`, and they still inform the
 model, but they cannot carry a rejection alone: `brand-claim-mismatch`,
 `url-shortener`, `cloud-storage-only-links`.
