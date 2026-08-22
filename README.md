@@ -186,11 +186,39 @@ ai-filter-stats.sh                # Summary: sources, categories, score spread, 
 ai-filter-test.sh                 # End-to-end check against the running checker
 ai-filter-healthcheck.sh          # Health check (can run via cron)
 ai-filter-model.sh                # Which model/provider is active
+ai-filter-report.sh               # Cases where the filter contradicts itself
 install.sh --check                # Same health check
 ```
 
 Timestamps are printed in the server's local time. The checker itself writes
 UTC, which is worth knowing when comparing against Rspamd's log.
+
+### The contradiction report
+
+Every mistake this filter has had was found the same way: somebody read a log
+line, thought it looked odd, and it turned out to be a bug. That is luck as a
+method.
+
+The filter knows its own doubtful cases, though - a phishing verdict on a
+DMARC-clean sender, a rejection in a category that has never fired before, a
+high Rspamd score the AI called legitimate, structural evidence on a mail that
+scored negative. Those patterns are exactly where the real false positives were
+found. `ai-filter-report.sh` collects them.
+
+```bash
+ai-filter-report.sh                       # print the last 24 hours
+ai-filter-report.sh -d 7                  # a whole week
+ai-filter-report.sh --set-to you@example.com
+ai-filter-report.sh --disable             # stop the mail, keep the tool
+```
+
+`install.sh` schedules it for weekdays at 08:00. **Nothing to report means no
+mail** - silence is the normal state, so there is nothing to tune out.
+
+Mail is injected straight into mailcow's Postfix container, so it needs no
+mailbox, no credentials and no SMTP login. Point it at an address on a
+*different* server than the one it watches: if delivery breaks, you want the
+report about it to still arrive.
 
 ## Mailcow updates
 
