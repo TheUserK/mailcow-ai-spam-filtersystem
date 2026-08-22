@@ -88,7 +88,21 @@ REPORT_TO=$(conf_get report_to)
 REPORT_FROM=$(conf_get report_from)
 ENABLED=$(conf_get enabled)
 [[ -z "$ENABLED" ]] && ENABLED=true
-[[ -z "$REPORT_FROM" ]] && REPORT_FROM="ai-filter@$(hostname -f 2>/dev/null || hostname)"
+# Vorgabe fuer den Absender. `hostname` liefert auf mailcow-Servern gern
+# nur "mailcow" - keine Domain, also scheitern SPF, DKIM und DMARC beim
+# Empfaenger und ausgerechnet die Ueberwachungsmail landet im Spam.
+# MAILCOW_HOSTNAME aus mailcow.conf ist dagegen ein echter FQDN.
+if [[ -z "$REPORT_FROM" ]]; then
+    MC_HOST=$(sed -n 's/^MAILCOW_HOSTNAME=//p' mailcow.conf 2>/dev/null | tr -d '"' | head -1)
+    [[ -z "$MC_HOST" ]] && MC_HOST=$(hostname -f 2>/dev/null || hostname)
+    REPORT_FROM="ai-filter@$MC_HOST"
+fi
+
+# Ohne Punkt in der Domain ist die Adresse nicht zustellbar.
+from_domain_ok() {
+    local d="${1##*@}"
+    [[ "$d" == *.* ]]
+}
 
 case "$ACTION" in
 setto)
@@ -108,7 +122,13 @@ disable)
 status)
     echo
     echo "Empfaenger: ${REPORT_TO:-(nicht gesetzt - nur Ausgabe auf dem Terminal)}"
-    echo "Absender:   $REPORT_FROM"
+    if from_domain_ok "$REPORT_FROM"; then
+        echo "Absender:   $REPORT_FROM"
+    else
+        echo -e "Absender:   ${RED}$REPORT_FROM${NC} - keine gueltige Domain!"
+        echo -e "            ${YELLOW}Der Report wird beim Empfaenger als Spam landen.${NC}"
+        echo    "            Setzen mit: ai-filter-report.sh --from ai-filter@deine-domain.de"
+    fi
     echo "Versand:    $ENABLED"
     echo
     exit 0 ;;
@@ -223,6 +243,16 @@ if [[ -z "$TO" ]]; then
 fi
 if [[ "$ENABLED" != "true" && -z "$ONCE_TO" ]]; then
     exit 0
+fi
+
+# Nur warnen, nicht abbrechen: an ein Postfach auf demselben System kommt
+# die Mail auch mit fragwuerdiger Absenderdomain an, weil unterwegs niemand
+# DMARC prueft. Erst bei einem echten Fremdempfaenger wird es eng - und ein
+# funktionierender Versand darf daran nicht scheitern.
+if ! from_domain_ok "$REPORT_FROM"; then
+    echo -e "${YELLOW}[WARN]${NC} Absender $REPORT_FROM hat keine gueltige Domain."
+    echo    "        Intern kommt das an, extern voraussichtlich nicht. Besser:"
+    echo    "        ai-filter-report.sh --from ai-filter@deine-domain.de"
 fi
 
 if docker compose version >/dev/null 2>&1; then COMPOSE_CMD="docker compose"
