@@ -369,6 +369,7 @@ function prepareMailContext(array $data) {
             'forged_sender' => !empty($signals['forged_sender']),
             'from_neq_envfrom' => !empty($signals['from_neq_envfrom']),
             'known_sender' => !empty($signals['known_sender']),
+            'unknown_sender' => !empty($signals['unknown_sender']),
             'reply_to_our_mail' => !empty($signals['reply_to_our_mail']),
             'suspicious_reply_to' => !empty($signals['suspicious_reply_to']),
             'has_list_unsubscribe' => !empty($signals['has_list_unsubscribe']) || cleanTextValue($headers['list_unsubscribe'] ?? '') !== '',
@@ -486,8 +487,12 @@ function analyzeLocally(array $mail, $requestId) {
         $trustFlags[] = 'reply-to-our-own-mail';
     } elseif (!empty($mail['signals']['known_sender'])) {
         $trustFlags[] = 'sender-known-from-history';
-    } else {
-        $riskFlags[] = 'first-contact';
+    } elseif (!empty($mail['signals']['unknown_sender'])) {
+        // Nur wenn Rspamd diesen Absender tatsaechlich verfolgt und ihn
+        // nicht kennt. Bei Firmendomains wird gar nicht Buch gefuehrt -
+        // dort waere "Erstkontakt" eine Falschaussage ueber jeden
+        // langjaehrigen Geschaeftspartner.
+        $riskFlags[] = 'first-contact-freemail';
     }
 
     if ($profile && $replyAligned && $returnAligned && $messageIdAligned && $urlsAligned) {
@@ -593,9 +598,11 @@ Zu den Absender-Flags:
   korrespondiert. Starkes Ham-Signal - ABER kein Freibrief: Konten echter
   Firmen werden gekapert. Passt der Inhalt nicht zur bisherigen Beziehung
   (ploetzliche Geldforderung, Login-Aufforderung), wiegt das schwerer.
-- "first-contact": Erstkontakt. Allein voellig unverdaechtig - jede
-  Geschaeftsbeziehung faengt so an. Nur zusammen mit anderen Signalen
-  relevant.
+- "first-contact-freemail": Absender bei einem Freemail-Anbieter, von dem
+  hier noch nie Post kam. Allein voellig unverdaechtig - jede Beziehung
+  faengt so an. Nur zusammen mit anderen Signalen relevant. Fehlt das Flag,
+  heisst das NICHT "bekannt": ueber Firmendomains wird gar nicht Buch
+  gefuehrt.
 
 Die Risk-/Trust-Flags der lokalen Vorpruefung sind nur Hinweise, kein Urteil.
 Ausnahme: Ein Flag "brand-impersonation:MARKE" bedeutet, dass sich der
