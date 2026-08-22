@@ -280,11 +280,18 @@ never reaches the AI provider.
 
 - Logging is **pseudonymised, not anonymised**: `and***@example.com` keeps the
   full domain and stays personal data under GDPR.
-- Subject and body excerpts are **not logged by default**. Set
-  `LOG_MAIL_CONTENT` to `true` in `ai-mail-checker.php` only for temporary
-  debugging.
+- **Subject lines are logged by default** (`LOG_SUBJECT`). Without them a log
+  line cannot be judged - "spam, +6.84, from some Hotmail address" tells nobody
+  whether the verdict was right, and reviewing verdicts is how this filter gets
+  corrected. Set `LOG_SUBJECT` to `false` if you would rather not.
+- **Body excerpts are not logged** (`LOG_MAIL_CONTENT`, default `false`). A body
+  says far more about the content than a subject line does, and it is not needed
+  to check a verdict. Turn it on for temporary debugging only.
 - Log files are created `0600`, the log directory `0700`.
-- 7-day retention via logrotate.
+- **30-day retention** via logrotate.
+- Note what this means: a log entry outlives the recipient deleting the mail,
+  and it travels into your backups. For your Art. 30 record: purpose is quality
+  assurance of the spam filter, retention 30 days, access root only.
 
 ### What you still have to do
 

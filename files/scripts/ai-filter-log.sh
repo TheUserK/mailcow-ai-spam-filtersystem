@@ -120,9 +120,10 @@ render_stats() {
         (.category // "-"),
         (.from // "-"),
         (.to // "-"),
-        ((if .reject_eligible then ["REJECT"] else [] end) + (.evidence // []) | join(","))
+        ((if .reject_eligible then ["REJECT"] else [] end) + (.evidence // []) | join(",")),
+        (.subject // "")
       ] | @tsv' \
-    | awk -F'\t' '{ printf "%-16s %7s  %-14s %-32s %-26s %s\n", $1,$2,$3,$4,$5,$6 }'
+    | awk -F'\t' '{ printf "%-16s %7s  %-14s %-32s %-26s %-38s %s\n", $1,$2,$3,$4,$5,$6,$7 }'
 }
 
 render_errors() {
@@ -150,7 +151,7 @@ if [[ "$RAW" != "true" ]]; then
     if [[ "$WHICH" == "errors" ]]; then
         echo -e "${DIM}$(printf '%-16s %-34s %-12s %6s  %s' Zeit Meldung Kategorie Score Absender)${NC}"
     else
-        echo -e "${DIM}$(printf '%-16s %7s  %-14s %-32s %-26s %s' Zeit Score Kategorie Von An Belege)${NC}"
+        echo -e "${DIM}$(printf '%-16s %7s  %-14s %-32s %-26s %-38s %s' Zeit Score Kategorie Von An Belege Betreff)${NC}"
     fi
 fi
 

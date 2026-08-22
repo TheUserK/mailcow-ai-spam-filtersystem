@@ -110,6 +110,14 @@ define('BUDGET_FILE', '/var/log/ai-checker/monthly_budget.json');
 // Nur zum Debuggen kurzzeitig einschalten, und dann wieder ausschalten.
 define('LOG_MAIL_CONTENT', false);
 
+// Betreff mitschreiben. Standardmaessig AN: ohne ihn laesst sich eine
+// Zeile im Log nicht beurteilen - "spam, +6.84, von einer Hotmail-Adresse"
+// sagt niemandem, ob das Urteil stimmte. Der Betreff ist ein Inhaltsdatum,
+// steht aber ohnehin im Postfach des Empfaengers, und von zurueckgehaltenen
+// Mails legt mailcow in der Quarantaene die komplette Rohmail ab.
+// Aufbewahrung 30 Tage (logrotate), Datei root/0600.
+define('LOG_SUBJECT', true);
+
 // Dateirechte fuer die Logdateien. 0600 = nur root, weil selbst die
 // pseudonymisierten Eintraege personenbezogene Daten sind.
 define('LOG_FILE_MODE', 0600);
@@ -1792,10 +1800,15 @@ function logStats($requestId, $data) {
         'verified_brand' => mb_substr((string)($data['verified_brand'] ?? ''), 0, 40),
     ];
 
-    // Betreff und Body sind Inhaltsdaten - nur mitschreiben, wenn der
-    // Betreiber das bewusst eingeschaltet hat (siehe LOG_MAIL_CONTENT).
-    if (LOG_MAIL_CONTENT) {
+    // Betreff: siehe LOG_SUBJECT, standardmaessig an.
+    if (LOG_SUBJECT) {
         $entry['subject'] = mb_substr($data['subject'] ?? '', 0, 120);
+    }
+
+    // Der Body-Auszug bleibt getrennt davon und aus. Er ist um ein
+    // Vielfaches aussagekraeftiger ueber den Inhalt als eine Betreffzeile
+    // und wird zum Beurteilen eines Urteils nicht gebraucht.
+    if (LOG_MAIL_CONTENT) {
         $entry['body_preview'] = mb_substr(trim(preg_replace('/\s+/u', ' ', strip_tags($data['body'] ?? ''))), 0, 220);
     }
 
