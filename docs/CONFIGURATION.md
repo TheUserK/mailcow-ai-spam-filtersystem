@@ -188,7 +188,8 @@ keeps your choice.
 | `MAX_SPAM_POINTS` | `4.0` | Max score the AI can add for `spam`/`marketing`/`pharma` |
 | `MAX_HAM_POINTS` | `3.0` | Max score the AI can *subtract* for confident ham |
 | `MAX_PHISHING_POINTS` | `10.0` | Max score for `phishing`/`fraud` - deliberately kept **below** Rspamd's reject threshold (15) so the AI can never reject a mail on its own |
-| `LOG_MAIL_CONTENT` | `false` | Write subject and a body excerpt to `stats.log`. Off by default - these are content data of senders who never consented. Only enable temporarily for debugging |
+| `LOG_SUBJECT` | `true` | Write the subject line to stats.log. Needed to judge a verdict after the fact; kept 30 days, root-only |
+| `LOG_MAIL_CONTENT` | `false` | Write a body excerpt as well. Far more revealing than a subject and not needed for review - debugging only |
 | `LOG_FILE_MODE` | `0600` | Permissions for newly created log files |
 
 **Note:** The API is OpenAI-compatible. Other GDPR-compliant providers with the same API format should work, but only IONOS is officially tested.

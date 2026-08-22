@@ -223,8 +223,8 @@ else
     FIRST_DAY=$(head -1 "$STATS_LOG" | grep -oP '"timestamp":"\K[0-9-]{10}')
     if [[ -n "$FIRST_DAY" ]]; then
         SPAN_DAYS=$(( ( $(date +%s) - $(date -d "$FIRST_DAY" +%s 2>/dev/null || echo 0) ) / 86400 ))
-        if [[ $SPAN_DAYS -gt 10 ]]; then
-            echo -e "${RED}[FAIL]${NC} stats.log covers $SPAN_DAYS days - retention is 7"
+        if [[ $SPAN_DAYS -gt 33 ]]; then
+            echo -e "${RED}[FAIL]${NC} stats.log covers $SPAN_DAYS days - retention is 30"
             echo "       Log rotation is not running. Check:"
             echo "         logrotate -d /etc/logrotate.d/ai-checker"
             ERRORS=$((ERRORS + 1))

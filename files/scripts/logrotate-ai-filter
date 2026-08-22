@@ -7,7 +7,7 @@
 # Check with: logrotate -d /etc/logrotate.d/ai-filter
 /opt/mailcow-dockerized/data/logs/ai-checker/*.log {
     daily
-    rotate 7
+    rotate 30
     compress
     delaycompress
     missingok
