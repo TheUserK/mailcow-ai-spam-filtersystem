@@ -200,7 +200,11 @@ false positive this week came down to: *do we know this sender?*
 
 - `replies` remembers the Message-IDs of mail you send and raises `REPLY` when
   something answers it. The strongest local ham signal there is.
-- `known_senders` keeps a Redis record of senders seen before.
+- `known_senders` keeps a Redis record of senders seen before - deliberately
+  only for **freemail** domains. A company domain carries reputation, DKIM and
+  DMARC; gmail.com with millions of accounts carries none, and that is where
+  the spam in this mailbox comes from. So the absence of `KNOWN_SENDER` on a
+  business domain means nothing at all, and is not reported as a first contact.
 
 Both are passed to the model as hints, **not** into the rejection logic, and
 that is deliberate: most phishing here arrives from compromised accounts of real
