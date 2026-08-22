@@ -414,6 +414,32 @@ chmod +x /usr/local/bin/ai-filter-*.sh
 cp "$SCRIPT_DIR/files/scripts/logrotate-ai-filter" /etc/logrotate.d/ai-filter
 echo -e "${GREEN}[OK]${NC} Management scripts installed"
 
+# === ZWEIFELSFALL-REPORT ===
+# Ein taeglicher Cron, der nur dann eine Mail schickt, wenn sich der Filter
+# selbst widerspricht. Gibt es nichts zu melden, bleibt es still - deshalb
+# ist der Eintrag auch dann harmlos, wenn keine Adresse gesetzt ist.
+cat > /etc/cron.d/ai-filter-report <<'CRON'
+# Zweifelsfaelle des AI-Spamfilters, werktags um 8 Uhr.
+# Adresse setzen mit: ai-filter-report.sh --set-to du@example.com
+# Abstellen mit:      ai-filter-report.sh --disable
+0 8 * * 1-5 root /usr/local/bin/ai-filter-report.sh --mail >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/ai-filter-report
+echo -e "${GREEN}[OK]${NC} Daily report scheduled (weekdays 08:00)"
+
+if [[ -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
+    echo ""
+    echo "The report mails you the cases where the filter contradicts itself."
+    echo "Leave empty to skip - you can set it later with --set-to."
+    read -p "Report recipient address: " REPORT_ADDR
+    if [[ -n "$REPORT_ADDR" && "$REPORT_ADDR" == *@* ]]; then
+        /usr/local/bin/ai-filter-report.sh --set-to "$REPORT_ADDR" >/dev/null \
+            && echo -e "${GREEN}[OK]${NC} Report goes to $REPORT_ADDR"
+    else
+        echo -e "${YELLOW}[INFO]${NC} No address set - the report only prints on the terminal"
+    fi
+fi
+
 # === START CONTAINERS ===
 echo ""
 echo "The ai-checker container needs to be built/started, and Rspamd needs a"
@@ -477,6 +503,7 @@ echo "  ai-filter-stats.sh     Summary"
 echo "  ai-filter-test.sh      End-to-end check"
 echo "  ai-filter-healthcheck.sh  Health check (also: install.sh --check)"
 echo "  ai-filter-model.sh     Show or change the model / AI provider"
+echo "  ai-filter-report.sh    Cases where the filter contradicts itself"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ai-checker"
 echo ""
