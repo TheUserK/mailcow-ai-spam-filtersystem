@@ -324,6 +324,17 @@ rspamd_config:register_symbol({
     -- SPF / DKIM / DMARC results already computed earlier in the pipeline
     local spf = auth_status(task, { 'R_SPF_ALLOW' }, { 'R_SPF_FAIL', 'R_SPF_SOFTFAIL', 'R_SPF_PERMFAIL' })
     local dkim = auth_status(task, { 'R_DKIM_ALLOW' }, { 'R_DKIM_REJECT', 'R_DKIM_PERMFAIL', 'R_DKIM_TEMPFAIL' })
+    -- Haben wir mit dem Absender schon einmal zu tun gehabt? Das
+    -- known_senders-Modul fuehrt darueber Buch, replies erkennt Antworten
+    -- auf unsere eigene Post. Beides rein lokal, kein externer Dienst.
+    --
+    -- Ausdruecklich KEIN Freibrief: die meisten Phishing-Mails hier kommen
+    -- aus gekaperten Konten echter Organisationen, mit denen man durchaus
+    -- schon korrespondiert haben kann. Das Signal geht deshalb nur als
+    -- Hinweis an die KI, nicht in die Ablehnlogik.
+    local known_sender = task:get_symbol('KNOWN_SENDER') ~= nil
+    local is_reply_to_us = task:get_symbol('REPLY') ~= nil
+
     local dmarc = auth_status(task, { 'DMARC_POLICY_ALLOW' },
       { 'DMARC_POLICY_REJECT', 'DMARC_POLICY_QUARANTINE', 'DMARC_POLICY_SOFTFAIL', 'DMARC_BAD_POLICY' })
 
@@ -381,6 +392,8 @@ rspamd_config:register_symbol({
         url_suspect = url_suspect,
         url_fresh_domain = url_fresh,
         url_phishing = url_phishing,
+        known_sender = known_sender,
+        reply_to_our_mail = is_reply_to_us,
       },
       content_stats = {
         body_length = #body_text,

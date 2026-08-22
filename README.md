@@ -193,6 +193,23 @@ install.sh --check                # Same health check
 Timestamps are printed in the server's local time. The checker itself writes
 UTC, which is worth knowing when comparing against Rspamd's log.
 
+### Sender history
+
+`install.sh` enables two Rspamd modules that answer, locally, the question every
+false positive this week came down to: *do we know this sender?*
+
+- `replies` remembers the Message-IDs of mail you send and raises `REPLY` when
+  something answers it. The strongest local ham signal there is.
+- `known_senders` keeps a Redis record of senders seen before.
+
+Both are passed to the model as hints, **not** into the rejection logic, and
+that is deliberate: most phishing here arrives from compromised accounts of real
+organisations you may well have corresponded with. A known sender is a reason to
+lean towards ham, never a free pass. Expiry is raised to 30 days - nobody
+answers a quotation within 24 hours.
+
+Neither module talks to anything outside your server.
+
 ### The contradiction report
 
 Every mistake this filter has had was found the same way: somebody read a log

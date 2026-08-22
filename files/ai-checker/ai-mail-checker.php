@@ -368,6 +368,8 @@ function prepareMailContext(array $data) {
             'freemail_from' => !empty($signals['freemail_from']),
             'forged_sender' => !empty($signals['forged_sender']),
             'from_neq_envfrom' => !empty($signals['from_neq_envfrom']),
+            'known_sender' => !empty($signals['known_sender']),
+            'reply_to_our_mail' => !empty($signals['reply_to_our_mail']),
             'suspicious_reply_to' => !empty($signals['suspicious_reply_to']),
             'has_list_unsubscribe' => !empty($signals['has_list_unsubscribe']) || cleanTextValue($headers['list_unsubscribe'] ?? '') !== '',
             'has_html' => !empty($signals['has_html']) || intval($contentStats['html_part_count'] ?? 0) > 0,
@@ -478,6 +480,16 @@ function analyzeLocally(array $mail, $requestId) {
         $trustFlags[] = 'newsletter-headers-present';
     }
 
+    // Eigene Korrespondenzhistorie. Ersetzt keine Markenliste, beantwortet
+    // aber die Frage, die bei Fehlalarmen wirklich zaehlte: kennen wir den?
+    if (!empty($mail['signals']['reply_to_our_mail'])) {
+        $trustFlags[] = 'reply-to-our-own-mail';
+    } elseif (!empty($mail['signals']['known_sender'])) {
+        $trustFlags[] = 'sender-known-from-history';
+    } else {
+        $riskFlags[] = 'first-contact';
+    }
+
     if ($profile && $replyAligned && $returnAligned && $messageIdAligned && $urlsAligned) {
         $trustFlags[] = 'profile-alignment:good';
     }
@@ -573,6 +585,17 @@ Als legitim einstufen:
 - erwartete Newsletter mit List-Unsubscribe
 - Transaktionsmails (Bestellung, Rechnung, Versand) von stimmigen Absendern
 - ein niedriger oder negativer Rspamd-Score ist ein Vertrauenssignal
+
+Zu den Absender-Flags:
+- "reply-to-our-own-mail": Die Mail ist eine Antwort auf Post, die WIR
+  geschickt haben. Sehr starkes Ham-Signal.
+- "sender-known-from-history": Mit diesem Absender wurde hier schon
+  korrespondiert. Starkes Ham-Signal - ABER kein Freibrief: Konten echter
+  Firmen werden gekapert. Passt der Inhalt nicht zur bisherigen Beziehung
+  (ploetzliche Geldforderung, Login-Aufforderung), wiegt das schwerer.
+- "first-contact": Erstkontakt. Allein voellig unverdaechtig - jede
+  Geschaeftsbeziehung faengt so an. Nur zusammen mit anderen Signalen
+  relevant.
 
 Die Risk-/Trust-Flags der lokalen Vorpruefung sind nur Hinweise, kein Urteil.
 Ausnahme: Ein Flag "brand-impersonation:MARKE" bedeutet, dass sich der

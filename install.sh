@@ -326,6 +326,19 @@ else
     echo -e "${GREEN}[OK]${NC} Existing ai-filter-settings.lua preserved"
 fi
 
+# === ABSENDER-HISTORIE ===
+# known_senders und replies beantworten lokal die Frage "kennen wir den?".
+# Beide Dateien gehoeren dem Betreiber - nur anlegen, nie ueberschreiben.
+for mod in known_senders replies; do
+    if [[ ! -f "data/conf/rspamd/local.d/$mod.conf" ]]; then
+        cp "$SCRIPT_DIR/files/rspamd/$mod.conf" "data/conf/rspamd/local.d/$mod.conf"
+        chmod 644 "data/conf/rspamd/local.d/$mod.conf"
+        echo -e "${GREEN}[OK]${NC} $mod enabled (sender history)"
+    else
+        echo -e "${GREEN}[OK]${NC} Existing $mod.conf preserved"
+    fi
+done
+
 # === RSPAMD GROUPS ===
 if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     if ! grep -q 'group "ai_filter"' data/conf/rspamd/local.d/groups.conf; then
