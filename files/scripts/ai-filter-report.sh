@@ -202,7 +202,12 @@ BODY=$(
         "$(printf 'Die Mail hat versucht, dem Modell ein Urteil vorzuschreiben.')" \
         '((.prompt_injection // []) | length) > 0' && FOUND=1
 
-    # 5. Beleg gesetzt, aber die Mail war unauffaellig.
+    # 5. Newsletter ohne Abo-Nachweis - das ist Kaltakquise.
+    render_group "Newsletter ohne erkennbares Abo" \
+        "$(printf 'Als Newsletter eingestuft, aber ohne Listen-Kopfzeilen - typisch fuer Kaltakquise.')" \
+        '(.category == "newsletter") and (.list_headers != true)' && FOUND=1
+
+    # 6. Beleg gesetzt, aber die Mail war unauffaellig.
     #    Das waren LATS und Scenic.
     render_group "Beleg auf offensichtlich harmloser Post" \
         "$(printf 'Ein struktureller Beleg auf einer Mail mit negativem Score - vermutlich ein Fehlalarm.')" \

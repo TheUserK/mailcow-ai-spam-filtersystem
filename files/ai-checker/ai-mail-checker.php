@@ -237,6 +237,7 @@ logStats($requestId, [
     'claimed_brand' => $result['claimed_brand'] ?? '',
     'verified_brand' => $result['verified_brand'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
+    'list_headers' => !empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id']),
     'matched_profile' => $localResult['matched_profile'] ?? '',
     'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
     'url_domains' => $mail['url_domains'],
@@ -631,10 +632,24 @@ Geschuetzt (werden nie abgewiesen, hoechstens einsortiert):
 - "transactional": Bestellung, Rechnung, Versand, Buchung, Zahlung,
   Passwort-Reset, Bestaetigungscode, Vertragsdokument
 - "personal": von einem Menschen an einen Menschen geschrieben
-- "newsletter": Newsletter, den der Empfaenger erkennbar bestellt hat -
-  identifizierbarer Absender, Impressum, funktionierender Abmeldelink
+- "newsletter": Newsletter, den der Empfaenger erkennbar BESTELLT hat.
+  Impressum und Abmeldelink allein genuegen nicht - die hat jede seriose
+  Firma, auch bei ungefragter Werbung. Es braucht Anzeichen fuer ein Abo:
+  Listen-Kopfzeilen ("newsletter-headers-present" in den Trust-Flags), ein
+  Hinweis wie "Sie erhalten diese Mail, weil Sie sich angemeldet haben",
+  oder eine erkennbare Massenaussendung statt einer persoenlichen Ansprache.
 - "marketing": kommerzielle Mail eines IDENTIFIZIERBAREN Anbieters, zu dem
-  eine Geschaeftsbeziehung plausibel ist
+  eine Geschaeftsbeziehung BESTEHT oder plausibel frueher bestand.
+
+KALTAKQUISE ist weder das eine noch das andere, sondern "spam":
+Ungefragte Werbung eines Anbieters, mit dem keine Beziehung besteht - typisch
+"ich war auf Ihrer Website und habe einen Entwurf erstellt", "wir haben Ihr
+Unternehmen recherchiert", Angebote fuer Webdesign, SEO, Backlinks, Werbung,
+Leads oder Personalvermittlung an eine Firmenadresse. Solche Mails sind oft
+sauber gestaltet, personalisiert und formal einwandfrei - das macht sie nicht
+erwuenscht. In Deutschland ist ungefragte Werbe-Mail ohne Einwilligung
+ausserdem unzulaessig, auch zwischen Unternehmen.
+Die persoenliche Ansprache ist hier KEIN Ham-Signal, sondern typisch.
 
 Angreifbar (duerfen abgewiesen werden):
 - "clickbait": Sensationsaufhaenger ohne erkennbaren Absender, dessen einziger
@@ -1930,6 +1945,10 @@ function logStats($requestId, $data) {
         // wird nie abgewiesen - das will man im Log sehen koennen.
         'verified_brand' => mb_substr((string)($data['verified_brand'] ?? ''), 0, 40),
         'prompt_injection' => normalizeStringList($data['prompt_injection'] ?? []),
+        // Ohne Listen-Kopfzeilen ist ein "Newsletter" keiner, sondern
+        // ungefragte Werbung - der Unterschied ist im Nachhinein nur
+        // sichtbar, wenn er mitgeschrieben wird.
+        'list_headers' => !empty($data['list_headers']),
     ];
 
     // Betreff: siehe LOG_SUBJECT, standardmaessig an.
