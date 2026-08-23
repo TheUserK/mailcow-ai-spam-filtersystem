@@ -352,6 +352,16 @@ rspamd_config:register_symbol({
     local suspicious_reply_to = task:get_symbol('REPLYTO_DOM_NEQ_FROM_DOM') and true or false
     local freemail_from = freemail_domains[from_domain_for_freemail] or false
 
+    -- Der Fingerabdruck eines gekaperten Kontos: Die Mail kommt echt von
+    -- einer Universitaet, Firma oder Behoerde - Authentifizierung sauber,
+    -- Reputation sauber, weil der Angreifer den richtigen Account benutzt.
+    -- Nur die Antwort soll woanders hin, naemlich auf ein Freemail-Postfach
+    -- unter seiner Kontrolle.
+    --
+    -- Deshalb ausdruecklich OHNE Kopplung an schwache Authentifizierung:
+    -- bei dieser Betrugsform ist die Auth gerade in Ordnung.
+    local freemail_reply_to = task:get_symbol('FREEMAIL_REPLYTO') and true or false
+
     -- URL reputation Rspamd has already established for this mail
     local url_blacklisted = any_symbol(task, uribl_bad_symbols)
     local url_suspect     = any_symbol(task, uribl_suspect_symbols)
@@ -394,6 +404,7 @@ rspamd_config:register_symbol({
         forged_sender = forged_sender,
         from_neq_envfrom = from_neq_envfrom,
         suspicious_reply_to = suspicious_reply_to,
+        freemail_reply_to = freemail_reply_to,
         has_list_unsubscribe = list_unsubscribe ~= '',
         has_html = html_part_count > 0,
         url_blacklisted = url_blacklisted,

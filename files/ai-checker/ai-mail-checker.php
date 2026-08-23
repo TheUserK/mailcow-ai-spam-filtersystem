@@ -370,6 +370,7 @@ function prepareMailContext(array $data) {
             'from_neq_envfrom' => !empty($signals['from_neq_envfrom']),
             'known_sender' => !empty($signals['known_sender']),
             'unknown_sender' => !empty($signals['unknown_sender']),
+            'freemail_reply_to' => !empty($signals['freemail_reply_to']),
             'reply_to_our_mail' => !empty($signals['reply_to_our_mail']),
             'suspicious_reply_to' => !empty($signals['suspicious_reply_to']),
             'has_list_unsubscribe' => !empty($signals['has_list_unsubscribe']) || cleanTextValue($headers['list_unsubscribe'] ?? '') !== '',
@@ -1041,6 +1042,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if (!empty(findShortenerDomains($mail['url_domains']))) {
         $evidence[] = 'url-shortener';
     }
+    if (hijackedReplyTo($mail)) {
+        $evidence[] = 'hijacked-reply-to';
+    }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
     // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
     if (floatval($localContext['impersonation_score'] ?? 0) <= 0
@@ -1136,6 +1140,31 @@ function verifiedBrandSender(array $mail) {
 }
 
 // ---------------------------------------------------------------------
+//  Der Fingerabdruck eines gekaperten Kontos.
+//
+//  Vorschussbetrug aus gekaperten Universitaets- und Firmenkonten hat
+//  strukturell nichts, woran man ihn festmachen koennte: keine Links,
+//  keine behauptete Marke, keinen Anhang. Genau deshalb konnte die
+//  klarste Muellklasse bisher nie abgewiesen werden - es gab keinen
+//  Beleg, und dem Kategorieurteil der KI allein zu trauen ist das eine,
+//  was dieser Filter nicht tut.
+//
+//  Einen Beleg gibt es aber doch, und er steht im Kopf: Der Angreifer
+//  versendet ueber den echten Account - Authentifizierung und Reputation
+//  sind deshalb sauber - will die Antwort aber bei sich haben. Also ein
+//  Reply-To auf ein Freemail-Postfach, das nicht zur Absenderdomain
+//  gehoert. Ein echtes Institut macht das praktisch nie.
+//
+//  Die Absenderdomain darf selbst kein Freemail sein: schreibt jemand von
+//  GMX und laesst auf Gmail antworten, ist das unauffaellig.
+// ---------------------------------------------------------------------
+function hijackedReplyTo(array $mail) {
+    return !empty($mail['signals']['freemail_reply_to'])
+        && !empty($mail['signals']['suspicious_reply_to'])
+        && empty($mail['signals']['freemail_from']);
+}
+
+// ---------------------------------------------------------------------
 //  Nicht jeder Beleg wiegt gleich schwer, der Reject-Gate fragte aber nur
 //  "ist ueberhaupt einer da". Drei Klassen stuetzen sich auf eine externe,
 //  vom Absender nicht beeinflussbare Quelle - eine gepflegte Markenliste,
@@ -1155,6 +1184,7 @@ function strongEvidence(array $evidence) {
         'brand-impersonation',   // Markenliste mit hinterlegten Echt-Domains
         'url-on-blocklist',      // externe Reputationsdaten
         'dangerous-attachment',  // ausfuehrbarer Anhang
+        'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
     ];
     return array_values(array_intersect($evidence, $strong));
 }

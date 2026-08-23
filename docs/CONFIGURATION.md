@@ -77,6 +77,7 @@ weight. Only these three can justify one on their own:
 | `brand-impersonation` - the brand list, with the brand's real domains |
 | `url-on-blocklist` - external reputation data |
 | `dangerous-attachment` - an executable attachment |
+| `hijacked-reply-to` - the reply is meant to go to a stranger's freemail account |
 
 A mail that is **verifiably from** one of the listed brands is never rejected
 at all, whatever it links to. The brand list already holds each brand's real
@@ -89,6 +90,19 @@ That guard exists because a genuine Google account mail was rejected on
 blocklist because phishers abuse it. The evidence was technically correct and
 the conclusion still wrong. A forged sender cannot use this door: without
 DMARC passing for the brand's real domain, auth strength is never `strong`.
+
+`hijacked-reply-to` exists because advance-fee fraud had no structural signal
+at all: no links, no claimed brand, no attachment. The clearest class of junk
+was therefore the one class that could never be rejected, since trusting the
+model's category alone is the one thing this filter does not do.
+
+The signal is in the headers. The attacker sends through the real, compromised
+account - so authentication and reputation are clean - but wants the reply for
+himself, on a freemail address that does not belong to the sender's domain. A
+university or a company practically never does that. It is deliberately **not**
+coupled to weak authentication: with this kind of fraud the authentication is
+precisely what looks fine. A freemail sender replying to freemail does not
+count.
 
 The rest are hints. They still appear in `stats.log`, and they still inform the
 model, but they cannot carry a rejection alone: `brand-claim-mismatch`,

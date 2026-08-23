@@ -189,8 +189,8 @@ BODY=$(
 
     # 2. Erste Ablehnung in einer Kategorie, die sonst nie feuert.
     render_group "Ablehnung in einer seltenen Kategorie" \
-        "$(printf 'clickbait und pharma haben bisher kaum Datenpunkte - der erste Treffer gehoert geprueft.')" \
-        '.reject_eligible == true and (.category == "clickbait" or .category == "pharma")' && FOUND=1
+        "$(printf 'clickbait, pharma und fraud haben kaum Datenpunkte - der erste Treffer gehoert geprueft.')" \
+        '.reject_eligible == true and (.category == "clickbait" or .category == "pharma" or .category == "fraud")' && FOUND=1
 
     # 3. Die KI widerspricht Rspamd deutlich.
     render_group "KI und Rspamd uneinig" \
