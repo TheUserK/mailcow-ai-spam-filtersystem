@@ -183,9 +183,31 @@ FOUND=0
 BODY=$(
     # 1. Abgewiesen, obwohl der Absender per DMARC beglaubigt ist.
     #    Das war die Google-Kontomail.
-    render_group "Abgewiesen trotz bestandener Authentifizierung" \
-        "$(printf 'Der Absender ist beglaubigt - eine Ablehnung ist hier fast immer falsch.')" \
-        '.reject_eligible == true and ((.red_flags // []) | index("auth:suspicious") | not)' && FOUND=1
+    # Diese Gruppe war zu weit gefasst: sie prueft nur, ob "auth:suspicious"
+    # NICHT im Text der red_flags steht - kein Beweis fuer bestandene Auth,
+    # nur die Abwesenheit eines Wortes. Am 23./24.08. feuerte sie auf jeden
+    # hijacked-reply-to-Fall (ein kompromittiertes Konto hat per Definition
+    # SAUBERE eigene Authentifizierung - das Modul ist bewusst NICHT an
+    # schwache Auth gekoppelt) und auf brand-impersonation ueber den
+    # Anzeigenamen (ein Konto kann fuer sich selbst authentifiziert sein und
+    # trotzdem eine fremde Marke behaupten). Beides waren echte, richtige
+    # Ablehnungen - die Gruppe hat sie faelschlich als zweifelhaft gemeldet.
+    #
+    # Der Fall, fuer den sie gedacht war (ein per DMARC beglaubigter
+    # Markenabsender wird abgewiesen), kann inzwischen gar nicht mehr
+    # auftreten: verifiedBrandSender() schliesst reject_eligible in genau
+    # diesem Fall schon im Checker hart aus. Was bleibt, ist der schmalere,
+    # noch nicht abgedeckte Fall: ein url-on-blocklist-Treffer ALLEIN, auf
+    # einer Domain mit sauberer eigener Authentifizierung - eine Blockliste
+    # kann eine Domain treffen, die ein legitimer Absender nur mitnutzt.
+    render_group "Blocklisten-Treffer trotz sauberer Authentifizierung" \
+        "$(printf 'Einziger Beleg ist eine Blockliste, obwohl die Absenderdomain sauber authentifiziert ist.')" \
+        '.reject_eligible == true
+         and (.auth_strength // "unknown") == "strong"
+         and ((.evidence // []) as $e
+              | ($e | index("url-on-blocklist"))
+              and (($e | index("hijacked-reply-to")) | not)
+              and (($e | index("brand-impersonation")) | not))' && FOUND=1
 
     # 2. Erste Ablehnung in einer Kategorie, die sonst nie feuert.
     render_group "Ablehnung in einer seltenen Kategorie" \
@@ -203,9 +225,16 @@ BODY=$(
         '((.prompt_injection // []) | length) > 0' && FOUND=1
 
     # 5. Newsletter ohne Abo-Nachweis - das ist Kaltakquise.
+    #
+    # Nur werten, wenn das Feld tatsaechlich geloggt wurde (has()). Das
+    # Feld ist neu - Zeilen von VOR dem Ausrollen haben es gar nicht, und
+    # "fehlt" ist etwas anderes als "wurde geprueft und war nicht da". Ohne
+    # diese Unterscheidung meldete die Gruppe am 23./24.08. praktisch jeden
+    # bekannten Newsletter (Tchibo, Conrad, zooplus, Audi, ...) als
+    # verdaechtig - reine Altdaten, kein tatsaechlicher Fehlalarm.
     render_group "Newsletter ohne erkennbares Abo" \
         "$(printf 'Als Newsletter eingestuft, aber ohne Listen-Kopfzeilen - typisch fuer Kaltakquise.')" \
-        '(.category == "newsletter") and (.list_headers != true)' && FOUND=1
+        '(.category == "newsletter") and (has("list_headers")) and (.list_headers != true)' && FOUND=1
 
     # 6. Beleg gesetzt, aber die Mail war unauffaellig.
     #    Das waren LATS und Scenic.

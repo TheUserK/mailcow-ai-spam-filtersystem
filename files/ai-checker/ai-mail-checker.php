@@ -237,6 +237,7 @@ logStats($requestId, [
     'claimed_brand' => $result['claimed_brand'] ?? '',
     'verified_brand' => $result['verified_brand'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
+    'auth_strength' => $result['auth_strength'] ?? 'unknown',
     'list_headers' => !empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id']),
     'matched_profile' => $localResult['matched_profile'] ?? '',
     'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
@@ -987,6 +988,7 @@ PROMPT;
         'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
         'verified_brand'  => $verifiedBrand,
         'prompt_injection' => $injection,
+        'auth_strength'   => $localContext['auth_strength'] ?? 'unknown',
     ];
 }
 
@@ -1944,6 +1946,9 @@ function logStats($requestId, $data) {
         // Wer hier steht, ist per DMARC als diese Marke beglaubigt und
         // wird nie abgewiesen - das will man im Log sehen koennen.
         'verified_brand' => mb_substr((string)($data['verified_brand'] ?? ''), 0, 40),
+        // Direkt geloggt statt aus red_flags-Text erraten: der Report
+        // brauchte einmal genau das und hatte es sich schlecht genaehert.
+        'auth_strength' => (string)($data['auth_strength'] ?? 'unknown'),
         'prompt_injection' => normalizeStringList($data['prompt_injection'] ?? []),
         // Ohne Listen-Kopfzeilen ist ein "Newsletter" keiner, sondern
         // ungefragte Werbung - der Unterschied ist im Nachhinein nur
