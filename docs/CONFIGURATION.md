@@ -91,6 +91,15 @@ blocklist because phishers abuse it. The evidence was technically correct and
 the conclusion still wrong. A forged sender cannot use this door: without
 DMARC passing for the brand's real domain, auth strength is never `strong`.
 
+A DMARC-verified brand match (`verified-brand:X` in the model's trust flags,
+computed before the prompt is built, not after) also weakens the profile
+alignment check: social-media footer links (Facebook, LinkedIn, Instagram,
+Twitter/X, YouTube, ...) no longer count as a domain mismatch. A real PayPal
+receipt was misjudged as phishing on 25.08. for exactly this reason - the only
+"foreign" link was the Facebook icon in the footer, and the fact that the
+domain was verifiably PayPal's own was computed but never reached the model,
+since it was only used after the API call, purely to gate rejection.
+
 `hijacked-reply-to` exists because advance-fee fraud had no structural signal
 at all: no links, no claimed brand, no attachment. The clearest class of junk
 was therefore the one class that could never be rejected, since trusting the
