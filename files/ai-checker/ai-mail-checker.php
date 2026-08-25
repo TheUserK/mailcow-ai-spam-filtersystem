@@ -423,6 +423,17 @@ function analyzeLocally(array $mail, $requestId) {
         $riskFlags[] = 'auth:suspicious';
     }
 
+    // Frueh berechnet, damit das Modell es SIEHT statt es erst hinterher
+    // fuer den Reject-Gate zu benutzen. Am 25.08. lief eine echte, per
+    // DMARC beglaubigte PayPal-Mail als "phishing" durch die Analyse,
+    // weil vier Mismatch-Flags allein im Prompt standen - die Erkenntnis
+    // "das ist wirklich PayPal" existierte im Code, wurde aber erst nach
+    // dem API-Aufruf gezogen und kam beim Modell nie an.
+    $verifiedBrand = verifiedBrandSender($mail);
+    if ($verifiedBrand !== '') {
+        $trustFlags[] = 'verified-brand:' . $verifiedBrand;
+    }
+
     if (!empty($mail['signals']['forged_sender'])) {
         $riskFlags[] = 'forged-sender-symbol';
     }
@@ -518,6 +529,7 @@ function analyzeLocally(array $mail, $requestId) {
         'matched_profile' => $profileKey,
         'matched_profile_kind' => $profileKind,
         'auth_strength' => $authStrength,
+        'verified_brand' => $verifiedBrand,
         'impersonation_score' => $impersonationScore,
         'risk_flags' => array_values(array_unique($riskFlags)),
         'trust_flags' => array_values(array_unique($trustFlags)),
@@ -606,6 +618,16 @@ Zu den Absender-Flags:
   faengt so an. Nur zusammen mit anderen Signalen relevant. Fehlt das Flag,
   heisst das NICHT "bekannt": ueber Firmendomains wird gar nicht Buch
   gefuehrt.
+- "verified-brand:MARKE": Die From-Domain gehoert nachweislich (per DMARC)
+  zu MARKE - kein Anzeigename-Trick, die Mail kommt wirklich von deren
+  eigenen Servern. SEHR STARKES Ham-Signal, staerker als einzelne
+  Mismatch-Flags. Grosse Firmen versenden ueber komplexe Infrastruktur:
+  ein abweichendes Reply-To, eine andere Message-ID-Domain oder ein
+  Facebook-/LinkedIn-Link im Footer sind bei ihnen NORMAL, keine
+  Faelschungsindizien. Wenn dieses Flag gesetzt ist, wiegen
+  "reply-to-domain-mismatch", "message-id-domain-mismatch" und
+  "url-domain-mismatch" deutlich weniger - die Grundsatzfrage "ist das
+  wirklich MARKE" ist bereits beantwortet.
 
 Die Risk-/Trust-Flags der lokalen Vorpruefung sind nur Hinweise, kein Urteil.
 Ausnahme: Ein Flag "brand-impersonation:MARKE" bedeutet, dass sich der
@@ -952,7 +974,7 @@ PROMPT;
     // Die KI allein reicht nicht: sie kann sich irren, und ein Reject ist die
     // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
     $strong = strongEvidence($evidence);
-    $verifiedBrand = verifiedBrandSender($mail);
+    $verifiedBrand = $localContext['verified_brand'] ?? '';
     $rejectEligible = $policy['may_reject']
         && $confidence >= 0.80
         && !empty($strong)
@@ -2224,13 +2246,28 @@ function domainMatchesAny($domain, array $allowedDomains) {
     return false;
 }
 
+// Social-Media-Icons im Footer ("folgen Sie uns auf ...") stehen in
+// praktisch jeder Firmenmail, unabhaengig davon, wer sie verschickt. Sie
+// als Abweichung von der Profildomain zu werten, traf am 25.08. eine
+// echte PayPal-Zahlungsbestaetigung ueber "url-domain-mismatch" - der
+// einzige "fremde" Link war der Facebook-Button im Footer.
+$socialFooterDomains = [
+    'facebook.com', 'twitter.com', 'x.com', 'instagram.com',
+    'linkedin.com', 'youtube.com', 'youtu.be', 'pinterest.com',
+    'tiktok.com', 'threads.net',
+];
+
 function allDomainsAllowed(array $domains, array $allowedDomains) {
+    global $socialFooterDomains;
     $domains = normalizeDomainList($domains);
     if (empty($domains)) {
         return true;
     }
 
     foreach ($domains as $domain) {
+        if (domainMatchesAny($domain, $socialFooterDomains)) {
+            continue;
+        }
         if (!domainMatchesAny($domain, $allowedDomains)) {
             return false;
         }
