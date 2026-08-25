@@ -635,6 +635,22 @@ Absender als bekannte Marke ausgibt, obwohl die Domain nicht dazu passt.
 Das ist ein starkes Phishing-Signal — stufe solche Mails als "phishing" ein,
 ausser es gibt einen klaren, legitimen Grund (z.B. ein erkennbarer Reseller).
 
+Zu den Absender-Struktur-Flags "forged-sender-symbol",
+"from-envfrom-mismatch-symbol" und "suspicious-reply-to-symbol": Sie
+bedeuten nur, dass die sichtbare From-Adresse von der technischen
+Umschlag-Adresse (Envelope-From) bzw. der Reply-To-Domain abweicht. Bei
+JEDEM Massenversand ueber einen Newsletter-Dienst (Spotler, Mailchimp,
+Brevo, Salesforce Marketing Cloud, ...) ist genau das der Normalfall: der
+Dienst versendet ueber seine eigene Bounce-Domain, waehrend From die
+Marke zeigt. Am 24.08. reichten diese drei Flags allein, um eine echte
+Modehaendler-Mail ("Dark Denim: Looks in tiefem Blau", Spotler-Versand,
+DMARC fuer madeleine.com bestanden) als Phishing einzustufen.
+Entscheidend ist die Kombination mit der Auth-Staerke: Steht "auth:strong"
+oder "auth:medium" in den Trust-Flags, ist die eigentliche Absenderdomain
+authentifiziert - dann sind diese drei Flags Infrastruktur-Rauschen, kein
+Faelschungsbeweis. Erst zusammen mit "auth:suspicious" werden sie
+aussagekraeftig.
+
 Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
 - "url-blacklisted" / "url-known-phishing": eine verlinkte Domain steht auf
   einer Malware-/Phishing-Blockliste. Sehr verlaesslich — als "phishing" oder
