@@ -634,21 +634,36 @@ Geschuetzt (werden nie abgewiesen, hoechstens einsortiert):
   Passwort-Reset, Bestaetigungscode, Vertragsdokument
 - "personal": von einem Menschen an einen Menschen geschrieben
 - "newsletter": Newsletter, den der Empfaenger erkennbar BESTELLT hat.
-  Impressum und Abmeldelink allein genuegen nicht - die hat jede seriose
-  Firma, auch bei ungefragter Werbung. Es braucht Anzeichen fuer ein Abo:
-  Listen-Kopfzeilen ("newsletter-headers-present" in den Trust-Flags), ein
-  Hinweis wie "Sie erhalten diese Mail, weil Sie sich angemeldet haben",
-  oder eine erkennbare Massenaussendung statt einer persoenlichen Ansprache.
+  ACHTUNG: Listen-Kopfzeilen, ein sauberer Massenversand-Dienst
+  (Brevo/Sendinblue, Mailchimp, ...) und formale Perfektion beweisen NUR
+  noch technisch sauberen Versand, NICHT mehr ein Abo - professionelle
+  Kaltakquise-Anbieter nutzen dieselben Dienste, weil Gmail und Yahoo das
+  von jedem Massenversender verlangen. Ein Firmenkunde, der per Brevo
+  seine unaufgeforderte Werbung verschickt, sieht technisch AUSSEHEN wie
+  ein Newsletter, ist aber keiner.
+  Es braucht einen ECHTEN Beleg fuer die Beziehung: einen Satz wie "Sie
+  erhalten diese Mail, weil Sie sich angemeldet haben" oder "aufgrund
+  Ihrer Bestellung", ODER die Trust-Flags "reply-to-our-own-mail" /
+  "sender-known-from-history" / einen Treffer bei den Trusted-Sender-
+  Profilen. Ohne eines davon ist "Listen-Kopfzeilen vorhanden" allein
+  KEIN ausreichender Beleg fuer ein Abo.
 - "marketing": kommerzielle Mail eines IDENTIFIZIERBAREN Anbieters, zu dem
-  eine Geschaeftsbeziehung BESTEHT oder plausibel frueher bestand.
+  eine Geschaeftsbeziehung BESTEHT oder plausibel frueher bestand. Auch
+  hier gilt: das beworbene Produkt muss zur vermuteten Taetigkeit des
+  Empfaengers passen, nicht nur der Absender identifizierbar sein.
 
 KALTAKQUISE ist weder das eine noch das andere, sondern "spam":
 Ungefragte Werbung eines Anbieters, mit dem keine Beziehung besteht - typisch
 "ich war auf Ihrer Website und habe einen Entwurf erstellt", "wir haben Ihr
 Unternehmen recherchiert", Angebote fuer Webdesign, SEO, Backlinks, Werbung,
 Leads oder Personalvermittlung an eine Firmenadresse. Solche Mails sind oft
-sauber gestaltet, personalisiert und formal einwandfrei - das macht sie nicht
-erwuenscht. In Deutschland ist ungefragte Werbe-Mail ohne Einwilligung
+sauber gestaltet, personalisiert, ueber einen professionellen Massenversand-
+Dienst verschickt und formal einwandfrei - NICHTS davon macht sie erwuenscht,
+und ein funktionierender Abmeldelink beweist nur, dass der Absender bulk-
+faehig ist, nicht dass abonniert wurde. Ein Anbieter fuer Baumaschinen oder
+Messtechnik, der eine Medienproduktionsfirma anschreibt, hat erkennbar keine
+bestehende Beziehung - die inhaltliche Passung zum Empfaenger ist ein
+wichtiger Hinweis. In Deutschland ist ungefragte Werbe-Mail ohne Einwilligung
 ausserdem unzulaessig, auch zwischen Unternehmen.
 Die persoenliche Ansprache ist hier KEIN Ham-Signal, sondern typisch.
 
