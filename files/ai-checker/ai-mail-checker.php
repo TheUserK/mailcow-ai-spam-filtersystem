@@ -443,6 +443,12 @@ function analyzeLocally(array $mail, $requestId) {
     if (!empty($mail['signals']['suspicious_reply_to'])) {
         $riskFlags[] = 'suspicious-reply-to-symbol';
     }
+    if (freemailReplyToSwap($mail)) {
+        $riskFlags[] = 'reply-to-freemail-swap';
+    }
+    if (fakeThreadClaim($mail)) {
+        $riskFlags[] = 'fake-thread';
+    }
     if (!empty($dangerousAttachments)) {
         $riskFlags[] = 'dangerous-attachments:' . implode(',', $dangerousAttachments);
     }
@@ -613,6 +619,15 @@ Zu den Absender-Flags:
   korrespondiert. Starkes Ham-Signal - ABER kein Freibrief: Konten echter
   Firmen werden gekapert. Passt der Inhalt nicht zur bisherigen Beziehung
   (ploetzliche Geldforderung, Login-Aufforderung), wiegt das schwerer.
+- "fake-thread": Betreff beginnt mit "Re:"/"AW:" oder der Text zitiert eine
+  angebliche Vorgaengermail ("... wrote:", "... schrieb"), obwohl technisch
+  KEIN In-Reply-To/References existiert - es gibt also keinen echten
+  Vorgaenger. Typisch fuer Kaltakquise und Phishing, das Vertrauen ueber
+  einen erfundenen Gespraechsverlauf erschleicht. Starkes Warnsignal.
+- "reply-to-freemail-swap": From und Reply-To liegen auf demselben
+  Freemail-Anbieter (z.B. beide @gmail.com), aber auf unterschiedlichen
+  Postfaechern. Die Antwort soll also bei jemand anderem landen als dem,
+  der scheinbar schreibt - klassisches Muster bei Vorschussbetrug.
 - "first-contact-freemail": Absender bei einem Freemail-Anbieter, von dem
   hier noch nie Post kam. Allein voellig unverdaechtig - jede Beziehung
   faengt so an. Nur zusammen mit anderen Signalen relevant. Fehlt das Flag,
@@ -991,7 +1006,18 @@ PROMPT;
     // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
     $strong = strongEvidence($evidence);
     $verifiedBrand = $localContext['verified_brand'] ?? '';
-    $rejectEligible = $policy['may_reject']
+
+    // Geschuetzte Kategorien (legitimate/transactional/personal) duerfen
+    // nur durchbrochen werden, wenn ZWEI voneinander unabhaengige starke
+    // Belege vorliegen und einer davon "brand-impersonation" ist: eine
+    // Markenfaelschung auf fremder Domain ist per Definition keine
+    // persoenliche Korrespondenz, egal wie das Modell die Kategorie
+    // einordnet. Am 25.08. wurde "AW: Handyvertrag ..." von
+    // "4g-vodafone.de" trotz brand-impersonation + url-on-blocklist als
+    // "personal" durchgewunken, weil die Kategorie allein schuetzte.
+    $categoryOverride = in_array('brand-impersonation', $strong, true) && count($strong) >= 2;
+
+    $rejectEligible = ($policy['may_reject'] || $categoryOverride)
         && $confidence >= 0.80
         && !empty($strong)
         && empty($localContext['matched_profile'])
@@ -1115,6 +1141,12 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if (hijackedReplyTo($mail)) {
         $evidence[] = 'hijacked-reply-to';
     }
+    if (freemailReplyToSwap($mail)) {
+        $evidence[] = 'reply-to-freemail-swap';
+    }
+    if (fakeThreadClaim($mail)) {
+        $evidence[] = 'fake-thread';
+    }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
     // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
     if (floatval($localContext['impersonation_score'] ?? 0) <= 0
@@ -1235,6 +1267,57 @@ function hijackedReplyTo(array $mail) {
 }
 
 // ---------------------------------------------------------------------
+//  Die Freemail-Variante von hijackedReplyTo(): From und Reply-To liegen
+//  auf demselben Freemail-Anbieter (z.B. beide @gmail.com), nur die
+//  Mailbox ist eine andere. Rspamds REPLYTO_DOM_NEQ_FROM_DOM vergleicht
+//  nur Domains und schlaegt hier nie an - genau diese Luecke nutzt eine
+//  Betrugsmail, die als "sahu...@gmail.com" schreibt und auf
+//  "jonemith...@gmail.com" antworten laesst.
+// ---------------------------------------------------------------------
+function freemailReplyToSwap(array $mail) {
+    if (empty($mail['signals']['freemail_from']) || empty($mail['signals']['freemail_reply_to'])) {
+        return false;
+    }
+    $from = extractEmailAddress($mail['from_email']);
+    $replyTo = extractEmailAddress($mail['reply_to']);
+    return $from !== '' && $replyTo !== '' && $from !== $replyTo;
+}
+
+// ---------------------------------------------------------------------
+//  Behauptet die Mail, Teil eines laufenden Austauschs zu sein ("Re:",
+//  "AW:" im Betreff, ein zitiertes "... wrote:" / "... schrieb" im Text),
+//  obwohl In-Reply-To UND References beide leer sind? Dann gibt es
+//  technisch keinen Vorgaenger - der Bezug ist erfunden. Ein Klassiker
+//  bei Kaltakquise und Phishing, um Vertrauen vorzutaeuschen ("AW: Handy-
+//  vertrag ...", "On Fri, 26 June wrote: ..." ohne echten Thread).
+//  "Fwd:"/"WG:" bleibt aussen vor: Weiterleitungen an einen neuen
+//  Empfaenger haben legitim kein In-Reply-To.
+// ---------------------------------------------------------------------
+function fakeThreadClaim(array $mail) {
+    if ($mail['in_reply_to'] !== '' || $mail['references'] !== '') {
+        return false;
+    }
+
+    if (preg_match('/^\s*(re|aw|antw(ort)?)\s*:/iu', $mail['subject'])) {
+        return true;
+    }
+
+    static $quotePatterns = [
+        '/\bOn\s.{5,80}\bwrote:/iu',
+        '/\bam\s.{5,80}\bschrieb\b/iu',
+        '/-{2,}\s*(original\s*message|urspruengliche\s*nachricht)/iu',
+        '/\bVon:.{0,80}Gesendet:.{0,80}An:/isu',
+        '/\bFrom:.{0,80}Sent:.{0,80}To:/isu',
+    ];
+    foreach ($quotePatterns as $pattern) {
+        if (preg_match($pattern, $mail['body_clean'])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------
 //  Nicht jeder Beleg wiegt gleich schwer, der Reject-Gate fragte aber nur
 //  "ist ueberhaupt einer da". Drei Klassen stuetzen sich auf eine externe,
 //  vom Absender nicht beeinflussbare Quelle - eine gepflegte Markenliste,
@@ -1255,6 +1338,7 @@ function strongEvidence(array $evidence) {
         'url-on-blocklist',      // externe Reputationsdaten
         'dangerous-attachment',  // ausfuehrbarer Anhang
         'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
+        'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
     ];
     return array_values(array_intersect($evidence, $strong));
 }
@@ -2171,6 +2255,17 @@ function extractDomainFromAddress($value) {
     }
 
     return normalizeHost($value);
+}
+
+function extractEmailAddress($value) {
+    $value = cleanTextValue($value);
+    if ($value === '') {
+        return '';
+    }
+    if (preg_match('/<([^>]+)>/', $value, $matches)) {
+        $value = $matches[1];
+    }
+    return mb_strtolower(trim($value));
 }
 
 function extractDomainFromMessageId($value) {
