@@ -1360,16 +1360,37 @@ function fakeThreadClaim(array $mail) {
         return false;
     }
 
-    if (preg_match('/^\s*(re|aw|antw(ort)?)\s*:/iu', $mail['subject'])) {
-        return true;
+    // Der Doppelpunkt ist optional: "Re- Neu gestalten" (27.08., Webdesign-
+    // Kaltakquise aus einem Outlook-Postfach) ersetzt ihn durch einen
+    // Bindestrich, vermutlich genau gegen solche Pruefungen. Beim Binde-
+    // strich ist ein Leerzeichen danach Pflicht, sonst faengt das Muster
+    // echte Betreffs wie "Re-Design Ihrer Website" mit ein.
+    static $subjectPatterns = [
+        '/^\s*(re|aw|antw(ort)?)\s*:/iu',
+        '/^\s*(re|aw|antw(ort)?)\s*[\-\x{2013}\x{2014}_]\s+/iu',
+    ];
+    foreach ($subjectPatterns as $pattern) {
+        if (preg_match($pattern, $mail['subject'])) {
+            return true;
+        }
     }
 
+    // Eine echte Weiterleitung hat legitim kein In-Reply-To und traegt
+    // trotzdem einen zitierten Kopf im Text - fuer sie darf die Pruefung
+    // unten nicht greifen.
+    if (preg_match('/^\s*(fwd?|wg|weitergeleitet)\s*[:\-]/iu', $mail['subject'])) {
+        return false;
+    }
+
+    // Der zitierte Kopf braucht kein "An:"/"To:" - Outlook-Zitate bestehen
+    // oft nur aus From/Sent/Subject, und genau so sah der erfundene
+    // Vorgaenger in der Mail vom 27.08. aus.
     static $quotePatterns = [
         '/\bOn\s.{5,80}\bwrote:/iu',
         '/\bam\s.{5,80}\bschrieb\b/iu',
         '/-{2,}\s*(original\s*message|urspruengliche\s*nachricht)/iu',
-        '/\bVon:.{0,80}Gesendet:.{0,80}An:/isu',
-        '/\bFrom:.{0,80}Sent:.{0,80}To:/isu',
+        '/\bVon:.{0,80}Gesendet:.{0,120}(An|Betreff):/isu',
+        '/\bFrom:.{0,80}Sent:.{0,120}(To|Subject):/isu',
     ];
     foreach ($quotePatterns as $pattern) {
         if (preg_match($pattern, $mail['body_clean'])) {
