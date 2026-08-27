@@ -452,6 +452,9 @@ function analyzeLocally(array $mail, $requestId) {
     if (institutionalRoleOnFreemail($mail)) {
         $riskFlags[] = 'role-name-on-freemail';
     }
+    if (bareLinkFromStranger($mail)) {
+        $riskFlags[] = 'bare-link-first-contact';
+    }
     if (!empty($dangerousAttachments)) {
         $riskFlags[] = 'dangerous-attachments:' . implode(',', $dangerousAttachments);
     }
@@ -627,6 +630,12 @@ Zu den Absender-Flags:
   KEIN In-Reply-To/References existiert - es gibt also keinen echten
   Vorgaenger. Typisch fuer Kaltakquise und Phishing, das Vertrauen ueber
   einen erfundenen Gespraechsverlauf erschleicht. Starkes Warnsignal.
+- "bare-link-first-contact": Die Mail besteht praktisch nur aus einem Link,
+  und vom Absender (Freemail) kam hier noch nie Post. Das ist KEIN Beweis
+  fuer Spam - eine kurze echte Nachricht sieht genauso aus. Es heisst nur:
+  hier gibt es ausser dem Link nichts, woran man die Absicht pruefen
+  koennte. Also nicht als sicher legitim einstufen, nur weil der Ton
+  persoenlich klingt.
 - "role-name-on-freemail": Der Anzeigename gibt eine Stelle einer
   Organisation an ("Support Service", "Buchhaltung", "Reservierungen",
   "Automated Message"), das Postfach ist aber Freemail (gmail, libero.it,
@@ -1006,6 +1015,14 @@ PROMPT;
         $score = max($score, 0.0);
     }
 
+    // Kein Ham-Bonus fuer eine Mail, die aus nichts als einem Link
+    // besteht und von einem Freemail-Erstkontakt kommt. Ein Profiltreffer
+    // hebt das auf - dann ist der Absender ja gerade bekannt.
+    $bareLink = empty($localContext['matched_profile']) && bareLinkFromStranger($mail);
+    if ($bareLink) {
+        $score = max($score, 0.0);
+    }
+
     // --- Wie hart darf diese Mail behandelt werden? ---
     $policy     = categoryPolicy($category);
     $confidence = floatval($analysis['confidence'] ?? 0.5);
@@ -1277,6 +1294,44 @@ function hijackedReplyTo(array $mail) {
     return !empty($mail['signals']['freemail_reply_to'])
         && !empty($mail['signals']['suspicious_reply_to'])
         && empty($mail['signals']['freemail_from']);
+}
+
+// ---------------------------------------------------------------------
+//  Eine Mail, die aus nichts als einem Link besteht - von jemandem, von
+//  dem hier noch nie Post kam.
+//
+//  Am 27.08. kam "Link zum Plugin" von einer Yahoo-Adresse: zwei Zeilen,
+//  Duzen, "wie versprochen", eine URL, Namensgruss. Das Modell stufte sie
+//  als "personal" ein, war sich sicher, und der Ham-Rescue vergab -2.43 -
+//  der Filter hat die Mail also aktiv beglaubigt und Rspamds Score
+//  gesenkt. Die Mail war am Ende harmlos (ein echtes, wenn auch
+//  eigenwillig gehostetes Plugin-Projekt), aber die Form ist exakt die,
+//  die ein Angreifer waehlt: als kurze Privatnachricht getarnt, mit dem
+//  Link als einzigem Inhalt.
+//
+//  Deshalb hier bewusst KEIN Aufschlag und KEIN Beleg, sondern nur das
+//  Streichen des Rabatts - dieselbe Bauart wie bei Prompt-Injection. So
+//  eine Mail landet dann bei 0 statt im Minus. Niemand verliert Post,
+//  aber der Filter stellt ihr auch kein Zeugnis mehr aus.
+// ---------------------------------------------------------------------
+function bareLinkFromStranger(array $mail) {
+    // Nur bei Freemail-Erstkontakt: ueber Firmendomains fuehrt Rspamd
+    // gar nicht Buch, dort waere "unbekannt" eine Falschaussage.
+    if (empty($mail['signals']['freemail_from']) || empty($mail['signals']['unknown_sender'])) {
+        return false;
+    }
+    if (!empty($mail['signals']['known_sender']) || !empty($mail['signals']['reply_to_our_mail'])) {
+        return false;
+    }
+    if (empty($mail['urls']) && intval($mail['content_stats']['link_count'] ?? 0) < 1) {
+        return false;
+    }
+
+    // Bleibt ohne die URLs noch nennenswerter Text uebrig? Dann ist die
+    // Mail eine Nachricht mit Link, keine Mail AUS einem Link.
+    $text = preg_replace('#https?://\S+#iu', ' ', $mail['body_clean']);
+    $text = trim(preg_replace('/\s+/u', ' ', (string)$text));
+    return mb_strlen($text) <= 200;
 }
 
 // ---------------------------------------------------------------------
