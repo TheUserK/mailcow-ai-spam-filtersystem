@@ -166,6 +166,24 @@ define('AI_MAY_REJECT', true);
 // begrenzt den Wert danach weiterhin.
 define('REJECT_FLOOR', 16.0);
 
+// Gegenstueck zu REJECT_FLOOR, eine Etage tiefer: Sagt das Modell mit hoher
+// Sicherheit eine angreifbare Kategorie, soll die Summe garantiert ueber der
+// Junk-Schwelle liegen - auch wenn Rspamd vorher Minuspunkte verteilt hat.
+//
+// Am 27.08. kam "Diese Finanz-Info koennte Ihr Leben veraendern" in den
+// Posteingang: Die KI gab +6.30 fuer "spam", Rspamd zog -0.12 ab, Summe
+// 6.18 - die Junk-Schwelle um 0.18 Punkte verfehlt. Die Minuspunkte kamen
+// zustande, weil der Versender eigene Domain, vollstaendige
+// Authentifizierung und List-Unsubscribe hat. Professionelle Infrastruktur
+// beweist aber nur, dass jemand versenden KANN, nicht dass es erwuenscht
+// war. Rspamd kann das nicht unterscheiden, das Modell schon - und dessen
+// Urteil darf davon nicht mehr verwaessert werden.
+//
+// Bewusst weit unter REJECT_THRESHOLD: Junk ist wiederherstellbar, hier
+// kann keine Post verloren gehen. Deshalb genuegt hier auch das
+// Modellurteil - anders als beim Reject braucht es keinen Strukturbeleg.
+define('JUNK_FLOOR', 8.0);
+
 define('MAX_PHISHING_POINTS', 10.0); // Phishing/Fraud darf kraeftig beissen, aber
                                      // bewusst UNTER Rspamds Reject-Schwelle (15):
                                      // die KI allein soll nie eine Mail versenken.
@@ -237,6 +255,7 @@ logStats($requestId, [
     'claimed_brand' => $result['claimed_brand'] ?? '',
     'verified_brand' => $result['verified_brand'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
+    'confidence' => $result['confidence'] ?? 0,
     'auth_strength' => $result['auth_strength'] ?? 'unknown',
     'list_headers' => !empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id']),
     'matched_profile' => $localResult['matched_profile'] ?? '',
@@ -1059,6 +1078,21 @@ PROMPT;
         $score = max($score, REJECT_FLOOR);
     }
 
+    // Junk-Untergrenze: siehe JUNK_FLOOR. Greift auch ohne Strukturbeleg -
+    // eingeordnet wird auf Modellurteil hin, verworfen nie. Laufende
+    // Konversationen und bekannte Absender bleiben aussen vor.
+    $junkFloorApplies = $policy['may_reject']
+        && $confidence >= 0.80
+        && empty($localContext['matched_profile'])
+        && $verifiedBrand === ''
+        && empty($mail['signals']['reply_to_our_mail'])
+        && $mail['in_reply_to'] === '';
+
+    if ($junkFloorApplies) {
+        $needed = JUNK_FLOOR - $mail['rspamd_score'];
+        $score = max($score, min($needed, $policy['points']));
+    }
+
     $scoreBeforeCeiling = $score;
     $score = clampToTotalCeiling($score, $mail['rspamd_score'], $ceiling);
 
@@ -1095,6 +1129,7 @@ PROMPT;
         'verified_brand'  => $verifiedBrand,
         'prompt_injection' => $injection,
         'auth_strength'   => $localContext['auth_strength'] ?? 'unknown',
+        'confidence'      => $confidence,
     ];
 }
 
@@ -2223,6 +2258,10 @@ function logStats($requestId, $data) {
         'rejected' => AI_MAY_REJECT && $totalScore >= REJECT_THRESHOLD,
         'ai_action' => $data['ai_action'] ?? 'add',
         'category' => $data['category'] ?? 'unknown',
+        // Ohne die Confidence laesst sich im Nachhinein nicht beurteilen,
+        // warum eine Mail eine Schwelle knapp verfehlt hat - genau die
+        // Zahl fehlte beim Fall vom 27.08.
+        'confidence' => round(floatval($data['confidence'] ?? 0), 2),
         'red_flags' => array_slice(normalizeStringList($data['red_flags'] ?? []), 0, 8),
         'analysis_source' => $data['analysis_source'] ?? 'unknown',
         'matched_profile' => $data['matched_profile'] ?? '',
