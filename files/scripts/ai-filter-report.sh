@@ -163,13 +163,15 @@ render_group() {
         select(.timestamp >= \$since) |
         select($bedingung) |
         [ (.timestamp|sub(\"\\\\+00:00$\";\"Z\")|fromdateiso8601|strflocaltime(\"%d.%m. %H:%M\")),
-          ((.ai_score // 0)|tostring),
+          (((.total_score // ((.rspamd_score // 0) + (.ai_score // 0))) * 100 | round / 100)|tostring),
           (.category // \"-\"),
           (.from // \"-\"),
-          ((if .reject_eligible then \"REJECT \" else \"\" end) + ((.evidence // [])|join(\",\"))),
+          ((if (.rejected // false) then \"ABGEWIESEN \"
+            elif .reject_eligible then \"freigegeben \"
+            else \"\" end) + ((.evidence // [])|join(\",\"))),
           (.subject // \"\")
         ] | @tsv" 2>/dev/null \
-        | awk -F'\t' '{ printf "    %-14s %7s  %-13s %-32s %-30s %s\n", $1,$2,$3,$4,$5,$6 }')
+        | awk -F'\t' '{ printf "    %-14s %7s  %-13s %-32s %-40s %s\n", $1,$2,$3,$4,$5,$6 }')
 
     [[ -z "$out" ]] && return 1
     echo
@@ -241,6 +243,22 @@ BODY=$(
     render_group "Beleg auf offensichtlich harmloser Post" \
         "$(printf 'Ein struktureller Beleg auf einer Mail mit negativem Score - vermutlich ein Fehlalarm.')" \
         '((.evidence // []) | length) > 0 and (.ai_score // 0) < 0' && FOUND=1
+
+    # 7. Betrug erkannt, aber kein Beleg - also zugestellt.
+    #
+    # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist
+    # sich sicher, dass die Mail Betrug oder Phishing ist, aber es gibt
+    # keinen strukturellen Beleg, und ohne den wird nie abgewiesen. Die
+    # Mail landet also im Postfach der Kollegin. Am 26.08. war das ein
+    # "Guest Experience Report" von "Support Service <...@libero.it>" -
+    # kein Link, kein Anhang, keine Markendomain, an der etwas zu
+    # erkennen gewesen waere. Jede Zeile hier zeigt ein Muster, fuer das
+    # noch ein Signal fehlt.
+    render_group "Betrug erkannt, aber kein Beleg zum Abweisen" \
+        "$(printf 'Die KI ist sicher, es fehlt aber ein struktureller Beleg - die Mail wurde zugestellt.')" \
+        '(.category == "fraud" or .category == "phishing")
+         and ((.evidence // []) | length) == 0
+         and ((.rejected // false) | not)' && FOUND=1
 )
 
 if [[ -z "$BODY" ]]; then
@@ -259,6 +277,11 @@ $BODY
 
 Diese Zeilen sind keine Fehler, sondern Faelle, in denen sich das System
 selbst widerspricht. Genau dort lagen bisher alle Fehlurteile.
+
+Die Zahl ist der GESAMTSCORE (Rspamd + KI), ab 15 wird abgewiesen.
+  ABGEWIESEN   die Mail wurde am Server abgelehnt, sie kam nie an.
+  freigegeben  sie haette abgewiesen werden duerfen, blieb aber unter der
+               Schwelle - sie wurde ZUGESTELLT (meist in den Junk-Ordner).
 
   ai-filter-log.sh -n 200 -F <absender>     Umfeld ansehen
   ai-filter-report.sh --disable             diesen Report abstellen

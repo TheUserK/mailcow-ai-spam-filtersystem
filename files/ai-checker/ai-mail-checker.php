@@ -449,6 +449,9 @@ function analyzeLocally(array $mail, $requestId) {
     if (fakeThreadClaim($mail)) {
         $riskFlags[] = 'fake-thread';
     }
+    if (institutionalRoleOnFreemail($mail)) {
+        $riskFlags[] = 'role-name-on-freemail';
+    }
     if (!empty($dangerousAttachments)) {
         $riskFlags[] = 'dangerous-attachments:' . implode(',', $dangerousAttachments);
     }
@@ -624,6 +627,13 @@ Zu den Absender-Flags:
   KEIN In-Reply-To/References existiert - es gibt also keinen echten
   Vorgaenger. Typisch fuer Kaltakquise und Phishing, das Vertrauen ueber
   einen erfundenen Gespraechsverlauf erschleicht. Starkes Warnsignal.
+- "role-name-on-freemail": Der Anzeigename gibt eine Stelle einer
+  Organisation an ("Support Service", "Buchhaltung", "Reservierungen",
+  "Automated Message"), das Postfach ist aber Freemail (gmail, libero.it,
+  outlook.com, ...). Echte Organisationen versenden Vorgangspost ueber
+  ihre eigene Domain. Sehr starkes Betrugssignal - besonders bei Mails,
+  die einen angeblichen Vorgang, eine Beschwerde oder eine Forderung
+  behaupten ("Guest Experience Report", "Ihre Rechnung", "Schadensfall").
 - "reply-to-freemail-swap": From und Reply-To liegen auf demselben
   Freemail-Anbieter (z.B. beide @gmail.com), aber auf unterschiedlichen
   Postfaechern. Die Antwort soll also bei jemand anderem landen als dem,
@@ -1147,6 +1157,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if (fakeThreadClaim($mail)) {
         $evidence[] = 'fake-thread';
     }
+    if (institutionalRoleOnFreemail($mail)) {
+        $evidence[] = 'role-name-on-freemail';
+    }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
     // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
     if (floatval($localContext['impersonation_score'] ?? 0) <= 0
@@ -1267,6 +1280,55 @@ function hijackedReplyTo(array $mail) {
 }
 
 // ---------------------------------------------------------------------
+//  Eine Institution, die aus einem Freemail-Postfach schreibt.
+//
+//  Betrug gegen Firmen kommt oft voellig ohne Link, Anhang und behauptete
+//  Markendomain: "Support Service <TeaFranchi8855@libero.it>" schreibt
+//  einen "Guest Experience Report" an ein Hotel, angeblich automatisch
+//  erzeugt, und baut auf Schadensersatz hinaus. Strukturell war daran
+//  bisher nichts zu fassen - die Kategorie "fraud" sass richtig, aber ohne
+//  Beleg konnte die Mail nie abgewiesen werden.
+//
+//  Der Beleg steht im Absenderfeld: Der Anzeigename gibt eine Stelle einer
+//  Organisation an (Support, Buchhaltung, Reservierung, No-Reply), das
+//  Postfach ist aber Freemail. Echte Organisationen versenden Vorgangs-
+//  und Abteilungspost ueber ihre eigene Domain - eine Privatperson wiederum
+//  nennt sich nicht "Billing Department".
+//
+//  Bewusst eng gehalten: Rollen, die eine Institution vortaeuschen. Nicht
+//  "Info", "Kontakt" oder "Buero" - so nennen sich Kleinbetriebe wirklich.
+// ---------------------------------------------------------------------
+function institutionalRoleOnFreemail(array $mail) {
+    if (empty($mail['signals']['freemail_from'])) {
+        return false;
+    }
+    $name = trim((string)$mail['from_display_name']);
+    if ($name === '') {
+        return false;
+    }
+
+    static $rolePatterns = [
+        '/\b(support|help ?desk|customer (care|service|support))\b/iu',
+        '/\b(kunden(dienst|service|betreuung)|technischer support)\b/iu',
+        '/\b(billing|accounts? (payable|receivable|department)|invoicing)\b/iu',
+        '/\b(buchhaltung|rechnungs(stelle|wesen)|abrechnung)\b/iu',
+        '/\b(security|abuse|compliance|fraud) (team|desk|department|center|centre)\b/iu',
+        '/\b(sicherheits(team|abteilung|dienst))\b/iu',
+        '/\b(no[-_ ]?reply|do[-_ ]?not[-_ ]?reply|automated|automatic) /iu',
+        '/\b(notification|notifications|benachrichtigung(en)?|alerts?) (service|team|center|centre)\b/iu',
+        '/\b(reservations?|bookings?|reservierung(en)?|buchungs(stelle|abteilung))\b/iu',
+        '/\b(administrator|systemadministrator|it[- ]abteilung|mail ?(admin|delivery))\b/iu',
+    ];
+
+    foreach ($rolePatterns as $pattern) {
+        if (preg_match($pattern, $name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------
 //  Die Freemail-Variante von hijackedReplyTo(): From und Reply-To liegen
 //  auf demselben Freemail-Anbieter (z.B. beide @gmail.com), nur die
 //  Mailbox ist eine andere. Rspamds REPLYTO_DOM_NEQ_FROM_DOM vergleicht
@@ -1339,6 +1401,7 @@ function strongEvidence(array $evidence) {
         'dangerous-attachment',  // ausfuehrbarer Anhang
         'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
         'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
+        'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
     ];
     return array_values(array_intersect($evidence, $strong));
 }
@@ -2061,13 +2124,27 @@ function logStats($requestId, $data) {
     $from = $data['from'] ?? '';
     $to = $data['to'] ?? '';
 
+    // Gesamtscore und tatsaechliches Ergebnis mitschreiben.
+    //
+    // Bisher standen hier nur rspamd_score und ai_score einzeln, und der
+    // Report zeigte "REJECT", sobald reject_eligible gesetzt war. Das
+    // heisst aber nur "haette abgewiesen werden DUERFEN" - ob die Summe
+    // die Schwelle wirklich erreicht hat, stand nirgends. Eine Zeile mit
+    // "REJECT" konnte also genauso gut im Posteingang gelandet sein, und
+    // genau diese Frage laesst sich am Report nicht beantworten.
+    $rspamdScore = floatval($data['rspamd_score'] ?? 0);
+    $aiScore     = round(floatval($data['ai_score'] ?? 0), 2);
+    $totalScore  = round($rspamdScore + $aiScore, 2);
+
     $entry = [
         'timestamp' => date('c'),
         'id' => $requestId,
         'from' => anonymizeAddress($from),
         'to' => anonymizeAddress($to),
-        'rspamd_score' => floatval($data['rspamd_score'] ?? 0),
-        'ai_score' => round(floatval($data['ai_score'] ?? 0), 2),
+        'rspamd_score' => $rspamdScore,
+        'ai_score' => $aiScore,
+        'total_score' => $totalScore,
+        'rejected' => AI_MAY_REJECT && $totalScore >= REJECT_THRESHOLD,
         'ai_action' => $data['ai_action'] ?? 'add',
         'category' => $data['category'] ?? 'unknown',
         'red_flags' => array_slice(normalizeStringList($data['red_flags'] ?? []), 0, 8),
