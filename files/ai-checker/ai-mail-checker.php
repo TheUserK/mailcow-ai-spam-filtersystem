@@ -471,6 +471,10 @@ function analyzeLocally(array $mail, $requestId) {
     if (institutionalRoleOnFreemail($mail)) {
         $riskFlags[] = 'role-name-on-freemail';
     }
+    $freeHostLinks = findFreeHostingLinks($mail['url_domains'], $mail['from_domain']);
+    if (!empty($freeHostLinks)) {
+        $riskFlags[] = 'free-hosting-link:' . implode(',', $freeHostLinks);
+    }
     if (bareLinkFromStranger($mail)) {
         $riskFlags[] = 'bare-link-first-contact';
     }
@@ -649,6 +653,15 @@ Zu den Absender-Flags:
   KEIN In-Reply-To/References existiert - es gibt also keinen echten
   Vorgaenger. Typisch fuer Kaltakquise und Phishing, das Vertrauen ueber
   einen erfundenen Gespraechsverlauf erschleicht. Starkes Warnsignal.
+- "free-hosting-link:DOMAIN": Die Mail verlinkt eine kostenlose Blog- oder
+  Baukasten-Plattform (Blogspot, Glitch, 000webhost, ...), obwohl sie
+  selbst nicht von dort kommt. Sehr starkes Warnsignal, gerade wenn die
+  Absenderdomain echt und authentifiziert ist: Angreifer schmuggeln ihren
+  Link ueber Registrier- und Kontaktformulare in die Benachrichtigungs-
+  mails ECHTER Seiten. Die Mail ist dann technisch einwandfrei und
+  trotzdem ein Angriff. Eine Kontomail, die Zugangsdaten oder einen
+  Login-Link ankuendigt und dabei irgendwohin ausser auf die eigene
+  Domain zeigt, ist "phishing".
 - "bare-link-first-contact": Die Mail besteht praktisch nur aus einem Link,
   und vom Absender (Freemail) kam hier noch nie Post. Das ist KEIN Beweis
   fuer Spam - eine kurze echte Nachricht sieht genauso aus. Es heisst nur:
@@ -1212,6 +1225,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if (institutionalRoleOnFreemail($mail)) {
         $evidence[] = 'role-name-on-freemail';
     }
+    if (!empty(findFreeHostingLinks($mail['url_domains'], $mail['from_domain']))) {
+        $evidence[] = 'free-hosting-link';
+    }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
     // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
     if (floatval($localContext['impersonation_score'] ?? 0) <= 0
@@ -1329,6 +1345,72 @@ function hijackedReplyTo(array $mail) {
     return !empty($mail['signals']['freemail_reply_to'])
         && !empty($mail['signals']['suspicious_reply_to'])
         && empty($mail['signals']['freemail_from']);
+}
+
+// ---------------------------------------------------------------------
+//  Links auf kostenlose Baukasten- und Blog-Plattformen.
+//
+//  Am 28.08. kam "[Marca Blanca Digital] Datos de acceso": eine echte
+//  WordPress-Kontobenachrichtigung von einer echten spanischen Seite mit
+//  einwandfreier Authentifizierung - in die ein Angreifer ueber das
+//  Registrierformular seinen eigenen Link geschmuggelt hatte. Die Mail
+//  verlinkte "marcablancadigital.com" UND "fsegrdxd.blogspot.ug".
+//
+//  Gegen diese Masche greift keiner unserer bisherigen Belege: Die
+//  Absenderdomain ist echt und authentifiziert, es wird keine fremde
+//  Marke behauptet, und eine frisch angelegte Blogspot-Subdomain steht
+//  auf keiner Blockliste. Der Beleg ist die Plattform selbst.
+//
+//  Die Liste ist bewusst kurz und enthaelt NUR Plattformen, die in
+//  Geschaeftspost praktisch nie verlinkt werden. Bewusst NICHT dabei:
+//  github.io, netlify.app, vercel.app, pages.dev, wixsite.com,
+//  weebly.com, jimdofree.com, sites.google.com - die werden von echten
+//  kleinen Firmen und Entwicklern benutzt. Lieber ein paar Faelle
+//  verpassen als einen Handwerksbetrieb mit Baukastenseite abweisen.
+//
+//  Kommt die Mail selbst von der Plattform, ist der Link normal.
+// ---------------------------------------------------------------------
+function findFreeHostingLinks(array $domains, $fromDomain) {
+    $domains    = normalizeDomainList($domains);
+    $fromDomain = normalizeHost($fromDomain);
+
+    static $platforms = [
+        '000webhostapp.com', 'altervista.org', 'angelfire.com',
+        'glitch.me', 'neocities.org', 'repl.co', 'replit.app',
+        'tripod.com', 'webnode.page', 'yolasite.com',
+    ];
+
+    $hits = [];
+    foreach ($domains as $domain) {
+        // Blogspot laeuft unter jeder Laendertopleveldomain - Angreifer
+        // greifen bevorzugt zu den abgelegenen (.ug, .cat, .co.ke).
+        $isBlogspot = (bool)preg_match('/(^|\.)blogspot\.[a-z]{2,3}(\.[a-z]{2,3})?$/', $domain);
+        $platform   = $isBlogspot ? 'blogspot' : '';
+
+        if (!$isBlogspot) {
+            foreach ($platforms as $p) {
+                if ($domain === $p || endsWith($domain, '.' . $p)) {
+                    $platform = $p;
+                    break;
+                }
+            }
+        }
+        if ($platform === '') {
+            continue;
+        }
+
+        // Selbst von dort versendet? Dann ist der Link erwartbar.
+        $senderIsPlatform = $isBlogspot
+            ? (bool)preg_match('/(^|\.)blogspot\.[a-z]{2,3}(\.[a-z]{2,3})?$/', $fromDomain)
+            : ($fromDomain === $platform || endsWith($fromDomain, '.' . $platform));
+        if ($senderIsPlatform) {
+            continue;
+        }
+
+        $hits[] = $domain;
+    }
+
+    return array_values(array_unique($hits));
 }
 
 // ---------------------------------------------------------------------
@@ -1513,6 +1595,7 @@ function strongEvidence(array $evidence) {
         'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
         'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
+        'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
     ];
     return array_values(array_intersect($evidence, $strong));
 }
