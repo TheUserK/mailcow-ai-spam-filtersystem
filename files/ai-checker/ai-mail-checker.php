@@ -221,7 +221,6 @@ if (!empty($localResult['handled'])) {
         'red_flags' => $localResult['red_flags'] ?? [],
         'analysis_source' => $localResult['analysis_source'] ?? 'local',
         'matched_profile' => $localResult['matched_profile'] ?? '',
-        'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
         'url_domains' => $mail['url_domains'],
     ]);
 
@@ -256,10 +255,10 @@ logStats($requestId, [
     'verified_brand' => $result['verified_brand'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
     'confidence' => $result['confidence'] ?? 0,
+    'ai_score_raw' => $result['ai_score_raw'] ?? null,
     'auth_strength' => $result['auth_strength'] ?? 'unknown',
     'list_headers' => !empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id']),
     'matched_profile' => $localResult['matched_profile'] ?? '',
-    'mail_type_guess' => $localResult['mail_type_guess'] ?? '',
     'url_domains' => $mail['url_domains'],
 ]);
 
@@ -420,13 +419,53 @@ function prepareMailContext(array $data) {
 //  LOKALE VORPRUEFUNG
 //  Kein Hard-Reject mehr! Nur sicherer Auto-Pass + Kontext-Flags.
 // =====================================================================
+// ---------------------------------------------------------------------
+//  Alle Strukturmerkmale einer Mail an EINER Stelle.
+//
+//  Vorher wurde jedes davon zweimal berechnet: einmal in analyzeLocally()
+//  fuer die Risk-Flags im Prompt, einmal in collectStructuralEvidence()
+//  fuer die Belegliste. Zwei Stellen, die dasselbe herleiten, driften
+//  auseinander - genau daran ist der PayPal-Fehlalarm gescheitert, als
+//  verifiedBrandSender() erst nach dem API-Aufruf lief und das Modell die
+//  Erkenntnis nie zu sehen bekam. Ab hier gibt es eine Quelle.
+// ---------------------------------------------------------------------
+function structuralSignals(array $mail, $verifiedBrand = '') {
+    return [
+        'dangerous_attachments'  => findDangerousAttachments($mail['attachments']),
+        'shortener_domains'      => findShortenerDomains($mail['url_domains']),
+        'free_hosting_links'     => findFreeHostingLinks($mail['url_domains'], $mail['from_domain']),
+        'cloud_storage_only'     => allUrlsAreCloudStorage($mail['url_domains']),
+        'hijacked_reply_to'      => hijackedReplyTo($mail),
+        'reply_to_freemail_swap' => freemailReplyToSwap($mail),
+        'fake_thread'            => fakeThreadClaim($mail),
+        'role_name_on_freemail'  => institutionalRoleOnFreemail($mail),
+        'bare_link_stranger'     => bareLinkFromStranger($mail),
+        // Ist der Absender per DMARC als bekannte Marke beglaubigt, zaehlt
+        // ein Blocklisten-Treffer nicht. Am 28.08. bekam Googles woechent-
+        // liche Praemien-Mail "phishing" und +6.30, weil c.gle - Googles
+        // eigener Kurzdienst - auf einer Phishing-Liste steht, denn Phisher
+        // missbrauchen ihn. Alle vier Links der Mail gehoerten Google.
+        //
+        // Dass das passieren kann, steht seit dem 21.08. bei
+        // verifiedBrandSender() kommentiert. Nur war dort die Ablehnung
+        // gesperrt, nicht der Beleg - und schlimmer: Das Flag ging in den
+        // Prompt, das Modell schloss daraus vernuenftig auf Phishing. Wir
+        // haben es selbst in die Irre gefuehrt.
+        'url_on_blocklist'       => $verifiedBrand === ''
+                                 && (!empty($mail['signals']['url_blacklisted'])
+                                     || !empty($mail['signals']['url_phishing'])),
+    ];
+}
+
 function analyzeLocally(array $mail, $requestId) {
     $profiles = getTrustedSenderProfiles();
     $matchedProfile = matchTrustedProfile($mail, $profiles);
     $authStrength = evaluateAuthStrength($mail);
+    $verifiedBrand = verifiedBrandSender($mail);
+    $struct = structuralSignals($mail, $verifiedBrand);
 
-    $dangerousAttachments = findDangerousAttachments($mail['attachments']);
-    $shortenerDomains = findShortenerDomains($mail['url_domains']);
+    $dangerousAttachments = $struct['dangerous_attachments'];
+    $shortenerDomains = $struct['shortener_domains'];
     $riskFlags = [];
     $trustFlags = [];
 
@@ -448,7 +487,6 @@ function analyzeLocally(array $mail, $requestId) {
     // weil vier Mismatch-Flags allein im Prompt standen - die Erkenntnis
     // "das ist wirklich PayPal" existierte im Code, wurde aber erst nach
     // dem API-Aufruf gezogen und kam beim Modell nie an.
-    $verifiedBrand = verifiedBrandSender($mail);
     if ($verifiedBrand !== '') {
         $trustFlags[] = 'verified-brand:' . $verifiedBrand;
     }
@@ -462,24 +500,23 @@ function analyzeLocally(array $mail, $requestId) {
     if (!empty($mail['signals']['suspicious_reply_to'])) {
         $riskFlags[] = 'suspicious-reply-to-symbol';
     }
-    if (freemailReplyToSwap($mail)) {
+    if ($struct['reply_to_freemail_swap']) {
         $riskFlags[] = 'reply-to-freemail-swap';
     }
-    if (fakeThreadClaim($mail)) {
+    if ($struct['fake_thread']) {
         $riskFlags[] = 'fake-thread';
     }
-    if (institutionalRoleOnFreemail($mail)) {
+    if ($struct['role_name_on_freemail']) {
         $riskFlags[] = 'role-name-on-freemail';
     }
-    $freeHostLinks = findFreeHostingLinks($mail['url_domains'], $mail['from_domain']);
-    if (!empty($freeHostLinks)) {
-        $riskFlags[] = 'free-hosting-link:' . implode(',', $freeHostLinks);
+    if (!empty($struct['free_hosting_links'])) {
+        $riskFlags[] = 'free-hosting-link:' . implode(',', $struct['free_hosting_links']);
     }
-    if (bareLinkFromStranger($mail)) {
+    if ($struct['bare_link_stranger']) {
         $riskFlags[] = 'bare-link-first-contact';
     }
     if (!empty($dangerousAttachments)) {
-        $riskFlags[] = 'dangerous-attachments:' . implode(',', $dangerousAttachments);
+        $riskFlags[] = 'dangerous-attachment:' . implode(',', $dangerousAttachments);
     }
     if (!empty($shortenerDomains)) {
         $riskFlags[] = 'url-shortener:' . implode(',', $shortenerDomains);
@@ -489,12 +526,10 @@ function analyzeLocally(array $mail, $requestId) {
     // Domain ist einmal neu -, aber in Kombination mit einer behaupteten
     // Marke oder einer Geldforderung ist es ein starkes Signal. Genau diese
     // Kombination kann keine Blocklist allein sehen, die KI aber schon.
-    if (!empty($mail['signals']['url_blacklisted'])) {
-        $riskFlags[] = 'url-blacklisted';
+    if ($struct['url_on_blocklist']) {
+        $riskFlags[] = 'url-on-blocklist';
     }
-    if (!empty($mail['signals']['url_phishing'])) {
-        $riskFlags[] = 'url-known-phishing';
-    }
+
     if (!empty($mail['signals']['url_fresh_domain'])) {
         $riskFlags[] = 'url-fresh-domain';
     }
@@ -566,6 +601,7 @@ function analyzeLocally(array $mail, $requestId) {
         'auth_strength' => $authStrength,
         'verified_brand' => $verifiedBrand,
         'impersonation_score' => $impersonationScore,
+        'struct' => $struct,
         'risk_flags' => array_values(array_unique($riskFlags)),
         'trust_flags' => array_values(array_unique($trustFlags)),
     ];
@@ -718,7 +754,7 @@ Faelschungsbeweis. Erst zusammen mit "auth:suspicious" werden sie
 aussagekraeftig.
 
 Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
-- "url-blacklisted" / "url-known-phishing": eine verlinkte Domain steht auf
+- "url-on-blocklist": eine verlinkte Domain steht auf
   einer Malware-/Phishing-Blockliste. Sehr verlaesslich — als "phishing" oder
   "spam" einstufen, ausser die Mail ist offensichtlich eine Warnung DARUEBER.
 - "url-fresh-domain": eine verlinkte Domain existiert erst seit wenigen Tagen.
@@ -1143,6 +1179,13 @@ PROMPT;
         'prompt_injection' => $injection,
         'auth_strength'   => $localContext['auth_strength'] ?? 'unknown',
         'confidence'      => $confidence,
+        // Was das Modell vergeben WOLLTE, bevor die Obergrenze zuschlug.
+        // Ohne diesen Wert taeuscht das Log: Die Betrugsmail aus Ecuador
+        // stand am 28.08. mit "+0.34 fraud" im Log und sah nach einem
+        // unsicheren Modell aus. Tatsaechlich waren es 8.28 Punkte bei 92 %
+        // Sicherheit - Rspamd lag schon bei 11.66, und der Deckel von 12
+        // liess nur noch 0.34 uebrig.
+        'ai_score_raw'    => round($scoreBeforeCeiling, 2),
     ];
 }
 
@@ -1165,13 +1208,13 @@ function categoryPolicy($category) {
         case 'legitimate':
         case 'transactional':
         case 'personal':
-            return ['points' => MAX_SPAM_POINTS, 'max_total' => MAX_TOTAL_TRANSACTIONAL, 'may_reject' => false];
+            return ['points' => MAX_SPAM_POINTS, 'max_total' => MAX_TOTAL_TRANSACTIONAL, 'may_reject' => false, 'ham' => true];
 
         // Erwuenschte oder zumindest zuordenbare Werbung: darf in den Junk,
         // aber nicht verworfen werden.
         case 'newsletter':
         case 'marketing':
-            return ['points' => MAX_SPAM_POINTS + 1.0, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => false];
+            return ['points' => MAX_SPAM_POINTS + 1.0, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => false, 'ham' => false];
 
         // Angreifbar. Bei clickbait kostet ein Fehlurteil praktisch nichts:
         // niemand vermisst die Mail, niemand meldet sich.
@@ -1183,11 +1226,11 @@ function categoryPolicy($category) {
             // max_total bleibt bewusst der Normalwert. Bis zur Reject-Schwelle
             // kommt eine Mail nur, wenn zusaetzlich die Konjunktion in
             // analyzeWithAI() haelt - nicht schon durch ihre Kategorie.
-            return ['points' => MAX_PHISHING_POINTS, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => true];
+            return ['points' => MAX_PHISHING_POINTS, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => true, 'ham' => false];
     }
 
     // Unbekannte Kategorie -> vorsichtig behandeln.
-    return ['points' => MAX_SPAM_POINTS, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => false];
+    return ['points' => MAX_SPAM_POINTS, 'max_total' => MAX_TOTAL_DEFAULT, 'may_reject' => false, 'ham' => true];
 }
 
 // ---------------------------------------------------------------------
@@ -1196,36 +1239,38 @@ function categoryPolicy($category) {
 //  zustimmen, damit ein Modellfehler allein keine Mail verwirft.
 // ---------------------------------------------------------------------
 function collectStructuralEvidence(array $mail, array $localContext, array $analysis = []) {
+    // Eine Quelle: die Merkmale wurden in analyzeLocally() einmal berechnet.
+    $struct = $localContext['struct'] ?? structuralSignals($mail, $localContext['verified_brand'] ?? '');
     $evidence = [];
 
-    if (allUrlsAreCloudStorage($mail['url_domains'])) {
+    if ($struct['cloud_storage_only']) {
         $evidence[] = 'cloud-storage-only-links';
     }
     if (floatval($localContext['impersonation_score'] ?? 0) > 0) {
         $evidence[] = 'brand-impersonation';
     }
-    if (!empty($mail['signals']['url_blacklisted']) || !empty($mail['signals']['url_phishing'])) {
+    if ($struct['url_on_blocklist']) {
         $evidence[] = 'url-on-blocklist';
     }
-    if (!empty(findDangerousAttachments($mail['attachments']))) {
+    if (!empty($struct['dangerous_attachments'])) {
         $evidence[] = 'dangerous-attachment';
     }
-    if (!empty(findShortenerDomains($mail['url_domains']))) {
+    if (!empty($struct['shortener_domains'])) {
         $evidence[] = 'url-shortener';
     }
-    if (hijackedReplyTo($mail)) {
+    if ($struct['hijacked_reply_to']) {
         $evidence[] = 'hijacked-reply-to';
     }
-    if (freemailReplyToSwap($mail)) {
+    if ($struct['reply_to_freemail_swap']) {
         $evidence[] = 'reply-to-freemail-swap';
     }
-    if (fakeThreadClaim($mail)) {
+    if ($struct['fake_thread']) {
         $evidence[] = 'fake-thread';
     }
-    if (institutionalRoleOnFreemail($mail)) {
+    if ($struct['role_name_on_freemail']) {
         $evidence[] = 'role-name-on-freemail';
     }
-    if (!empty(findFreeHostingLinks($mail['url_domains'], $mail['from_domain']))) {
+    if (!empty($struct['free_hosting_links'])) {
         $evidence[] = 'free-hosting-link';
     }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
@@ -1730,6 +1775,16 @@ function scoreFromAi($probability, $confidence, $category = '') {
 
     if ($direction >= 0) {
         return round($magnitude * $maxSpam, 2);   // Spam/Phishing -> positiv
+    }
+
+    // Der Ham-Rabatt schuetzt echte Korrespondenz vor Rspamd-Fehlurteilen.
+    // Bei Massenwerbung gibt es nichts zu schuetzen: Ein abonnierter
+    // Newsletter im Junk kostet niemanden etwas, ein unerwuenschter im
+    // Posteingang schon. Am 28.08. stand der Kandao-Newsletter bei Rspamd
+    // auf 7.34 - unser Filter zog 0.96 ab und brachte ihn auf 6.38, also
+    // NAEHER an den Posteingang. Die Empfaengerin wollte ihn nicht.
+    if (empty($policy['ham'])) {
+        return 0.0;
     }
     return round(-$magnitude * MAX_HAM_POINTS, 2);       // Ham  -> negativ
 }
@@ -2338,6 +2393,7 @@ function logStats($requestId, $data) {
         'rspamd_score' => $rspamdScore,
         'ai_score' => $aiScore,
         'total_score' => $totalScore,
+        'ai_score_raw' => isset($data['ai_score_raw']) ? round(floatval($data['ai_score_raw']), 2) : $aiScore,
         'rejected' => AI_MAY_REJECT && $totalScore >= REJECT_THRESHOLD,
         'ai_action' => $data['ai_action'] ?? 'add',
         'category' => $data['category'] ?? 'unknown',
@@ -2348,7 +2404,6 @@ function logStats($requestId, $data) {
         'red_flags' => array_slice(normalizeStringList($data['red_flags'] ?? []), 0, 8),
         'analysis_source' => $data['analysis_source'] ?? 'unknown',
         'matched_profile' => $data['matched_profile'] ?? '',
-        'mail_type_guess' => $data['mail_type_guess'] ?? '',
         'url_domains' => array_slice(normalizeDomainList($data['url_domains'] ?? []), 0, 8),
         // Strukturbelege und Reject-Freigabe mitschreiben: nur so laesst sich
         // im Schattenmodus nachvollziehen, welche Mails abgewiesen wuerden.
@@ -2667,22 +2722,6 @@ function endsWith($value, $suffix) {
         return true;
     }
     return substr($value, -strlen($suffix)) === $suffix;
-}
-function countKeywordHits($haystack, array $keywords) {
-    $haystack = mb_strtolower(cleanTextValue($haystack));
-    if ($haystack === '') {
-        return 0;
-    }
-
-    $hits = 0;
-    foreach ($keywords as $keyword) {
-        $keyword = mb_strtolower(cleanTextValue($keyword));
-        if ($keyword !== '' && mb_strpos($haystack, $keyword) !== false) {
-            $hits++;
-        }
-    }
-
-    return $hits;
 }
 
 function findDangerousAttachments(array $attachments) {
