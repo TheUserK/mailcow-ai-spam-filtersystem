@@ -184,6 +184,12 @@ define('REJECT_FLOOR', 16.0);
 // Modellurteil - anders als beim Reject braucht es keinen Strukturbeleg.
 define('JUNK_FLOOR', 8.0);
 
+// Ab diesem eigenen Rspamd-Score gilt Rspamd als zustimmende zweite
+// Quelle. Bewusst hoch: Die Junk-Schwelle liegt bei 6, die Reject-
+// Schwelle bei 15 - hier geht es um Post, die Rspamd auch allein schon
+// fuer ziemlich sicheren Muell haelt.
+define('RSPAMD_CONCUR_SCORE', 10.0);
+
 define('MAX_PHISHING_POINTS', 10.0); // Phishing/Fraud darf kraeftig beissen, aber
                                      // bewusst UNTER Rspamds Reject-Schwelle (15):
                                      // die KI allein soll nie eine Mail versenken.
@@ -250,6 +256,7 @@ logStats($requestId, [
     'red_flags' => $result['red_flags'] ?? [],
     'analysis_source' => $result['analysis_source'] ?? 'ai',
     'evidence' => $result['evidence'] ?? [],
+    'probation' => $result['probation'] ?? [],
     'reject_eligible' => !empty($result['reject_eligible']),
     'claimed_brand' => $result['claimed_brand'] ?? '',
     'verified_brand' => $result['verified_brand'] ?? '',
@@ -1230,6 +1237,7 @@ PROMPT;
         'red_flags'       => normalizeStringList($analysis['red_flags'] ?? []),
         'analysis_source' => 'ai',
         'evidence'        => $evidence,
+        'probation'       => array_values(array_intersect($evidence, probationEvidence())),
         'reject_eligible' => $rejectEligible,
         'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
         'verified_brand'  => $verifiedBrand,
@@ -1329,6 +1337,15 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     if (!empty($struct['free_hosting_links'])) {
         $evidence[] = 'free-hosting-link';
+    }
+    // Rspamd ist eine vom Modell voellig unabhaengige Quelle. Liegt sein
+    // eigener Score schon hoch, ist die Uebereinstimmung genau der zweite
+    // Beleg, den das System verlangt. Am 28.08. kam Vorschussbetrug aus
+    // einem gekaperten Hochschulkonto in Ecuador: Rspamd bei 11.66, das
+    // Modell zu 92 % sicher - aber ohne Links, Anhang oder Betreff gab es
+    // nichts Strukturelles, und die Mail war damit unabweisbar.
+    if ($mail['rspamd_score'] >= RSPAMD_CONCUR_SCORE) {
+        $evidence[] = 'rspamd-concurs';
     }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
     // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
@@ -1698,8 +1715,37 @@ function strongEvidence(array $evidence) {
         'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
+        'rspamd-concurs',        // Rspamd kommt unabhaengig zum selben Schluss
     ];
-    return array_values(array_intersect($evidence, $strong));
+    return array_values(array_diff(
+        array_intersect($evidence, $strong),
+        probationEvidence()
+    ));
+}
+
+// ---------------------------------------------------------------------
+//  Belege auf Bewaehrung.
+//
+//  Zwischen dem 26. und 28.08. sind vier starke Belegklassen entstanden,
+//  jede davon allein tragfaehig fuer eine unwiderrufliche Ablehnung, und
+//  keine hat je im Betrieb gefeuert. Am 28.08. haette ein technisch voll
+//  korrekter DNS-Befund beinahe zu einem Signal gefuehrt, das einen
+//  legitimen deutschen Plugin-Anbieter abgewiesen haette - aufgefallen
+//  ist das nicht im Code, sondern durch einen Satz des Betreibers.
+//
+//  Ein Beleg auf Bewaehrung zaehlt fuer den Score und steht im Report,
+//  traegt aber keine Ablehnung. Wer hier steht, muss sich erst an echter
+//  Post zeigen. Rausnehmen = scharf schalten, eine Zeile.
+//
+//  Zum Beurteilen:  ai-filter-report.sh   (Gruppe "Beleg auf Bewaehrung")
+// ---------------------------------------------------------------------
+function probationEvidence() {
+    return [
+        'fake-thread',           // seit 26.08.
+        'role-name-on-freemail', // seit 27.08.
+        'free-hosting-link',     // seit 28.08.
+        'rspamd-concurs',        // seit 29.08.
+    ];
 }
 
 // ---------------------------------------------------------------------
@@ -2465,6 +2511,9 @@ function logStats($requestId, $data) {
         // Strukturbelege und Reject-Freigabe mitschreiben: nur so laesst sich
         // im Schattenmodus nachvollziehen, welche Mails abgewiesen wuerden.
         'evidence' => normalizeStringList($data['evidence'] ?? []),
+        // Belege, die (noch) keine Ablehnung tragen duerfen - jeder Treffer
+        // gehoert einzeln beurteilt, bevor die Klasse scharf geschaltet wird.
+        'probation' => normalizeStringList($data['probation'] ?? []),
         'reject_eligible' => !empty($data['reject_eligible']),
         'claimed_brand' => mb_substr((string)($data['claimed_brand'] ?? ''), 0, 60),
         // Wer hier steht, ist per DMARC als diese Marke beglaubigt und

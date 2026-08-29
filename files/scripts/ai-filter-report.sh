@@ -244,6 +244,14 @@ BODY=$(
         "$(printf 'Ein struktureller Beleg auf einer Mail mit negativem Score - vermutlich ein Fehlalarm.')" \
         '((.evidence // []) | length) > 0 and (.ai_score // 0) < 0' && FOUND=1
 
+    # 0. Belege auf Bewaehrung. Steht bewusst ganz oben: Diese Klassen
+    #    duerfen (noch) nicht abweisen, und jeder Treffer gehoert einzeln
+    #    beurteilt. Stimmt er, kann die Klasse scharf geschaltet werden -
+    #    in probationEvidence() eine Zeile loeschen.
+    render_group "Beleg auf Bewaehrung hat gefeuert" \
+        "$(printf 'Diese Belege weisen noch nicht ab. Stimmt das Urteil, koennen sie scharf geschaltet werden.')" \
+        '((.probation // []) | length) > 0' && FOUND=1
+
     # 7. Betrug erkannt, aber kein Beleg - also zugestellt.
     #
     # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist
