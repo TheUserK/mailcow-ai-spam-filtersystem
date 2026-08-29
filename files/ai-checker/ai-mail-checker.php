@@ -429,6 +429,76 @@ function prepareMailContext(array $data) {
 //  verifiedBrandSender() erst nach dem API-Aufruf lief und das Modell die
 //  Erkenntnis nie zu sehen bekam. Ab hier gibt es eine Quelle.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  Zaehlt ein Blocklisten-Treffer als Beleg?
+//
+//  Am 28.08. bekam Googles woechentliche Praemien-Mail "phishing" und
+//  +6.30, weil c.gle - Googles eigener Kurzdienst - auf einer Phishing-
+//  Liste steht, denn Phisher missbrauchen ihn. Alle vier Links der Mail
+//  gehoerten Google. Dass das passieren kann, stand seit dem 21.08. bei
+//  verifiedBrandSender() kommentiert; nur war dort die Ablehnung gesperrt,
+//  nicht der Beleg - und schlimmer: Das Flag ging in den Prompt, das
+//  Modell schloss daraus vernuenftig auf Phishing. Wir haben es selbst in
+//  die Irre gefuehrt.
+//
+//  Die Entwertung gilt aber NUR, wenn wirklich jeder Link der Marke
+//  gehoert. Sonst entstuende eine Luecke, die schlimmer waere als der
+//  Fehlalarm: Google Groups, Docs und Forms lassen sich mit fremden
+//  Inhalten fuellen, und die Benachrichtigung darueber kommt von
+//  google.com mit einwandfreiem DMARC. Ein fremder Link in so einer Mail
+//  ist genau das, was man sehen will.
+// ---------------------------------------------------------------------
+function blocklistHitCounts(array $mail, $verifiedBrand) {
+    $hit = !empty($mail['signals']['url_blacklisted'])
+        || !empty($mail['signals']['url_phishing']);
+    if (!$hit || $verifiedBrand === '') {
+        return $hit;
+    }
+
+    $own = brandLinkDomains($verifiedBrand);
+    if (empty($own)) {
+        return true;
+    }
+
+    // Rspamd sagt uns nicht, WELCHE Domain gelistet ist. Also entwerten wir
+    // nur, wenn gar keine fremde Domain in Frage kommt.
+    foreach (normalizeDomainList($mail['url_domains']) as $domain) {
+        if (!domainMatchesAny($domain, $own)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------
+//  Domains, auf die eine Marke legitim verlinkt - Kurzdienste, CDNs und
+//  Schwesterdomains inbegriffen. Bewusst getrennt von den Absenderdomains
+//  in getImpersonationBrands(): Google versendet nie von c.gle, verlinkt
+//  aber staendig dorthin.
+// ---------------------------------------------------------------------
+function brandLinkDomains($brand) {
+    static $extra = [
+        'google'    => ['g.co', 'c.gle', 'goo.gl', 'gstatic.com', 'googleusercontent.com',
+                        'googleapis.com', 'youtube.com', 'youtu.be', 'withgoogle.com',
+                        'google.co.uk', 'gmail.com', 'chromium.org', 'android.com'],
+        'microsoft' => ['aka.ms', 'msn.com', 'live.com', 'sharepoint.com', 'onedrive.com',
+                        'msecnd.net', 'windows.net', 'azureedge.net', 'bing.com'],
+        'apple'     => ['apple.co', 'cdn-apple.com', 'mzstatic.com'],
+        'amazon'    => ['a.co', 'amazonses.com', 'media-amazon.com', 'ssl-images-amazon.com',
+                        'amazonaws.com', 'awsstatic.com'],
+        'paypal'    => ['paypal-communication.com', 'paypalobjects.com', 'paypal-community.com'],
+        'ebay'      => ['ebayimg.com', 'ebaystatic.com'],
+        'netflix'   => ['nflxext.com', 'nflximg.net', 'nflxvideo.net'],
+    ];
+
+    $brand = mb_strtolower(trim((string)$brand));
+    $domains = getImpersonationBrands()[$brand] ?? [];
+    if (isset($extra[$brand])) {
+        $domains = array_merge($domains, $extra[$brand]);
+    }
+    return normalizeDomainList($domains);
+}
+
 function structuralSignals(array $mail, $verifiedBrand = '') {
     return [
         'dangerous_attachments'  => findDangerousAttachments($mail['attachments']),
@@ -440,20 +510,7 @@ function structuralSignals(array $mail, $verifiedBrand = '') {
         'fake_thread'            => fakeThreadClaim($mail),
         'role_name_on_freemail'  => institutionalRoleOnFreemail($mail),
         'bare_link_stranger'     => bareLinkFromStranger($mail),
-        // Ist der Absender per DMARC als bekannte Marke beglaubigt, zaehlt
-        // ein Blocklisten-Treffer nicht. Am 28.08. bekam Googles woechent-
-        // liche Praemien-Mail "phishing" und +6.30, weil c.gle - Googles
-        // eigener Kurzdienst - auf einer Phishing-Liste steht, denn Phisher
-        // missbrauchen ihn. Alle vier Links der Mail gehoerten Google.
-        //
-        // Dass das passieren kann, steht seit dem 21.08. bei
-        // verifiedBrandSender() kommentiert. Nur war dort die Ablehnung
-        // gesperrt, nicht der Beleg - und schlimmer: Das Flag ging in den
-        // Prompt, das Modell schloss daraus vernuenftig auf Phishing. Wir
-        // haben es selbst in die Irre gefuehrt.
-        'url_on_blocklist'       => $verifiedBrand === ''
-                                 && (!empty($mail['signals']['url_blacklisted'])
-                                     || !empty($mail['signals']['url_phishing'])),
+        'url_on_blocklist'       => blocklistHitCounts($mail, $verifiedBrand),
     ];
 }
 
