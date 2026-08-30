@@ -190,6 +190,28 @@ define('JUNK_FLOOR', 8.0);
 // fuer ziemlich sicheren Muell haelt.
 define('RSPAMD_CONCUR_SCORE', 10.0);
 
+// --- Zweiter Reject-Pfad: das Modell allein, wenn es sehr sicher ist -----
+//
+// Der Beleg-Pfad verlangt einen unabhaengigen Strukturbeleg. Der fehlt aber
+// genau bei der Post, die am eindeutigsten Muell ist: Am 29.08. stand die
+// Blutzucker-Werbung bei Rspamd auf 7.53, das Modell war zu 90 % sicher -
+// und der Deckel von 12 machte eine Ablehnung rechnerisch unmoeglich, denn
+// die Schwelle liegt bei 15.
+//
+// Wichtig: Das ist NICHT "die KI allein". Ihr Beitrag ist auf
+// MAX_PHISHING_POINTS (10) begrenzt, das Ziel liegt bei 15.5 - Rspamd muss
+// also aus eigener Kraft mindestens 5.5 beisteuern. Beide muessen die Mail
+// fuer Muell halten, nur eben ohne dass es dafuer einen Anhang, einen Link
+// oder eine gefaelschte Marke braucht.
+//
+// Abgesichert ueber mailcows Quarantaene: Ein score-basierter Reject landet
+// dort und ist wiederherstellbar (Prefilter-Rejects waeren es nicht - unser
+// Modul ist ein Postfilter).
+define('AI_CONFIDENT_REJECT', true);
+define('AI_CONFIDENT_CONFIDENCE', 0.90);  // Mindestsicherheit des Modells
+define('AI_CONFIDENT_SCORE', 7.0);        // eigener Punktwert des Modells
+define('AI_CONFIDENT_TOTAL', 15.5);       // angepeilte Gesamtsumme
+
 define('MAX_PHISHING_POINTS', 10.0); // Phishing/Fraud darf kraeftig beissen, aber
                                      // bewusst UNTER Rspamds Reject-Schwelle (15):
                                      // die KI allein soll nie eine Mail versenken.
@@ -258,6 +280,8 @@ logStats($requestId, [
     'evidence' => $result['evidence'] ?? [],
     'probation' => $result['probation'] ?? [],
     'reject_eligible' => !empty($result['reject_eligible']),
+    'reject_path' => $result['reject_path'] ?? '',
+    'model_score' => $result['model_score'] ?? null,
     'claimed_brand' => $result['claimed_brand'] ?? '',
     'verified_brand' => $result['verified_brand'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
@@ -518,13 +542,37 @@ function extractMessageIdDomains($value) {
 function blocklistHitCounts(array $mail, $verifiedBrand) {
     $hit = !empty($mail['signals']['url_blacklisted'])
         || !empty($mail['signals']['url_phishing']);
-    if (!$hit || $verifiedBrand === '') {
-        return $hit;
+    if (!$hit) {
+        return false;
+    }
+
+    // Auch ohne bekannte Marke: Zeigt die Mail ausschliesslich auf die
+    // eigene, sauber authentifizierte Absenderdomain, trifft die Blockliste
+    // die Infrastruktur des Absenders und nicht ein fremdes Ziel. Das ist
+    // ein Reputationsproblem, kein Beweis fuer einen Angriff.
+    if ($verifiedBrand === '') {
+        $from = normalizeHost($mail['from_domain']);
+        $domains = normalizeDomainList($mail['url_domains']);
+        if ($from !== '' && !empty($domains)
+            && ($mail['auth']['dmarc'] ?? '') === 'pass'
+            && domainMatchesAny($from, [$from])) {
+            foreach ($domains as $domain) {
+                if (!domainMatchesAny($domain, [$from])) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return true;
     }
 
     $own = brandLinkDomains($verifiedBrand);
     if (empty($own)) {
         return true;
+    }
+    // Die Absenderdomain selbst gehoert immer dazu.
+    if ($mail['from_domain'] !== '') {
+        $own[] = $mail['from_domain'];
     }
 
     // Rspamd sagt uns nicht, WELCHE Domain gelistet ist. Also entwerten wir
@@ -575,7 +623,9 @@ function structuralSignals(array $mail, $verifiedBrand = '') {
         'hijacked_reply_to'      => hijackedReplyTo($mail),
         'reply_to_freemail_swap' => freemailReplyToSwap($mail),
         'fake_thread'            => fakeThreadClaim($mail),
-        'role_name_on_freemail'  => institutionalRoleOnFreemail($mail),
+        'role_name_source'       => institutionalRoleSource($mail),
+        'role_name_on_freemail'  => institutionalRoleSource($mail) !== '',
+        'fabricated_ticket'      => fabricatedTicketClaim($mail),
         'bare_link_stranger'     => bareLinkFromStranger($mail),
         'url_on_blocklist'       => blocklistHitCounts($mail, $verifiedBrand),
     ];
@@ -631,7 +681,10 @@ function analyzeLocally(array $mail, $requestId) {
         $riskFlags[] = 'fake-thread';
     }
     if ($struct['role_name_on_freemail']) {
-        $riskFlags[] = 'role-name-on-freemail';
+        $riskFlags[] = 'role-name-on-freemail:' . $struct['role_name_source'];
+    }
+    if ($struct['fabricated_ticket']) {
+        $riskFlags[] = 'fabricated-ticket';
     }
     if (!empty($struct['free_hosting_links'])) {
         $riskFlags[] = 'free-hosting-link:' . implode(',', $struct['free_hosting_links']);
@@ -1199,6 +1252,10 @@ PROMPT;
         $score = min(max($score, 0.0) + $impersonation, MAX_PHISHING_POINTS);
     }
 
+    // Der eigene Punktwert des Modells, bevor Boeden und Deckel eingreifen.
+    // Nur daran laesst sich ablesen, wie sicher es sich wirklich war.
+    $modelScore = $score;
+
     // Prompt-Injection: kein Bonus fuer Post, die dem Modell vorschreibt,
     // was es antworten soll. Bewusst nur der Rabatt faellt weg - kein
     // Aufschlag, keine Ablehnung.
@@ -1236,19 +1293,37 @@ PROMPT;
     // "personal" durchgewunken, weil die Kategorie allein schuetzte.
     $categoryOverride = in_array('brand-impersonation', $strong, true) && count($strong) >= 2;
 
-    $rejectEligible = ($policy['may_reject'] || $categoryOverride)
-        && $confidence >= 0.80
-        && !empty($strong)
-        && empty($localContext['matched_profile'])
+    $noTrustSignals = empty($localContext['matched_profile'])
         && $verifiedBrand === ''
         && !partOfRealConversation($mail);
 
-    $ceiling = ($rejectEligible && AI_MAY_REJECT)
+    $rejectEligible = ($policy['may_reject'] || $categoryOverride)
+        && $confidence >= 0.80
+        && !empty($strong)
+        && $noTrustSignals;
+
+    // Zweiter Pfad: kein Strukturbeleg, aber ein sehr sicheres Modellurteil.
+    $confidentReject = AI_CONFIDENT_REJECT
+        && !$rejectEligible
+        && $policy['may_reject']
+        && $confidence >= AI_CONFIDENT_CONFIDENCE
+        && $modelScore >= AI_CONFIDENT_SCORE
+        && $noTrustSignals;
+
+    $mayReject = $rejectEligible || $confidentReject;
+
+    $ceiling = ($mayReject && AI_MAY_REJECT)
         ? MAX_TOTAL_REJECTABLE
         : $policy['max_total'];
 
     if ($rejectEligible) {
         $score = max($score, REJECT_FLOOR);
+    } elseif ($confidentReject) {
+        // Nur so weit anheben, wie fuer die Schwelle noetig - und nie ueber
+        // das Kategorie-Budget hinaus. Reicht Rspamds eigener Score nicht,
+        // kommt die Mail hier gar nicht erst hin.
+        $needed = AI_CONFIDENT_TOTAL - $mail['rspamd_score'];
+        $score = max($score, min($needed, $policy['points']));
     }
 
     // Junk-Untergrenze: siehe JUNK_FLOOR. Greift auch ohne Strukturbeleg -
@@ -1272,7 +1347,7 @@ PROMPT;
     // abgewiesene Mail hinterlaesst sonst keine Spur, die man nachlesen
     // koennte: sie taucht in keinem Postfach auf und in keiner Quarantaene,
     // die man taeglich anschaut.
-    if ($rejectEligible) {
+    if ($mayReject) {
         $wouldScore = clampToTotalCeiling($scoreBeforeCeiling, $mail['rspamd_score'], MAX_TOTAL_REJECTABLE);
         $wouldTotal = $mail['rspamd_score'] + $wouldScore;
         if ($wouldTotal >= REJECT_THRESHOLD) {
@@ -1297,7 +1372,10 @@ PROMPT;
         'analysis_source' => 'ai',
         'evidence'        => $evidence,
         'probation'       => array_values(array_intersect($evidence, probationEvidence())),
-        'reject_eligible' => $rejectEligible,
+        'reject_eligible' => $mayReject,
+        // Auf welchem Weg durfte diese Mail bis an die Schwelle?
+        'reject_path'     => $rejectEligible ? 'evidence' : ($confidentReject ? 'ai-confident' : ''),
+        'model_score'     => round($modelScore, 2),
         'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
         'verified_brand'  => $verifiedBrand,
         'prompt_injection' => $injection,
@@ -1393,6 +1471,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     if ($struct['role_name_on_freemail']) {
         $evidence[] = 'role-name-on-freemail';
+    }
+    if ($struct['fabricated_ticket']) {
+        $evidence[] = 'fabricated-ticket';
     }
     if (!empty($struct['free_hosting_links'])) {
         $evidence[] = 'free-hosting-link';
@@ -1649,14 +1730,44 @@ function bareLinkFromStranger(array $mail) {
 //  "Info", "Kontakt" oder "Buero" - so nennen sich Kleinbetriebe wirklich.
 // ---------------------------------------------------------------------
 function institutionalRoleOnFreemail(array $mail) {
+    return institutionalRoleSource($mail) !== '';
+}
+
+// Woher stammt der Rollenanspruch - Anzeigename oder Fliesstext? Am 27.08.
+// stellte sich "Svitlana Vilchynska" <...@gmail.com> im TEXT als "Art
+// Manager at Syt-X" vor und warb im Namen einer Firma. Der Anzeigename war
+// ein reiner Personenname, die Pruefung lief ins Leere.
+function institutionalRoleSource(array $mail) {
     if (empty($mail['signals']['freemail_from'])) {
-        return false;
-    }
-    $name = trim((string)$mail['from_display_name']);
-    if ($name === '') {
-        return false;
+        return '';
     }
 
+    $name = trim((string)$mail['from_display_name']);
+    if ($name !== '') {
+        foreach (institutionalRolePatterns() as $pattern) {
+            if (preg_match($pattern, $name)) {
+                return 'display';
+            }
+        }
+    }
+
+    // Selbstvorstellung mit Firmenrolle, z.B. "I am X, Art Manager at Y"
+    // oder "Mein Name ist X, Vertriebsleiter bei Y". Nur der Anfang des
+    // Textes - weiter hinten stehen Signaturen und Zitate.
+    $intro = mb_substr($mail['body_clean'], 0, 700);
+    static $introPatterns = [
+        '/\b(i am|i\x27m|my name is|this is)\b[^.\n]{0,60}\b(manager|director|ceo|cto|founder|co-founder|head of|coordinator|executive|representative|specialist|consultant|partner|lead)\b[^.\n]{0,40}\bat\b/iu',
+        '/\b(mein name ist|ich bin|hier ist)\b[^.\n]{0,60}\b(gesch\x{00e4}ftsf\x{00fc}hrer|vertriebsleiter|leiter|leiterin|projektleiter|berater|beraterin|prokurist|inhaber)\b[^.\n]{0,40}\b(bei|von)\b/iu',
+    ];
+    foreach ($introPatterns as $pattern) {
+        if (preg_match($pattern, $intro)) {
+            return 'body';
+        }
+    }
+    return '';
+}
+
+function institutionalRolePatterns() {
     static $rolePatterns = [
         '/\b(support|help ?desk|customer (care|service|support))\b/iu',
         '/\b(kunden(dienst|service|betreuung)|technischer support)\b/iu',
@@ -1669,14 +1780,46 @@ function institutionalRoleOnFreemail(array $mail) {
         '/\b(reservations?|bookings?|reservierung(en)?|buchungs(stelle|abteilung))\b/iu',
         '/\b(administrator|systemadministrator|it[- ]abteilung|mail ?(admin|delivery))\b/iu',
     ];
-
-    foreach ($rolePatterns as $pattern) {
-        if (preg_match($pattern, $name)) {
-            return true;
-        }
-    }
-    return false;
+    return $rolePatterns;
 }
+
+// ---------------------------------------------------------------------
+//  Erfundener Vorgang: "Case #12345 ... was created".
+//
+//  Am 29.08. kam eine Phishing-Mail als angebliche Ticket-Benachrichtigung
+//  von "onPhase" durch. Die Masche setzt darauf, dass niemand jeden
+//  Dienstleister kennt, den die eigene Firma nutzt - und ein offener
+//  Vorgang mit Nummer wirkt verbindlich genug zum Klicken.
+//
+//  Belegkraeftig ist die Kombination: Es wird eine Vorgangsnummer
+//  behauptet, aber die Mail steht in keinem nachweisbaren Austausch.
+//  Echte Ticketsysteme antworten auf etwas, das der Empfaenger ausgeloest
+//  hat, und setzen dafuer Thread-Header, die auf uns zeigen.
+// ---------------------------------------------------------------------
+function fabricatedTicketClaim(array $mail) {
+    if (partOfRealConversation($mail)) {
+        return false;
+    }
+
+    $surface = $mail['subject'] . ' ' . mb_substr($mail['body_clean'], 0, 400);
+    static $patterns = [
+        '/\b(case|ticket|request|incident|ref(erence)?|vorgang|anfrage)\b[^\n]{0,20}#\s*\d{3,}/iu',
+        '/\b(case|ticket|request|vorgang)\s*(nr\.?|no\.?|number|nummer)\s*[:#]?\s*\d{3,}/iu',
+    ];
+    $hasNumber = false;
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $surface)) { $hasNumber = true; break; }
+    }
+    if (!$hasNumber) {
+        return false;
+    }
+
+    return (bool)preg_match(
+        '/\b(was|has been|is)\s+(created|opened|registered|logged|updated)\b|\bwurde\s+(erstellt|er\x{00f6}ffnet|angelegt)\b/iu',
+        $surface
+    );
+}
+
 
 // ---------------------------------------------------------------------
 //  Die Freemail-Variante von hijackedReplyTo(): From und Reply-To liegen
@@ -1775,6 +1918,7 @@ function strongEvidence(array $evidence) {
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
         'rspamd-concurs',        // Rspamd kommt unabhaengig zum selben Schluss
+        'fabricated-ticket',     // erfundene Vorgangsnummer ohne echten Thread
     ];
     return array_values(array_diff(
         array_intersect($evidence, $strong),
@@ -1799,12 +1943,11 @@ function strongEvidence(array $evidence) {
 //  Zum Beurteilen:  ai-filter-report.sh   (Gruppe "Beleg auf Bewaehrung")
 // ---------------------------------------------------------------------
 function probationEvidence() {
-    return [
-        'fake-thread',           // seit 26.08.
-        'role-name-on-freemail', // seit 27.08.
-        'free-hosting-link',     // seit 28.08.
-        'rspamd-concurs',        // seit 29.08.
-    ];
+    // Am 30.08. alle scharf geschaltet: bis dahin kein einziger
+    // Fehlalarm im Betrieb, und ein score-basierter Reject landet in
+    // mailcows Quarantaene, ist also wiederherstellbar.
+    // Wieder auf Bewaehrung setzen = Name hier eintragen, eine Zeile.
+    return [];
 }
 
 // ---------------------------------------------------------------------
@@ -2574,6 +2717,11 @@ function logStats($requestId, $data) {
         // gehoert einzeln beurteilt, bevor die Klasse scharf geschaltet wird.
         'probation' => normalizeStringList($data['probation'] ?? []),
         'reject_eligible' => !empty($data['reject_eligible']),
+        // "evidence" = unabhaengiger Strukturbeleg, "ai-confident" = allein
+        // auf ein sehr sicheres Modellurteil hin. Zweiteres gehoert
+        // beobachtet, deshalb steht es getrennt im Log.
+        'reject_path' => (string)($data['reject_path'] ?? ''),
+        'model_score' => isset($data['model_score']) ? round(floatval($data['model_score']), 2) : null,
         'claimed_brand' => mb_substr((string)($data['claimed_brand'] ?? ''), 0, 60),
         // Wer hier steht, ist per DMARC als diese Marke beglaubigt und
         // wird nie abgewiesen - das will man im Log sehen koennen.

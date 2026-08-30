@@ -215,6 +215,53 @@ function fixtures() {
         'signals' => ['reply_to_our_mail' => true, 'url_blacklisted' => true],
     ]);
 
+    // Kaltakquise: Rollenanspruch steht im Text, nicht im Anzeigenamen.
+    $cases['sytx-rolle-im-text'] = array_replace_recursive($base, [
+        'from' => 'svitlanavilchinska@gmail.com', 'from_email' => 'svitlanavilchinska@gmail.com',
+        'from_display_name' => 'Svitlana Vilchynska',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Syt-X - High-Fidelity 3D & Motion Production Support',
+        'body' => 'To the Moving Pictures Team, I am reaching out to introduce Syt-X. My name is Svitlana Vilchynska, Art Manager at Syt-X. We act as a production extension for creative teams.',
+        'rspamd_score' => 3.0,
+        'signals' => ['freemail_from' => true, 'unknown_sender' => true],
+    ]);
+
+    // Erfundene Vorgangsnummer ohne nachweisbaren Thread.
+    $cases['erfundenes-ticket'] = array_replace_recursive($base, [
+        'from' => 'service@wntppcagency.com', 'from_email' => 'service@wntppcagency.com',
+        'from_display_name' => 'onPhase',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Case #00216349 - Your Feedback Is Important To Us was created',
+        'body' => 'A case has been created for you.',
+        'rspamd_score' => 9.0,
+        'in_reply_to' => '<abc@wntppcagency.com>',
+        'url_domains' => ['onphase.my.salesforce.com'],
+        'signals' => ['url_blacklisted' => true],
+    ]);
+
+    // Echtes Ticketsystem, das auf unsere eigene Mail antwortet.
+    $cases['echtes-ticket-auf-uns'] = array_replace_recursive($base, [
+        'from' => 'support@dienstleister.de', 'from_email' => 'support@dienstleister.de',
+        'from_display_name' => 'Support',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Ticket #44821 wurde erstellt',
+        'body' => 'Ihre Anfrage wurde aufgenommen.',
+        'rspamd_score' => 1.0,
+        'signals' => ['reply_to_our_mail' => true],
+    ]);
+
+    // Blocklisten-Treffer nur auf der eigenen, DMARC-sauberen Domain.
+    $cases['blocklist-eigene-domain'] = array_replace_recursive($base, [
+        'from' => 'news@shop-mit-ruf.de', 'from_email' => 'news@shop-mit-ruf.de',
+        'from_display_name' => 'Shop',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Angebote der Woche',
+        'body' => 'Unsere Angebote.',
+        'rspamd_score' => 2.0,
+        'url_domains' => ['shop-mit-ruf.de', 'www.shop-mit-ruf.de'],
+        'signals' => ['url_blacklisted' => true],
+    ]);
+
     return $cases;
 }
 
@@ -240,6 +287,9 @@ function runFixtures() {
             'trust_flags'    => $local['trust_flags'] ?? [],
             'evidence'       => $ev,
             'strong'         => strongEvidence($ev),
+            // Entscheidet mit ueber die Ablehnung: ein nachweisbarer
+            // Austausch schuetzt, ein selbst geschriebener Header nicht.
+            'echter_thread'  => partOfRealConversation($mail),
             'scoreFromAi'    => $scores,
         ];
     }
