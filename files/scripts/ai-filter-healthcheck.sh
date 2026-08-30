@@ -186,9 +186,15 @@ fi
 # into plugins.d is auto-loaded without appearing in any config file, which is
 # exactly how a second one can score every mail unnoticed. Any AI-looking
 # symbol that is not ours means something else is also judging mail.
+#
+# JEDES Symbol, das dieses Projekt selbst anlegt, gehoert hier hinein - sonst
+# meldet der Healthcheck die eigene Erweiterung als Fremdfilter. Genau das
+# passierte am 30.08. mit AI_FILTER_FISHY_TLD, dem Punktaufschlag fuer
+# Wegwerf-Topleveldomains.
+OWN_SYMBOLS='^AI_(CONTENT_(SCORE|FILTER)|FILTER_FISHY_TLD)$'
 FOREIGN_AI=$($COMPOSE_CMD exec -T rspamd-mailcow rspamc counters 2>/dev/null \
     | grep -oE '\b[A-Z0-9_]*AI_[A-Z0-9_]*\b' | sort -u \
-    | grep -vE '^AI_CONTENT_(SCORE|FILTER)$' | tr '\n' ' ')
+    | grep -vE "$OWN_SYMBOLS" | tr '\n' ' ')
 if [[ -n "${FOREIGN_AI// /}" ]]; then
     echo -e "${RED}[FAIL]${NC} A second AI filter is registered: $FOREIGN_AI"
     echo "       Every mail is analysed and scored twice. Find it with:"
