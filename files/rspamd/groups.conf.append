@@ -9,5 +9,9 @@ group "ai_filter" {
       weight = 1.0;
       description = "AI content policy check";
     }
+    "AI_FILTER_FISHY_TLD" {
+      weight = 2.5;
+      description = "Absenderdomain auf einer haeufig missbrauchten TLD";
+    }
   }
 }

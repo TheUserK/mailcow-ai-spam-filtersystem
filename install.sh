@@ -339,6 +339,39 @@ for mod in known_senders replies; do
     fi
 done
 
+# === WEGWERF-TLDS ===
+# Punktaufschlag fuer Absenderdomains auf haeufig missbrauchten Endungen.
+# Die Map gehoert dem Betreiber (er pflegt eigene TLDs ein) und wird nie
+# ueberschrieben. Der multimap-Abschnitt kommt in local.d/multimap.conf -
+# dort koennen schon andere Regeln stehen, also nur anhaengen, wenn unsere
+# noch fehlt.
+if [[ ! -f "data/conf/rspamd/ai-filter-tlds.map" ]]; then
+    cp "$SCRIPT_DIR/files/rspamd/ai-filter-tlds.map" data/conf/rspamd/ai-filter-tlds.map
+    chmod 644 data/conf/rspamd/ai-filter-tlds.map
+    echo -e "${GREEN}[OK]${NC} Fishy-TLD list installed"
+else
+    echo -e "${GREEN}[OK]${NC} Existing ai-filter-tlds.map preserved"
+fi
+
+if ! grep -qs "AI_FILTER_FISHY_TLD" data/conf/rspamd/local.d/multimap.conf 2>/dev/null; then
+    cat "$SCRIPT_DIR/files/rspamd/ai-filter-tlds.conf" >> data/conf/rspamd/local.d/multimap.conf
+    chmod 644 data/conf/rspamd/local.d/multimap.conf
+    echo -e "${GREEN}[OK]${NC} Fishy-TLD scoring enabled (+2.5, never blocks alone)"
+else
+    echo -e "${GREEN}[OK]${NC} Fishy-TLD rule already present"
+fi
+
+# === GREYLISTING ===
+# Kostet Erstkontakten ein paar Minuten und raeumt billige Massenversender
+# ab. Nur anlegen, nie ueberschreiben - wer es abstellt, soll das behalten.
+if [[ ! -f "data/conf/rspamd/local.d/greylisting.conf" ]]; then
+    cp "$SCRIPT_DIR/files/rspamd/greylisting.conf" data/conf/rspamd/local.d/greylisting.conf
+    chmod 644 data/conf/rspamd/local.d/greylisting.conf
+    echo -e "${GREEN}[OK]${NC} Greylisting enabled (first contact delayed ~5 min)"
+else
+    echo -e "${GREEN}[OK]${NC} Existing greylisting.conf preserved"
+fi
+
 # === RSPAMD GROUPS ===
 if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     if ! grep -q 'group "ai_filter"' data/conf/rspamd/local.d/groups.conf; then

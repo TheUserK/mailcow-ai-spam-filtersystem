@@ -1,0 +1,37 @@
+# Top-Level-Domains, die ueberproportional fuer Wegwerf-Absender benutzt
+# werden. KEINE Blockliste: Der Treffer gibt nur einen Punktaufschlag, der
+# allein nie zur Ablehnung reicht (siehe ai-filter-tlds.conf, Gewicht 2.5).
+#
+# Am 29.08. kam "Deine Gesundheit beginnt mit stabilem Blutzucker!" von
+# arrow.onetwotee.shop - Rspamd sah dort nur 7.53 Punkte.
+#
+# Eigene Ergaenzungen einfach anhaengen, eine TLD pro Zeile, ohne Punkt.
+# Zeilen mit # sind Kommentare. Nach Aenderungen:
+#   docker compose restart rspamd-mailcow
+
+shop
+top
+icu
+click
+link
+buzz
+cyou
+rest
+sbs
+bond
+cfd
+xyz
+monster
+quest
+lol
+beauty
+skin
+hair
+makeup
+mom
+uno
+autos
+boats
+motorcycles
+yachts
+homes
