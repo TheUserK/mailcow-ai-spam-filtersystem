@@ -437,6 +437,66 @@ function prepareMailContext(array $data) {
 //  Erkenntnis nie zu sehen bekam. Ab hier gibt es eine Quelle.
 // ---------------------------------------------------------------------
 // ---------------------------------------------------------------------
+//  Steckt hinter der Mail wirklich ein laufender Austausch?
+//
+//  Bisher genuegte dafuer ein vorhandener In-Reply-To-Header. Der ist
+//  aber frei erfindbar: Wer ihn setzt, behauptet einen Vorgaenger, den
+//  niemand nachprueft. Am 29.08. kam eine Phishing-Mail
+//  ("Case #00216349 ... was created", angeblich von onPhase) mit
+//  Blocklisten-Treffer, Kategorie phishing und 90 % Sicherheit durch -
+//  jede Bedingung fuer die Ablehnung war erfuellt, ausser dieser einen.
+//  Ein Header, den der Angreifer selbst schreibt, hat die Ablehnung
+//  verhindert. Derselbe Header hebelt nebenbei fakeThreadClaim() aus.
+//
+//  Nachpruefbar ist nur, was WIR wissen: Rspamds replies-Modul merkt
+//  sich die Message-IDs unserer eigenen ausgehenden Post. Nur wenn die
+//  Mail darauf antwortet, ist der Austausch belegt. Ergaenzend zaehlt
+//  ein Absender, mit dem hier schon korrespondiert wurde.
+//
+//  Ein In-Reply-To auf eine unserer eigenen Domains wird ebenfalls
+//  akzeptiert - das kann ein Angreifer zwar raten, aber er muesste die
+//  Message-ID einer echten Mail von uns kennen.
+// ---------------------------------------------------------------------
+function partOfRealConversation(array $mail) {
+    if (!empty($mail['signals']['reply_to_our_mail'])
+        || !empty($mail['signals']['known_sender'])) {
+        return true;
+    }
+
+    $ref = $mail['in_reply_to'] !== '' ? $mail['in_reply_to'] : $mail['references'];
+    if ($ref === '') {
+        return false;
+    }
+
+    $localDomains = getLocalDomains();
+    if (empty($localDomains)) {
+        // Ohne Domainliste lieber vorsichtig bleiben und wie bisher schuetzen.
+        return true;
+    }
+
+    foreach (extractMessageIdDomains($ref) as $domain) {
+        if (domainMatchesAny($domain, $localDomains)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+//  Alle @domain-Anteile aus einer In-Reply-To-/References-Kette.
+function extractMessageIdDomains($value) {
+    $domains = [];
+    if (preg_match_all('/@([^>\s]+)/', (string)$value, $m)) {
+        foreach ($m[1] as $host) {
+            $host = normalizeHost($host);
+            if ($host !== '') {
+                $domains[] = $host;
+            }
+        }
+    }
+    return array_values(array_unique($domains));
+}
+
+// ---------------------------------------------------------------------
 //  Zaehlt ein Blocklisten-Treffer als Beleg?
 //
 //  Am 28.08. bekam Googles woechentliche Praemien-Mail "phishing" und
@@ -1181,7 +1241,7 @@ PROMPT;
         && !empty($strong)
         && empty($localContext['matched_profile'])
         && $verifiedBrand === ''
-        && $mail['in_reply_to'] === '';
+        && !partOfRealConversation($mail);
 
     $ceiling = ($rejectEligible && AI_MAY_REJECT)
         ? MAX_TOTAL_REJECTABLE
@@ -1198,8 +1258,7 @@ PROMPT;
         && $confidence >= 0.80
         && empty($localContext['matched_profile'])
         && $verifiedBrand === ''
-        && empty($mail['signals']['reply_to_our_mail'])
-        && $mail['in_reply_to'] === '';
+        && !partOfRealConversation($mail);
 
     if ($junkFloorApplies) {
         $needed = JUNK_FLOOR - $mail['rspamd_score'];

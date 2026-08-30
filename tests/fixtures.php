@@ -189,6 +189,32 @@ function fixtures() {
         'signals' => ['url_blacklisted' => true],
     ]);
 
+    // Gefaelschter Thread-Header: Angreifer setzt In-Reply-To selbst.
+    $cases['phishing-mit-erfundenem-thread'] = array_replace_recursive($base, [
+        'from' => 'service@wntppcagency.com', 'from_email' => 'service@wntppcagency.com',
+        'from_display_name' => 'onPhase Support',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Case #00216349 - Your Feedback Is Important To Us was created',
+        'body' => 'A case was created for you. Please review.',
+        'rspamd_score' => 9.0,
+        'in_reply_to' => '<abc123@wntppcagency.com>',
+        'urls' => ['https://onphase.my.salesforce.com/x'],
+        'url_domains' => ['onphase.my.salesforce.com'],
+        'signals' => ['url_blacklisted' => true, 'suspicious_reply_to' => true],
+    ]);
+
+    // Echte Antwort auf unsere eigene Post - muss geschuetzt bleiben.
+    $cases['echte-antwort-auf-uns'] = array_replace_recursive($base, [
+        'from' => 'kunde@partner.de', 'from_email' => 'kunde@partner.de',
+        'from_display_name' => 'Kunde',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Re: Angebot 2026-08',
+        'body' => 'Danke, passt so. Bitte um Rechnung.',
+        'rspamd_score' => 8.0,
+        'in_reply_to' => '<xyz@moving-pictures.de>',
+        'signals' => ['reply_to_our_mail' => true, 'url_blacklisted' => true],
+    ]);
+
     return $cases;
 }
 
