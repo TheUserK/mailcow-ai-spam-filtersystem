@@ -485,18 +485,33 @@ cat > /etc/cron.d/ai-filter-brands <<'CRON'
 CRON
 chmod 644 /etc/cron.d/ai-filter-brands
 
-if [[ ! -f "data/ai-checker/brand_domains.txt" ]]; then
-    echo "Erzeuge die Markenliste (einmaliger Download, ca. 80 MB) ..."
+BRAND_COUNT=0
+if [[ -f "data/ai-checker/brand_domains.txt" ]]; then
+    BRAND_COUNT=$(grep -vc '^#' data/ai-checker/brand_domains.txt || echo 0)
+fi
+
+# Eine vorhandene Liste bleibt stehen - ausser sie ist unplausibel klein.
+# Aus den ersten 10000 Domains muessen einige tausend Marken werden; kommt
+# deutlich weniger heraus, stammt die Datei aus einem abgebrochenen Lauf
+# und wuerde hier stillschweigend konserviert. Genau das waere am 31.08.
+# auf einem der beiden Server passiert, wo ein Fehler im Generator nur 54
+# Eintraege hinterlassen hatte.
+if [[ "$BRAND_COUNT" -ge 1000 ]]; then
+    echo -e "${GREEN}[OK]${NC} Existing brand list preserved ($BRAND_COUNT brands)"
+else
+    if [[ "$BRAND_COUNT" -gt 0 ]]; then
+        echo -e "${YELLOW}[INFO]${NC} Brand list has only $BRAND_COUNT entries - rebuilding"
+    else
+        echo "Erzeuge die Markenliste (einmaliger Download, ca. 80 MB) ..."
+    fi
     if /usr/local/bin/ai-filter-brands.sh; then
         :
     else
         echo -e "${YELLOW}[INFO]${NC} Markenliste konnte nicht erzeugt werden."
         echo "       Der Filter laeuft ohne sie weiter, nur mit der kleinen"
         echo "       eingebauten Markenliste. Spaeter nachholen:"
-        echo "         ai-filter-brands.sh"
+        echo "         ai-filter-brands.sh --debug"
     fi
-else
-    echo -e "${GREEN}[OK]${NC} Existing brand list preserved ($(grep -vc '^#' data/ai-checker/brand_domains.txt || echo 0) brands)"
 fi
 
 if [[ -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
