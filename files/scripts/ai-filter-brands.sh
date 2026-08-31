@@ -120,6 +120,52 @@ yahoo youtu youtube
 SKIP
 
 echo "Werte die ersten $COUNT Domains aus ..."
+
+# Bewusst OHNE "tail | head": head schliesst die Pipe nach COUNT Zeilen,
+# tail bekommt SIGPIPE, und pipefail bricht das ganze Skript ab. awk zaehlt
+# selbst mit und steigt aus.
+awk -F, -v skipfile="$TMP/skip.txt" -v maxn="$COUNT" '
+    # Die Skip-Datei hat mehrere Woerter pro Zeile, getline liefert aber
+    # ganze Zeilen - also je Zeile aufteilen, sonst steht die komplette
+    # Zeile als ein Schluessel im Array und nichts wird gefiltert.
+    BEGIN {
+        while ((getline line < skipfile) > 0) {
+            gsub(/\r/, "", line)
+            n = split(line, w, /[ \t]+/)
+            for (i = 1; i <= n; i++) if (w[i] != "") skip[w[i]] = 1
+        }
+    }
+    NR == 1 { next }                 # Kopfzeile
+    NR > maxn + 1 { exit }
+    {
+        domain = tolower($3); tld = tolower($4)
+        gsub(/[\r"]/, "", domain); gsub(/[\r"]/, "", tld)
+        if (domain == "" || tld == "") next
+        # Nur echte Zweitniveau-Domains: Untereintraege wie play.google.com
+        # liefern kein eigenes Markenwort.
+        suffix = "." tld
+        if (substr(domain, length(domain) - length(suffix) + 1) != suffix) next
+        label = substr(domain, 1, length(domain) - length(suffix))
+        if (index(label, ".") > 0) next
+        gsub(/[^a-z0-9]/, "", label)
+        if (length(label) < 4) next
+        if (label in skip) next
+        if (label in seen) next
+        seen[label] = 1
+        print label "\t" domain
+    }' "$TMP/million.csv" > "$TMP/body.txt" || true
+
+LINES=$(wc -l < "$TMP/body.txt" | tr -d ' ')
+
+if [[ "$LINES" -lt 1000 ]]; then
+    echo -e "${RED}Nur $LINES Marken erkannt${NC} - das sieht nach einem Formatwechsel aus."
+    echo "Erwartet werden die Spalten: GlobalRank,TldRank,Domain,TLD,..."
+    echo "Die ersten beiden Zeilen der geladenen Datei:"
+    head -2 "$TMP/million.csv" | sed 's/^/    /'
+    echo "Vorhandene Liste bleibt unveraendert."
+    exit 1
+fi
+
 {
     printf '# Marken-Domains fuer den AI-Spamfilter\n'
     printf '#\n'
@@ -132,35 +178,8 @@ echo "Werte die ersten $COUNT Domains aus ..."
     printf '# Nicht von Hand pflegen - wird bei jedem Lauf neu erzeugt.\n'
     printf '# Einzelne Marken ausschliessen: in die skip-Liste im Skript eintragen.\n'
     printf '#\n'
-
-    tail -n +2 "$TMP/million.csv" \
-    | head -n "$COUNT" \
-    | awk -F, -v skipfile="$TMP/skip.txt" '
-        BEGIN { while ((getline w < skipfile) > 0) { gsub(/[ \t]/, "", w); if (w != "") skip[w] = 1 } }
-        {
-            domain = tolower($3); tld = tolower($4)
-            if (domain == "" || tld == "") next
-            # Nur echte Zweitniveau-Domains: Untereintraege wie
-            # play.google.com liefern kein eigenes Markenwort.
-            suffix = "." tld
-            if (substr(domain, length(domain) - length(suffix) + 1) != suffix) next
-            label = substr(domain, 1, length(domain) - length(suffix))
-            if (index(label, ".") > 0) next
-            gsub(/[^a-z0-9]/, "", label)
-            if (length(label) < 4) next
-            if (label in skip) next
-            if (label in seen) next
-            seen[label] = 1
-            print label "\t" domain
-        }'
+    cat "$TMP/body.txt"
 } > "$TMP/brands.txt"
-
-LINES=$(grep -vc '^#' "$TMP/brands.txt" || echo 0)
-if [[ "$LINES" -lt 1000 ]]; then
-    echo -e "${RED}Nur $LINES Marken erkannt${NC} - das sieht nach einem Formatwechsel aus."
-    echo "Vorhandene Liste bleibt unveraendert."
-    exit 1
-fi
 
 mkdir -p data/ai-checker
 mv "$TMP/brands.txt" "$OUT"
