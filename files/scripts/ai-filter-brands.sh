@@ -166,10 +166,17 @@ awk -F, -v skipfile="$TMP/skip.txt" -v maxn="$COUNT" -v debug="$DEBUG" '
         }
     }' "$TMP/million.csv" > "$TMP/body.txt" || true
 
-LINES=$(wc -l < "$TMP/body.txt" | tr -d ' ')
+# NICHT "LINES" nennen. Das ist eine Bash-Sondervariable: mit checkwinsize
+# - seit Bash 5 standardmaessig an - setzt die Shell LINES und COLUMNS nach
+# jedem Kommando auf die Terminalgroesse zurueck. Am 31.08. meldete das
+# Skript deshalb "54 Marken" (die Fensterhoehe), waehrend 7324 in der Datei
+# standen: Die Pruefung unten sah noch den richtigen Wert, das echo am Ende
+# nicht mehr. Ohne Terminal passiert es nicht, also faellt es beim Testen
+# per Skript nie auf.
+FOUND_BRANDS=$(wc -l < "$TMP/body.txt" | tr -d ' ')
 
-if [[ "$LINES" -lt 1000 ]]; then
-    echo -e "${RED}Nur $LINES Marken erkannt${NC} - das sieht nach einem Formatwechsel aus."
+if [[ "$FOUND_BRANDS" -lt 1000 ]]; then
+    echo -e "${RED}Nur $FOUND_BRANDS Marken erkannt${NC} - das sieht nach einem Formatwechsel aus."
     echo "Erwartet werden die Spalten: GlobalRank,TldRank,Domain,TLD,..."
     echo "Die ersten beiden Zeilen der geladenen Datei:"
     head -2 "$TMP/million.csv" | sed 's/^/    /'
@@ -196,5 +203,5 @@ mkdir -p data/ai-checker
 mv "$TMP/brands.txt" "$OUT"
 chmod 644 "$OUT"
 
-echo -e "${GREEN}[OK]${NC} $LINES Marken nach $OUT geschrieben"
+echo -e "${GREEN}[OK]${NC} $FOUND_BRANDS Marken nach $OUT geschrieben"
 echo "     Pruefen mit: ai-filter-brands.sh --show hetzner"
