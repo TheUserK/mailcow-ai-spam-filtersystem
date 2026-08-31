@@ -297,6 +297,34 @@ function fixtures() {
         'headers' => ['list_unsubscribe' => '<https://floraprima.de/u>'],
     ]);
 
+    // Hetzner-Faelschung OHNE Link auf die echte Domain: nur die Markenliste
+    // kann das noch fassen.
+    $cases['hetzner-ohne-markenlink'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Hetzner Online GmbH',
+        'from' => 'support@joslckiaasox.de', 'from_email' => 'support@joslckiaasox.de',
+        'from_display_name' => 'Hetzner Online GmbH',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Hetzner Online GmbH - Rechnung Nr. 084512734960',
+        'body' => 'Ihre Rechnung liegt bereit.',
+        'rspamd_score' => 0.71,
+        'url_domains' => ['your-server.hebjelief.nl'],
+    ]);
+
+    // Echter Marken-Newsletter ueber einen Versanddienst: Listenkoepfe plus
+    // saubere Auth. Muss STILL bleiben (Madeleine-Fall vom 24.08.).
+    $cases['marken-newsletter-via-esp'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Madeleine',
+        'from' => 'news@spotlermail.com', 'from_email' => 'news@spotlermail.com',
+        'from_display_name' => 'MADELEINE',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Dark Denim: Looks in tiefem Blau',
+        'body' => 'Die neue Kollektion ist da.',
+        'rspamd_score' => 3.0,
+        'url_domains' => ['madeleine.de','spotlermail.com'],
+        'signals' => ['forged_sender' => true, 'from_neq_envfrom' => true, 'has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://madeleine.de/u>', 'list_id' => 'madeleine'],
+    ]);
+
     return $cases;
 }
 

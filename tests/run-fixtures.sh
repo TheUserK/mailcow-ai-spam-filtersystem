@@ -26,4 +26,9 @@ end=$(grep -n '^//  MAIL-KONTEXT$' "$src" | cut -d: -f1)
 perl -0pi -e 's/(function getLocalDomains\(\) \{)/$1\n    return ["moving-pictures.de", "karrerlabs.de", "karrer.info"];/' "$tmp/lib.php"
 php -l "$tmp/lib.php" >/dev/null
 
+# Die Markenliste liegt im Betrieb neben dem Checker. Fuer den Testlauf
+# dieselbe Nachbarschaft herstellen, sonst prueft brand_domains.txt nichts.
+[ -f "$root/tests/brand_domains.sample.txt" ] \
+  && cp "$root/tests/brand_domains.sample.txt" "$tmp/brand_domains.txt"
+
 php -r 'require $argv[1]; require $argv[2];' "$tmp/lib.php" "$root/tests/fixtures.php"

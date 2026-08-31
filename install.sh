@@ -473,6 +473,32 @@ CRON
 chmod 644 /etc/cron.d/ai-filter-report
 echo -e "${GREEN}[OK]${NC} Daily report scheduled (weekdays 08:00)"
 
+# === MARKEN-DOMAINS ===
+# Woechentlich aus der Majestic Million erzeugt. Die Datei bleibt auf
+# diesem Server und wird bewusst NICHT mit dem Projekt ausgeliefert: Die
+# Quelle steht unter CC BY 3.0, und wer nichts weitergibt, muss auch
+# nichts nennen.
+cat > /etc/cron.d/ai-filter-brands <<'CRON'
+# Marken-Domains fuer die Impersonation-Erkennung, sonntags um 4 Uhr.
+# Von Hand: ai-filter-brands.sh          Stand: ai-filter-brands.sh --status
+0 4 * * 0 root /usr/local/bin/ai-filter-brands.sh >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/ai-filter-brands
+
+if [[ ! -f "data/ai-checker/brand_domains.txt" ]]; then
+    echo "Erzeuge die Markenliste (einmaliger Download, ca. 80 MB) ..."
+    if /usr/local/bin/ai-filter-brands.sh; then
+        :
+    else
+        echo -e "${YELLOW}[INFO]${NC} Markenliste konnte nicht erzeugt werden."
+        echo "       Der Filter laeuft ohne sie weiter, nur mit der kleinen"
+        echo "       eingebauten Markenliste. Spaeter nachholen:"
+        echo "         ai-filter-brands.sh"
+    fi
+else
+    echo -e "${GREEN}[OK]${NC} Existing brand list preserved ($(grep -vc '^#' data/ai-checker/brand_domains.txt || echo 0) brands)"
+fi
+
 if [[ -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
     echo ""
     echo "The report mails you the cases where the filter contradicts itself."
