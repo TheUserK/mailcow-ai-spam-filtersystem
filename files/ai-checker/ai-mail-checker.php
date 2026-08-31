@@ -539,6 +539,108 @@ function extractMessageIdDomains($value) {
 //  google.com mit einwandfreiem DMARC. Ein fremder Link in so einer Mail
 //  ist genau das, was man sehen will.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  Die Marke ist verlinkt, der Absender gehoert nicht dazu.
+//
+//  Am 31.08. kam eine gefaelschte Hetzner-Rechnung von joslckiaasox.de.
+//  Nichts griff: Hetzner steht in keiner Markenliste, die Wegwerfdomain
+//  hatte sauberes DMARC, und die Blockliste kannte sie nicht.
+//
+//  Der Beweis lag trotzdem offen in der Mail: Sie verlinkte hetzner.com -
+//  die echte Domain der behaupteten Marke - und kam von einer Domain, die
+//  damit nichts zu tun hat. Echte Markenpost kommt VON der Domain, die sie
+//  verlinkt, oder wenigstens von einer, die den Namen teilt.
+//
+//  Deshalb braucht es hier keine gepflegte Markenliste und kein Nachsehen
+//  im Netz: Die echte Domain steht in der Mail selbst.
+//
+//  Kein Treffer bei Versanddienstleistern derselben Marke: FloraPrima
+//  schickt aus floraprima-news.de und verlinkt floraprima.de - beide
+//  tragen den Namen, also greift die Regel nicht.
+// ---------------------------------------------------------------------
+function brandLinkedNotSender(array $mail, array $analysis) {
+    $words = significantBrandWords($analysis['claimed_brand'] ?? '');
+    if (empty($words)) {
+        return false;
+    }
+
+    $fromToken = brandToken(implode('', organisationalLabels(normalizeHost($mail['from_domain']))));
+    if ($fromToken === '') {
+        return false;
+    }
+
+    // Traegt die Absenderdomain die Marke selbst? Dann ist nichts gefaelscht.
+    foreach ($words as $word) {
+        if (mb_strpos($fromToken, $word) !== false) {
+            return false;
+        }
+    }
+
+    // Wird die echte Markendomain verlinkt?
+    foreach (normalizeDomainList($mail['url_domains']) as $domain) {
+        if (isSharedAssetHost($domain)) {
+            continue;
+        }
+        $linkToken = brandToken(implode('', organisationalLabels($domain)));
+        if ($linkToken === '') {
+            continue;
+        }
+        foreach ($words as $word) {
+            if (mb_strpos($linkToken, $word) !== false) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Gehoert die Domain zur Absenderfamilie? Versanddienste einer Marke
+// laufen fast immer auf einer Schwesterdomain: FloraPrima verschickt aus
+// floraprima-news.de und verlinkt floraprima.de. Das sind technisch zwei
+// Domains, aber offensichtlich derselbe Absender - der Name steckt in
+// beiden. Am 30.08. wurde genau dieser Newsletter abgewiesen, weil der
+// Vergleich auf Domain-Gleichheit lief.
+function relatedToSenderDomain($domain, $fromDomain) {
+    $a = brandToken(organisationalLabels(normalizeHost($domain))[0] ?? '');
+    $b = brandToken(organisationalLabels(normalizeHost($fromDomain))[0] ?? '');
+    if ($a === '' || $b === '') {
+        return false;
+    }
+    if ($a === $b) {
+        return true;
+    }
+    // Ein zu kurzer gemeinsamer Rumpf traefe zufaellig zu ("post", "mail").
+    $shorter = mb_strlen($a) <= mb_strlen($b) ? $a : $b;
+    $longer  = $shorter === $a ? $b : $a;
+    return mb_strlen($shorter) >= 5 && mb_strpos($longer, $shorter) !== false;
+}
+
+// Geteilte Infrastruktur: Schriften, Skripte, Bilder. Diese Hosts stehen
+// in Millionen legitimer Mails. Wenn einer davon auf einer Blockliste
+// landet - was vorkommt, weil auch Angreifer sie einbinden -, ist das kein
+// Hinweis auf DIESE Mail. Am 30.08. wurde der FloraPrima-Newsletter genau
+// so abgewiesen: fuenf Tage lang harmlos, dann stand einer der beiden CDNs
+// auf einer Liste, und aus "marketing" wurde "spam" mit 0.95 Sicherheit.
+function isSharedAssetHost($domain) {
+    static $hosts = [
+        'fonts.googleapis.com', 'fonts.gstatic.com', 'ajax.googleapis.com',
+        'gstatic.com', 'googletagmanager.com', 'google-analytics.com',
+        'cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'jsdelivr.net',
+        'unpkg.com', 'code.jquery.com', 'bootstrapcdn.com',
+        'use.fontawesome.com', 'kit.fontawesome.com',
+        'cloudfront.net', 'akamaihd.net', 'akamaized.net', 'akamai.net',
+        'fastly.net', 'fbcdn.net', 'twimg.com', 'licdn.com',
+        'w3.org', 'schema.org',
+    ];
+    $domain = normalizeHost($domain);
+    foreach ($hosts as $h) {
+        if ($domain === $h || endsWith($domain, '.' . $h)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function blocklistHitCounts(array $mail, $verifiedBrand) {
     $hit = !empty($mail['signals']['url_blacklisted'])
         || !empty($mail['signals']['url_phishing']);
@@ -550,17 +652,29 @@ function blocklistHitCounts(array $mail, $verifiedBrand) {
     // eigene, sauber authentifizierte Absenderdomain, trifft die Blockliste
     // die Infrastruktur des Absenders und nicht ein fremdes Ziel. Das ist
     // ein Reputationsproblem, kein Beweis fuer einen Angriff.
+    // Geteilte Infrastruktur bleibt bei beiden Pruefungen aussen vor.
+    $foreign = [];
+    foreach (normalizeDomainList($mail['url_domains']) as $domain) {
+        if (!isSharedAssetHost($domain)) {
+            $foreign[] = $domain;
+        }
+    }
+
     if ($verifiedBrand === '') {
         $from = normalizeHost($mail['from_domain']);
-        $domains = normalizeDomainList($mail['url_domains']);
-        if ($from !== '' && !empty($domains)
-            && ($mail['auth']['dmarc'] ?? '') === 'pass'
-            && domainMatchesAny($from, [$from])) {
-            foreach ($domains as $domain) {
-                if (!domainMatchesAny($domain, [$from])) {
+        if ($from !== '' && !empty($foreign)
+            && ($mail['auth']['dmarc'] ?? '') === 'pass') {
+            foreach ($foreign as $domain) {
+                if (!domainMatchesAny($domain, [$from])
+                    && !relatedToSenderDomain($domain, $from)) {
                     return true;
                 }
             }
+            return false;
+        }
+        // Nur noch geteilte Hosts uebrig? Dann traf die Liste die
+        // Infrastruktur, nicht diese Mail.
+        if (empty($foreign) && ($mail['auth']['dmarc'] ?? '') === 'pass') {
             return false;
         }
         return true;
@@ -577,7 +691,7 @@ function blocklistHitCounts(array $mail, $verifiedBrand) {
 
     // Rspamd sagt uns nicht, WELCHE Domain gelistet ist. Also entwerten wir
     // nur, wenn gar keine fremde Domain in Frage kommt.
-    foreach (normalizeDomainList($mail['url_domains']) as $domain) {
+    foreach ($foreign as $domain) {
         if (!domainMatchesAny($domain, $own)) {
             return true;
         }
@@ -1475,6 +1589,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if ($struct['fabricated_ticket']) {
         $evidence[] = 'fabricated-ticket';
     }
+    if (brandLinkedNotSender($mail, $analysis)) {
+        $evidence[] = 'brand-linked-not-sender';
+    }
     if (!empty($struct['free_hosting_links'])) {
         $evidence[] = 'free-hosting-link';
     }
@@ -1919,6 +2036,7 @@ function strongEvidence(array $evidence) {
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
         'rspamd-concurs',        // Rspamd kommt unabhaengig zum selben Schluss
         'fabricated-ticket',     // erfundene Vorgangsnummer ohne echten Thread
+        'brand-linked-not-sender', // Mail verlinkt die Marke, kommt aber woanders her
     ];
     return array_values(array_diff(
         array_intersect($evidence, $strong),
@@ -2452,7 +2570,17 @@ function claimedBrandMismatch(array $mail, array $analysis) {
         }
     }
 
-    return evaluateAuthStrength($mail) !== 'strong';
+    // Frueher endete die Pruefung hier mit "nur wenn die Auth schwach ist".
+    // Das war ein Freifahrtschein: Wer auf seiner Wegwerfdomain SPF, DKIM
+    // und DMARC einrichtet - zehn Minuten Arbeit -, schaltete die
+    // Markenpruefung ab. Am 31.08. kam so eine gefaelschte Hetzner-Rechnung
+    // von joslckiaasox.de durch, auth_strength "strong". Authentifizierung
+    // beweist, dass die Domain zu sich selbst gehoert, und sagt nichts
+    // darueber, ob sie zur behaupteten Marke gehoert.
+    //
+    // Der Beleg bleibt schwach, traegt also weiterhin keine Ablehnung
+    // allein - er kostet hoechstens eine Zeile im Report.
+    return true;
 }
 
 // Zerlegt eine Markenbehauptung in ihre aussagekraeftigen Woerter.
