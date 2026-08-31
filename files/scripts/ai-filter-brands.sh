@@ -33,12 +33,14 @@ SOURCE_URL="https://downloads.majestic.com/majestic_million.csv"
 COUNT=10000
 ACTION=build
 ARG=""
+DEBUG=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --count)  COUNT="${2:-10000}"; shift 2 ;;
         --show)   ACTION=show; ARG="${2:-}"; shift 2 ;;
         --status) ACTION=status; shift ;;
+        --debug)  DEBUG=1; shift ;;
         -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -124,7 +126,7 @@ echo "Werte die ersten $COUNT Domains aus ..."
 # Bewusst OHNE "tail | head": head schliesst die Pipe nach COUNT Zeilen,
 # tail bekommt SIGPIPE, und pipefail bricht das ganze Skript ab. awk zaehlt
 # selbst mit und steigt aus.
-awk -F, -v skipfile="$TMP/skip.txt" -v maxn="$COUNT" '
+awk -F, -v skipfile="$TMP/skip.txt" -v maxn="$COUNT" -v debug="$DEBUG" '
     # Die Skip-Datei hat mehrere Woerter pro Zeile, getline liefert aber
     # ganze Zeilen - also je Zeile aufteilen, sonst steht die komplette
     # Zeile als ein Schluessel im Array und nichts wird gefiltert.
@@ -138,21 +140,30 @@ awk -F, -v skipfile="$TMP/skip.txt" -v maxn="$COUNT" '
     NR == 1 { next }                 # Kopfzeile
     NR > maxn + 1 { exit }
     {
+        read++
         domain = tolower($3); tld = tolower($4)
         gsub(/[\r"]/, "", domain); gsub(/[\r"]/, "", tld)
-        if (domain == "" || tld == "") next
+        if (domain == "" || tld == "") { drop["Spalte 3/4 leer"]++; next }
         # Nur echte Zweitniveau-Domains: Untereintraege wie play.google.com
         # liefern kein eigenes Markenwort.
         suffix = "." tld
-        if (substr(domain, length(domain) - length(suffix) + 1) != suffix) next
+        if (substr(domain, length(domain) - length(suffix) + 1) != suffix) { drop["TLD passt nicht zur Domain"]++; next }
         label = substr(domain, 1, length(domain) - length(suffix))
-        if (index(label, ".") > 0) next
+        if (index(label, ".") > 0) { drop["Subdomain-Eintrag"]++; next }
         gsub(/[^a-z0-9]/, "", label)
-        if (length(label) < 4) next
-        if (label in skip) next
-        if (label in seen) next
+        if (length(label) < 4) { drop["Label unter 4 Zeichen"]++; next }
+        if (label in skip) { drop["Infrastruktur/Stoppwort"]++; next }
+        if (label in seen) { drop["Dublette"]++; next }
         seen[label] = 1
+        kept++
         print label "\t" domain
+    }
+    END {
+        if (debug) {
+            printf "  gelesen:      %d\n", read     > "/dev/stderr"
+            printf "  uebernommen:  %d\n", kept     > "/dev/stderr"
+            for (r in drop) printf "  verworfen %-26s %d\n", r ":", drop[r] > "/dev/stderr"
+        }
     }' "$TMP/million.csv" > "$TMP/body.txt" || true
 
 LINES=$(wc -l < "$TMP/body.txt" | tr -d ' ')
