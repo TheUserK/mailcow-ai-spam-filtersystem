@@ -540,6 +540,86 @@ function extractMessageIdDomains($value) {
 //  ist genau das, was man sehen will.
 // ---------------------------------------------------------------------
 // ---------------------------------------------------------------------
+//  Bekannte Marken aus der Majestic Million.
+//
+//  Erzeugt von ai-filter-brands.sh, liegt neben diesem Skript und wird
+//  NICHT mit dem Projekt ausgeliefert - die Quelle steht unter CC BY 3.0,
+//  und wer nichts weitergibt, muss auch nichts nennen. Fehlt die Datei,
+//  faellt der Filter still auf die handgepflegte Liste zurueck.
+//
+//  Format je Zeile: markenname<TAB>echte-domain
+// ---------------------------------------------------------------------
+define('BRAND_DOMAINS_FILE', __DIR__ . '/brand_domains.txt');
+
+function knownBrandDomains() {
+    static $map = null;
+    if ($map !== null) {
+        return $map;
+    }
+    $map = [];
+    if (!is_readable(BRAND_DOMAINS_FILE)) {
+        return $map;
+    }
+    foreach (file(BRAND_DOMAINS_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if ($line === '' || $line[0] === '#') {
+            continue;
+        }
+        $parts = preg_split('/\s+/', trim($line));
+        if (count($parts) < 2) {
+            continue;
+        }
+        $map[mb_strtolower($parts[0])] = normalizeHost($parts[1]);
+    }
+    return $map;
+}
+
+// ---------------------------------------------------------------------
+//  Die behauptete Marke ist eine bekannte Domain - der Absender nicht.
+//
+//  Schliesst die Luecke, die brandLinkedNotSender() offen laesst: Dort
+//  muss die echte Markendomain in der Mail verlinkt sein. Verlinkt der
+//  Faelscher sie nicht, half bisher nur die handgepflegte Liste mit ihren
+//  25 Eintraegen - Hetzner stand am 31.08. nicht darin.
+//
+//  Bulk-Post mit Listenkoepfen UND sauberer Authentifizierung bleibt
+//  aussen vor: Newsletter grosser Marken laufen ueber Versanddienste,
+//  deren Absenderdomain die Marke nicht traegt. Genau daran ist am 24.08.
+//  eine echte Madeleine-Mail beinahe gescheitert.
+// ---------------------------------------------------------------------
+function claimedBrandIsKnownDomain(array $mail, array $analysis) {
+    $map = knownBrandDomains();
+    if (empty($map)) {
+        return false;
+    }
+
+    $hasListHeaders = !empty($mail['headers']['list_unsubscribe'])
+        || !empty($mail['headers']['list_id']);
+    if ($hasListHeaders && evaluateAuthStrength($mail) === 'strong') {
+        return false;
+    }
+
+    $from = normalizeHost($mail['from_domain']);
+    if ($from === '') {
+        return false;
+    }
+    $fromToken = brandToken(organisationalLabels($from)[0] ?? '');
+
+    foreach (significantBrandWords($analysis['claimed_brand'] ?? '') as $word) {
+        if (!isset($map[$word])) {
+            continue;
+        }
+        if (mb_strpos($fromToken, $word) !== false) {
+            continue;   // Absender traegt die Marke selbst
+        }
+        if (relatedToSenderDomain($map[$word], $from)) {
+            continue;   // Schwesterdomain derselben Marke
+        }
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------
 //  Die Marke ist verlinkt, der Absender gehoert nicht dazu.
 //
 //  Am 31.08. kam eine gefaelschte Hetzner-Rechnung von joslckiaasox.de.
@@ -561,6 +641,23 @@ function extractMessageIdDomains($value) {
 function brandLinkedNotSender(array $mail, array $analysis) {
     $words = significantBrandWords($analysis['claimed_brand'] ?? '');
     if (empty($words)) {
+        return false;
+    }
+
+    // Marken-Newsletter laufen ueber Versanddienste, deren Absenderdomain
+    // die Marke nicht traegt, waehrend der Inhalt sie verlinkt - technisch
+    // dasselbe Bild wie die Faelschung. Unterscheidbar sind sie an den
+    // Listenkoepfen samt bestandener Authentifizierung. Am 24.08. hat
+    // genau diese Konstellation eine echte Madeleine-Mail beinahe als
+    // Phishing ausgewiesen.
+    //
+    // Ein Faelscher kann Listenkoepfe setzen und DMARC einrichten. Beides
+    // kostet ihn aber Aufwand und macht ihn nachverfolgbar - und die Mail
+    // bleibt ueber Kategorie und Score angreifbar, nur eben nicht ueber
+    // diesen Beleg.
+    $hasListHeaders = !empty($mail['headers']['list_unsubscribe'])
+        || !empty($mail['headers']['list_id']);
+    if ($hasListHeaders && evaluateAuthStrength($mail) === 'strong') {
         return false;
     }
 
@@ -1591,6 +1688,10 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     if (brandLinkedNotSender($mail, $analysis)) {
         $evidence[] = 'brand-linked-not-sender';
+    } elseif (claimedBrandIsKnownDomain($mail, $analysis)) {
+        // Nur wenn der direkte Beleg nicht schon greift - sonst stuende
+        // derselbe Sachverhalt zweimal da.
+        $evidence[] = 'brand-claim-vs-known-domain';
     }
     if (!empty($struct['free_hosting_links'])) {
         $evidence[] = 'free-hosting-link';
@@ -2037,6 +2138,7 @@ function strongEvidence(array $evidence) {
         'rspamd-concurs',        // Rspamd kommt unabhaengig zum selben Schluss
         'fabricated-ticket',     // erfundene Vorgangsnummer ohne echten Thread
         'brand-linked-not-sender', // Mail verlinkt die Marke, kommt aber woanders her
+        'brand-claim-vs-known-domain', // behauptete Marke ist eine bekannte fremde Domain
     ];
     return array_values(array_diff(
         array_intersect($evidence, $strong),

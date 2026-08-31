@@ -1,0 +1,5 @@
+# Testliste, wird von tests/run-fixtures.sh benutzt
+hetzner	hetzner.com
+paypal	paypal.com
+floraprima	floraprima.de
+madeleine	madeleine.de
