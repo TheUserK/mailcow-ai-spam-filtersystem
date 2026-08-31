@@ -16,6 +16,7 @@ function fixtures() {
     $cases = [];
 
     $cases['google-praemie'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Google',
         'from' => 'news-noreply@google.com', 'from_email' => 'news-noreply@google.com',
         'from_display_name' => 'Google Play',
         'to' => 'andi@karrer.info',
@@ -37,6 +38,7 @@ function fixtures() {
     ]);
 
     $cases['kandao-newsletter'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Kandao Technology',
         'from' => 'marketing@usa.kandaovr.com', 'from_email' => 'marketing@usa.kandaovr.com',
         'from_display_name' => 'Kandao Technology',
         'to' => 'info@moving-pictures.de',
@@ -85,6 +87,7 @@ function fixtures() {
     ]);
 
     $cases['marcablanca-injection'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Marca Blanca Digital',
         'from' => 'wordpress@marcablancadigital.com', 'from_email' => 'wordpress@marcablancadigital.com',
         'from_display_name' => 'Marca Blanca Digital',
         'to' => 'andi@karrer.info',
@@ -145,6 +148,7 @@ function fixtures() {
     ]);
 
     $cases['typosquat-paypal'] = array_replace_recursive($base, [
+        'claimed_brand' => 'PayPal',
         'from' => 'service@paypa1-sicherheit.com', 'from_email' => 'service@paypa1-sicherheit.com',
         'from_display_name' => 'PayPal Service',
         'to' => 'info@moving-pictures.de',
@@ -178,6 +182,7 @@ function fixtures() {
     ]);
 
     $cases['google-groups-mit-boesem-link'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Google',
         'from' => 'noreply@google.com', 'from_email' => 'noreply@google.com',
         'from_display_name' => 'Google Groups',
         'to' => 'info@moving-pictures.de',
@@ -191,6 +196,7 @@ function fixtures() {
 
     // Gefaelschter Thread-Header: Angreifer setzt In-Reply-To selbst.
     $cases['phishing-mit-erfundenem-thread'] = array_replace_recursive($base, [
+        'claimed_brand' => 'onPhase',
         'from' => 'service@wntppcagency.com', 'from_email' => 'service@wntppcagency.com',
         'from_display_name' => 'onPhase Support',
         'to' => 'info@karrerlabs.de',
@@ -228,6 +234,7 @@ function fixtures() {
 
     // Erfundene Vorgangsnummer ohne nachweisbaren Thread.
     $cases['erfundenes-ticket'] = array_replace_recursive($base, [
+        'claimed_brand' => 'onPhase',
         'from' => 'service@wntppcagency.com', 'from_email' => 'service@wntppcagency.com',
         'from_display_name' => 'onPhase',
         'to' => 'info@karrerlabs.de',
@@ -262,6 +269,34 @@ function fixtures() {
         'signals' => ['url_blacklisted' => true],
     ]);
 
+    // Gefaelschte Hetzner-Rechnung: verlinkt hetzner.com, kommt von woanders.
+    $cases['hetzner-phishing'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Hetzner Online GmbH',
+        'from' => 'support@joslckiaasox.de', 'from_email' => 'support@joslckiaasox.de',
+        'from_display_name' => 'Hetzner Online GmbH',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Hetzner Online GmbH - Rechnung Nr. 084512734960',
+        'body' => 'Ihre Rechnung liegt bereit. Bitte pruefen Sie Ihr Konto.',
+        'rspamd_score' => 0.71,
+        'url_domains' => ['hetzner.com', 'your-server.hebjelief.nl'],
+        'signals' => ['forged_sender' => true, 'from_neq_envfrom' => true],
+    ]);
+
+    // FloraPrima: echter Newsletter, Versanddomain teilt den Markennamen,
+    // Blocklisten-Treffer nur auf geteilten CDNs. Muss STILL bleiben.
+    $cases['floraprima-newsletter'] = array_replace_recursive($base, [
+        'claimed_brand' => 'FloraPrima',
+        'from' => 'blumen@floraprima-news.de', 'from_email' => 'blumen@floraprima-news.de',
+        'from_display_name' => 'FloraPrima',
+        'to' => 'chris@karrer.info',
+        'subject' => 'Bald ist der Sommer vorbei - Verschenk jetzt noch ein Stueck Sonne',
+        'body' => 'Unsere Blumengruesse zum Spaetsommer.',
+        'rspamd_score' => 6.58,
+        'url_domains' => ['news.floraprima.de','floraprima.de','m.floraprima.de','fonts.googleapis.com','cdnjs.cloudflare.com'],
+        'signals' => ['url_blacklisted' => true, 'forged_sender' => true, 'from_neq_envfrom' => true, 'has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://floraprima.de/u>'],
+    ]);
+
     return $cases;
 }
 
@@ -270,7 +305,7 @@ function runFixtures() {
     foreach (fixtures() as $name => $data) {
         $mail  = prepareMailContext($data);
         $local = analyzeLocally($mail, 'test');
-        $ev    = collectStructuralEvidence($mail, $local, ['claimed_brand' => '']);
+        $ev    = collectStructuralEvidence($mail, $local, ['claimed_brand' => $data['claimed_brand'] ?? '']);
 
         $scores = [];
         foreach ([['spam', 0.85, 0.90], ['phishing', 0.95, 0.92], ['marketing', 0.20, 0.80],
