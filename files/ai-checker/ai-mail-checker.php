@@ -190,6 +190,15 @@ define('JUNK_FLOOR', 8.0);
 // fuer ziemlich sicheren Muell haelt.
 define('RSPAMD_CONCUR_SCORE', 10.0);
 
+// Muss VOR dem Router stehen, nicht erst bei den Helferfunktionen weiter
+// unten in der Datei: define() laeuft nur, wenn die Zeile tatsaechlich
+// ausgefuehrt wird - anders als Funktionsdefinitionen wird es NICHT
+// vorab eingesammelt. Der Router ruft analyzeWithAI() textuell weit vor
+// der ehemaligen Stelle dieser Zeile auf, darum war die Konstante beim
+// ersten echten Aufruf noch nicht gesetzt: "Undefined constant
+// BRAND_DOMAINS_FILE" auf jeder einzelnen Mail seit dem 31.08.
+define('BRAND_DOMAINS_FILE', __DIR__ . '/brand_domains.txt');
+
 // --- Zweiter Reject-Pfad: das Modell allein, wenn es sehr sicher ist -----
 //
 // Der Beleg-Pfad verlangt einen unabhaengigen Strukturbeleg. Der fehlt aber
@@ -549,8 +558,6 @@ function extractMessageIdDomains($value) {
 //
 //  Format je Zeile: markenname<TAB>echte-domain
 // ---------------------------------------------------------------------
-define('BRAND_DOMAINS_FILE', __DIR__ . '/brand_domains.txt');
-
 function knownBrandDomains() {
     static $map = null;
     if ($map !== null) {
