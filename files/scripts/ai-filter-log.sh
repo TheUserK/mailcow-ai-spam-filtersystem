@@ -116,11 +116,14 @@ render_stats() {
     jq -r "$TIME_FN"'
       select('"$FILTER"') |
       [ (.timestamp|localtime),
-        ((.ai_score // 0) | if . > 0 then "+\(.)" else tostring end),
+        (((.total_score // ((.rspamd_score // 0) + (.ai_score // 0))) * 100 | round / 100)
+          | if . > 0 then "+\(.)" else tostring end),
         (.category // "-"),
         (.from // "-"),
         (.to // "-"),
-        ((if .reject_eligible then ["REJECT"] else [] end) + (.evidence // []) | join(",")),
+        ((if (.rejected // false) then ["ABGEWIESEN"]
+          elif .reject_eligible then ["freigegeben"]
+          else [] end) + (.evidence // []) | join(",")),
         (.subject // "")
       ] | @tsv' \
     | awk -F'\t' '{ printf "%-16s %7s  %-14s %-32s %-26s %-38s %s\n", $1,$2,$3,$4,$5,$6,$7 }'
