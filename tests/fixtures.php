@@ -325,6 +325,49 @@ function fixtures() {
         'headers' => ['list_unsubscribe' => '<https://madeleine.de/u>', 'list_id' => 'madeleine'],
     ]);
 
+    // Foederierte Marke: echte, eigenstaendige Bank, faelschlich als
+    // Typosquat von "volksbank" gewertet (02.09., vvrb.de, +16 abgewiesen).
+    $cases['vvrb-federated-bank'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Vereinigte Volksbank Raiffeisenbank eG',
+        'from' => 'service@vvrb.de', 'from_email' => 'service@vvrb.de',
+        'from_display_name' => 'Vereinigte Volksbank Raiffeisenbank eG',
+        'to' => 'andi@karrer.info',
+        'subject' => 'Dokumenteneingang OnlineBanking-Postfach',
+        'body' => 'Sie haben ein neues Dokument in Ihrem Online-Banking-Postfach.',
+        'rspamd_score' => 5.46,
+        'signals' => ['forged_sender' => true, 'from_neq_envfrom' => true],
+    ]);
+
+    // Gegenprobe A: Sparkassen-Fake auf einer VOELLIG fremden Domain (kein
+    // Substring-Treffer) - die schwache brand-claim-mismatch-Pruefung soll
+    // hier weiterhin greifen, das ist jetzt das einzige verbleibende Netz.
+    $cases['sparkasse-fake-fremddomain'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Sparkasse',
+        'from' => 'service@xn--kontoschutz-hilfe.tk', 'from_email' => 'service@xn--kontoschutz-hilfe.tk',
+        'from_display_name' => 'Sparkasse',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte bestaetigen Sie Ihre Daten.',
+        'rspamd_score' => 4.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+    ]);
+
+    // Gegenprobe B: Domain enthaelt den Markennamen woertlich
+    // ("sparkasse-sicherheit.tk") - klassisches Phishing-Muster. Diese
+    // Luecke ist bewusst in Kauf genommen (siehe Commit): faellt jetzt auf
+    // die Wegwerf-TLD-Bewertung, den Auth-Fail und das KI-Urteil zurueck,
+    // nicht mehr auf den harten Struktur-Beleg.
+    $cases['sparkasse-fake-substring'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Sparkasse',
+        'from' => 'service@sparkasse-sicherheit.tk', 'from_email' => 'service@sparkasse-sicherheit.tk',
+        'from_display_name' => 'Sparkasse',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte bestaetigen Sie Ihre Daten.',
+        'rspamd_score' => 4.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+    ]);
+
     return $cases;
 }
 
