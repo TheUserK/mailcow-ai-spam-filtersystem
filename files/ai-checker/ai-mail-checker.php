@@ -2559,8 +2559,21 @@ function getImpersonationBrands() {
         'gls'             => ['gls-group.eu', 'gls-pakete.de'],
         'hermes'          => ['myhermes.de', 'hermesworld.com'],
         'fedex'           => ['fedex.com'],
-        'sparkasse'       => ['sparkasse.de'],
-        'volksbank'       => ['vr.de', 'volksbank.de'],
+        // ABSICHTLICH NICHT hier: "sparkasse", "volksbank", "sparda". Das
+        // sind keine einzelnen Unternehmen, sondern foederierte Marken -
+        // je ueber 300 rechtlich eigenstaendige Banken fuehren denselben
+        // Namen, jede mit ihrer eigenen Domain. Ein Abgleich gegen EINE
+        // "echte" Domain ist fuer diese Namen strukturell falsch: JEDE
+        // andere echte Sparkasse/Volksbank faellt zwangsläufig durch.
+        //
+        // Genau das geschah am 02.09.: "vvrb.de" (Vereinigte Volksbank
+        // Raiffeisenbank eG, echt, DMARC bestanden) wurde als Typosquat
+        // von "volksbank" gewertet, mit +16 abgewiesen. Die Mail existierte
+        // wirklich und kam nie an.
+        //
+        // Fuer diese Namen bleibt nur die schwache claimedBrandMismatch()-
+        // Pruefung (Wortabgleich, kein Reject allein) - schwaecher, aber
+        // wenigstens nicht strukturell falsch.
         'commerzbank'     => ['commerzbank.de'],
         'deutsche bank'   => ['deutsche-bank.de', 'db.com'],
         'dkb'             => ['dkb.de'],
@@ -2587,7 +2600,6 @@ function getImpersonationBrands() {
         'norisbank'       => ['norisbank.de'],
         'hypovereinsbank' => ['hypovereinsbank.de', 'unicredit.de'],
         'santander'       => ['santander.de', 'santander.com'],
-        'sparda'          => ['sparda.de'],
         'bunq'            => ['bunq.com'],
 
         // Krypto-Boersen: Kontosperrungen und "Verifizierung noetig"
