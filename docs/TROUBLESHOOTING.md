@@ -35,6 +35,32 @@ docker compose exec ai-checker curl -s http://localhost:8080/health
 # Should return: OK
 ```
 
+### Container healthy, but nothing shows up in stats.log at all
+
+The `/health` endpoint only checks that PHP is answering - not that real mail
+analysis actually works. A PHP fatal error in `ai-mail-checker.php` (a typo
+after a manual edit, a constant referenced before its `define()` runs, ...)
+can mean every single mail gets a plain `HTTP 500` with an **empty body**,
+while `/health` stays green and `docker compose logs` shows only ordinary
+request/response pairs with no obvious error.
+
+The script forces `display_errors=0` at the top, so this is invisible even
+with `-d display_errors=1` on the command line. The actual PHP fatal error is
+only in the container's own error log, not in `errors.log`:
+
+```bash
+docker compose exec ai-checker tail -30 /var/log/ai-checker/php-errors.log
+# or, from outside the container:
+tail -30 /opt/mailcow-dockerized/data/logs/ai-checker/php-errors.log
+```
+
+Confirm with a direct request - a real 500 with an empty body looks very
+different from a normal `add`/`pass` response:
+```bash
+docker compose exec ai-checker curl -sv -X POST http://localhost:8080/ai-mail-checker.php \
+  -d '{}' -H 'Content-Type: application/json'
+```
+
 ## After a Mailcow Update
 
 A mailcow update should not affect the filter - it is an untracked file in
@@ -148,9 +174,11 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 
 1. **Check the stats log:**
    ```bash
-   tail -20 /opt/mailcow-dockerized/data/logs/ai-checker/stats.log | python3 -m json.tool
+   ai-filter-log.sh -n 20 -r
+   # or: tail -20 /opt/mailcow-dockerized/data/logs/ai-checker/stats.log | python3 -m json.tool
    ```
-   Look at `red_flags`, `risk_flags`-equivalent info in `reason`, and `matched_profile`.
+   Look at `evidence`, `reject_eligible`/`reject_path`, `red_flags`, and `matched_profile`.
+   `ai-filter-log.sh -R` shows only mail that qualified for rejection either way.
 
 2. **Add the sender to `trusted_sender_profiles.json`** (see [CONFIGURATION.md](CONFIGURATION.md)) if it's a recurring, legitimate sender - this also protects it against brand-impersonation false positives for that domain going forward.
 
@@ -161,6 +189,10 @@ service's `environment:` section in `docker-compose.override.yml` (next to
    ```
 
 4. **Lower `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS`** in `ai-mail-checker.php` if the AI's contribution is too aggressive relative to your Rspamd reject/quarantine thresholds.
+
+5. **Check the contradiction report** (`ai-filter-report.sh -d 7`) - it is built specifically to surface exactly this: a rejection or a phishing verdict that looks out of place. It has caught every real false positive in this filter's history so far.
+
+6. **A specific brand keeps getting flagged wrongly?** If it's a federated name shared by many independent organisations (like Sparkasse/Volksbank), a single-domain brand-list entry is structurally wrong for it - see [CONFIGURATION.md](CONFIGURATION.md#brand-impersonation-three-paths). Otherwise check whether `data/ai-checker/brand_domains.txt` (generated, `ai-filter-brands.sh --debug`) has a stale or wrong entry for it.
 
 ## Too Much Spam Getting Through
 
@@ -187,11 +219,19 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 ### Monitor Live
 
 ```bash
-# AI analysis results
+# AI analysis results, one readable line per mail
+ai-filter-log.sh -f
+
+# Same, raw JSON
 tail -f /opt/mailcow-dockerized/data/logs/ai-checker/stats.log | python3 -m json.tool
 
-# Errors
-tail -f /opt/mailcow-dockerized/data/logs/ai-checker/errors.log | python3 -m json.tool
+# Errors (reject candidates, API/budget failures, ...)
+ai-filter-log.sh -e -f
+# or: tail -f /opt/mailcow-dockerized/data/logs/ai-checker/errors.log | python3 -m json.tool
+
+# PHP fatal errors - not the same file as errors.log above, see
+# "Container healthy, but nothing shows up in stats.log at all"
+tail -f /opt/mailcow-dockerized/data/logs/ai-checker/php-errors.log
 
 # Rspamd filter activity
 docker compose logs -f rspamd-mailcow | grep "AI Filter"
@@ -206,11 +246,13 @@ docker compose logs -f rspamd-mailcow | grep "AI Filter"
 | `parse-error` | AI returned invalid JSON | Usually transient, check error log |
 | `internal-mail` | Both sender and recipient are on a local Mailcow domain | Expected, not an error |
 | `trusted-transactional` | Local auto-pass via a trusted sender profile | Expected, not an error |
+| `Reject allowed` / `Would reject (shadow mode)` in errors.log | A mail qualified for one of the two reject paths | Expected, not an error - see [CONFIGURATION.md](CONFIGURATION.md#two-paths-to-the-reject-threshold). Read it, this is the only trace a rejected mail leaves |
+| `Undefined constant "..."` in php-errors.log, every mail failing | A `define()` was moved below code that runs before it - `define()` only executes when its line is reached, unlike function declarations | Move the `define()` above the router / any code path that can call it |
 
 ## Getting Help
 
 1. Run `ai-filter-healthcheck.sh`
-2. Check logs (stats.log, errors.log)
+2. Check logs (stats.log, errors.log, php-errors.log)
 3. Open GitHub issue with:
    - Health check output
    - Relevant log entries (anonymized)

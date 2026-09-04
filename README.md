@@ -54,7 +54,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt. A fixture corpus (`tests/`) built from real false positives and real catches guards against regressions on every change.
 - **Untouched by mailcow updates** - Installed into `plugins.d/`, which mailcow's update never writes to, so there is no loader line that can go missing
 - **Budget Protection** - Monthly spending limits with automatic tracking
-- **Privacy-conscious defaults** - Inbound mail only (your users' outgoing mail is never sent to the AI), no mail content in the logs by default, 7-day retention
+- **Privacy-conscious defaults** - Inbound mail only (your users' outgoing mail is never sent to the AI), no mail content in the logs by default, 30-day retention
 
 ## Detection Categories
 
