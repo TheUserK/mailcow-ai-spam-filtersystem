@@ -44,19 +44,23 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **AI-Powered Analysis** - Uses GPT-OSS-120B (120B parameters) for context-aware detection
 - **Processing in Germany** - The AI provider is IONOS (Frankfurt/Berlin), no US transfer
 - **Additive scoring** - The AI and the local heuristics only ever add a graduated, signed score (positive = spam, negative = ham) to Rspamd's own metric; Rspamd's own thresholds make the final call. The score a category may contribute is capped as a *total*, so protected categories - transactional mail, personal mail, solicited newsletters - cannot be rejected no matter how badly the AI misjudges them.
-- **Rejection needs a second source** - Only unsolicited bulk can reach the reject threshold, and only when a structural signal that does not come from the AI agrees: cloud-storage-only links, brand impersonation, a blocklist hit, a dangerous attachment or a URL shortener. Plus no trusted-sender match and no reply to an existing thread.
-- **Trusted sender profiles** - Known shippers, marketplaces, banks and telecoms (DHL, Amazon, PayPal, Telekom, ...) get a safe local auto-pass (no AI call, no cost) when auth is strong and headers/links align - extendable via `trusted_sender_profiles.json`.
+- **Two paths to rejection, both gated** - Either a structural signal independent of the model agrees (brand impersonation, a hijacked reply-to, a dangerous attachment, a fabricated ticket number, a link to the real brand domain from an unrelated sender, and others - eleven classes in total), or the model itself is very confident (≥90%) *and* Rspamd's own score clears a real bar on its own (the AI's contribution alone is capped well under the reject threshold, so Rspamd has to agree independently either way). Both paths additionally require: no trusted-sender match, no reply to an existing thread, no verified brand sender.
+- **Cases the filter is unsure about get reported, not just logged** - `ai-filter-report.sh` collects contradictions (a phishing verdict on a clean sender, structural evidence on a mail that scored negative, ...) and mails them on weekdays. Newly added evidence classes start on probation - counted, reported, but unable to reject on their own until proven.
+- **Trusted sender profiles** - Known shippers, marketplaces, banks and telecoms get a safe local auto-pass (no AI call, no cost) when auth is strong and headers/links align - extendable via `trusted_sender_profiles.json`.
 - **Uses Rspamd's own URL reputation** - Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank and the fresh-domain zone are queried by stock mailcow anyway; their results are folded into the analysis as risk flags. No extra service, no additional lookups, no new dependency.
-- **Brand-impersonation detection** - Catches "PayPal" or "DHL" claimed in the sender name/address when the domain doesn't actually belong to that brand (typosquats and foreign domains).
+- **Brand-impersonation detection, two mechanisms** - A short hand-curated list of real domains per brand catches typosquats and foreign-domain claims; a separately generated list of several thousand brand names (from the Majestic Million, see below) catches the model's own claimed-brand text against a domain that has nothing to do with it. Federated brand names (Sparkasse, Volksbank, Sparda - hundreds of independently run banks sharing one name) are deliberately excluded from the single-domain check, which is structurally wrong for that shape.
+- **Fishy-TLD scoring and greylisting** - A small, operator-editable score bump for sender domains on frequently-abused top-level domains (`.shop`, `.top`, `.icu`, ...), and greylisting for anything Rspamd already finds middling - both cheap, both never block on their own.
 - **Internal-mail detection** - Mail between two local Mailcow domains skips analysis entirely (queries the Mailcow DB for active domains).
-- **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt.
+- **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt. A fixture corpus (`tests/`) built from real false positives and real catches guards against regressions on every change.
 - **Untouched by mailcow updates** - Installed into `plugins.d/`, which mailcow's update never writes to, so there is no loader line that can go missing
 - **Budget Protection** - Monthly spending limits with automatic tracking
 - **Privacy-conscious defaults** - Inbound mail only (your users' outgoing mail is never sent to the AI), no mail content in the logs by default, 7-day retention
 
 ## Detection Categories
 
-Legitimate, Spam, Phishing, Fraud, Pharma, Marketing
+`legitimate`, `transactional`, `personal`, `newsletter`, `marketing`, `clickbait`, `spam`, `pharma`, `phishing`, `fraud`
+
+`legitimate`, `transactional` and `personal` are protected: they can only be rejected if brand impersonation co-occurs with a second independent strong signal.
 
 ## Requirements
 
@@ -187,6 +191,8 @@ ai-filter-test.sh                 # End-to-end check against the running checker
 ai-filter-healthcheck.sh          # Health check (can run via cron)
 ai-filter-model.sh                # Which model/provider is active
 ai-filter-report.sh               # Cases where the filter contradicts itself
+ai-filter-brands.sh --status      # Brand-domain list: size, age, last update
+ai-filter-brands.sh               # Regenerate it (downloads the Majestic Million, ~80 MB)
 install.sh --check                # Same health check
 ```
 
@@ -213,6 +219,42 @@ lean towards ham, never a free pass. Expiry is raised to 30 days - nobody
 answers a quotation within 24 hours.
 
 Neither module talks to anything outside your server.
+
+### Brand-domain list, fishy TLDs, greylisting
+
+`ai-filter-brands.sh` downloads the [Majestic Million](https://majestic.com/reports/majestic-million)
+(top 1M sites by referring domains, CC BY 3.0 - free including commercial use,
+attribution given here) and extracts brand-name tokens with their real domain
+into `data/ai-checker/brand_domains.txt`. The checker uses this to catch a
+mail that *claims* to be from a brand ("Ihre DHL Sendung...") sent from a
+domain that has nothing to do with it - independent of the small hand-curated
+brand list used for typosquat detection.
+
+This list is generated locally on your server and is **not shipped in the
+repo** - only the generator script is. `install.sh` builds it once on
+install and schedules a weekly refresh (`/etc/cron.d/ai-filter-brands`,
+Sundays 04:00). To run it by hand:
+
+```bash
+ai-filter-brands.sh              # download + rebuild (~80 MB download)
+ai-filter-brands.sh --status     # size and age of the current list
+ai-filter-brands.sh --debug      # read/kept/dropped counts, for troubleshooting
+```
+
+An install with fewer than 1000 entries is treated as damaged by `install.sh
+--upgrade` and rebuilt automatically.
+
+`AI_FILTER_FISHY_TLD` (Rspamd multimap, weight 2.5) adds a small score bump
+for sender domains on top-level domains that are frequently abused for spam
+(`.shop`, `.top`, `.icu`, ...). The list is yours to edit:
+`data/conf/rspamd/ai-filter-tlds.map`. Never enough on its own to change the
+outcome.
+
+Greylisting (`greylisting.conf`, threshold 4.0) delays first-contact mail
+that Rspamd already finds middling by a few minutes - long enough that most
+spam sources, which never retry, give up. Legitimate senders retry
+automatically and are not asked twice. This adds latency to some first
+contacts, which is worth knowing if you have time-sensitive inbound mail.
 
 ### The contradiction report
 
@@ -290,7 +332,7 @@ What the upgrade replaces, and what it leaves alone:
 | | |
 |---|---|
 | Replaced | `ai-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
-| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, your `groups.conf` and `rspamd.local.lua` entries |
+| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
 | Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ai-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
 
 The override matters: it carries the build context that brings `pdo_mysql`
