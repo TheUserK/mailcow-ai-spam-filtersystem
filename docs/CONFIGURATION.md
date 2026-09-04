@@ -17,24 +17,48 @@ After changes to the Lua settings or filter, restart Rspamd:
 docker compose restart rspamd-mailcow
 ```
 
-## Brand impersonation: two paths
+## Brand impersonation: three paths
 
 A rejection needs structural evidence that does not come from the model.
-Brand impersonation supplies it in two ways:
+Brand impersonation supplies it in three ways:
 
-**The list** (`getImpersonationBrands()`). For well-known brands it maps the
-name to the domains that brand legitimately sends from. A claim in the display
-name that does not match one of them scores 6.0 (typosquat) or 7.0 (foreign
-domain). Matching requires that no letter sits directly before or after the
-brand name, so `ing` does not fire on "Marketing" or "Holding".
+**The hand-curated list** (`getImpersonationBrands()`). For well-known brands
+it maps the name to the domains that brand legitimately sends from. A claim
+in the display name that does not match one of them scores 6.0 (typosquat) or
+7.0 (foreign domain). Matching requires that no letter sits directly before or
+after the brand name, so `ing` does not fire on "Marketing" or "Holding".
 
 Free mailbox domains deliberately do **not** belong on this list. Anyone can
 register at `outlook.com` and set their display name to "Microsoft".
 
+Federated brand names - `sparkasse`, `volksbank`, `sparda` - are deliberately
+**absent**. These are not single companies but shared names carried by 300+
+legally independent banks, each with its own domain; a match against one
+"real" domain is structurally wrong and rejects every other genuine one. This
+followed an incident on 02.09.: `vvrb.de` (Vereinigte Volksbank Raiffeisenbank
+eG, a real bank, DMARC-passing) was scored as a typosquat of "volksbank" and
+rejected with +16. For these names only the weaker word-match path below
+applies - it cannot reject on its own.
+
+**The generated list** (`knownBrandDomains()` / `claimedBrandIsKnownDomain()`).
+A separate, much larger list - several thousand brand-name-to-domain pairs
+generated locally from the [Majestic Million](https://majestic.com/reports/majestic-million)
+(CC BY 3.0, commercial use permitted with attribution) via `ai-filter-brands.sh`.
+It catches the model's own `claimed_brand` text against a domain that has
+nothing to do with it, for brands too numerous or regional to hand-curate
+(Hetzner was an example that was missing from the hand-curated list until this
+path caught it). Generated locally, **not shipped in the repo** - only the
+generator script is, avoiding any redistribution obligation. See the
+[README](../README.md#brand-domain-list-fishy-tlds-greylisting) for how to
+build and refresh it. Produces evidence `brand-claim-vs-known-domain`, or
+`brand-linked-not-sender` if the real brand domain is linked in the mail body
+while the sender is someone else entirely.
+
 **The list-free path** (`claimedBrandMismatch()`). The model returns
 `claimed_brand` - who the mail claims to be from. Code, not the model, then
 checks whether that name appears as a label of the sender's organisational
-domain. A list can never hold every regional bank; this path covers the rest.
+domain. Neither list can hold every regional bank or small brand; this path
+covers the rest, at the cost of being weak evidence only (see below).
 
 It only counts as evidence when authentication is **not** strong, and **a
 passing DMARC alone makes it strong**. Every ESP - Campaign Monitor, Mailchimp,
@@ -70,14 +94,31 @@ jq -r 'select(.evidence|index("brand-claim-mismatch"))|[.from,.claimed_brand]|@t
 ## Evidence: strong and weak
 
 A rejection needs structural evidence, but not every kind carries the same
-weight. Only these three can justify one on their own:
+weight. `strongEvidence()` currently recognizes eleven classes that can
+justify one on their own:
 
-| Strong - rests on a source the sender cannot influence |
-|---|
-| `brand-impersonation` - the brand list, with the brand's real domains |
-| `url-on-blocklist` - external reputation data |
-| `dangerous-attachment` - an executable attachment |
-| `hijacked-reply-to` - the reply is meant to go to a stranger's freemail account |
+| Strong evidence class | Rests on |
+|---|---|
+| `brand-impersonation` | the hand-curated brand list, with the brand's real domains |
+| `url-on-blocklist` | external reputation data (Spamhaus, SURBL, URIBL, ...) |
+| `dangerous-attachment` | an executable attachment |
+| `hijacked-reply-to` | the reply is meant to go to a stranger's freemail account, from a non-freemail sender |
+| `fake-thread` | a Re:/AW: subject or a quoted-reply body with no In-Reply-To/References header |
+| `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
+| `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
+| `rspamd-concurs` | Rspamd's own score is already at or above `RSPAMD_CONCUR_SCORE` (10) - a fully independent second source agreeing |
+| `fabricated-ticket` | an invented case/ticket number with no real prior thread |
+| `brand-linked-not-sender` | the mail links a real brand's domain, but the sender is unrelated to it |
+| `brand-claim-vs-known-domain` | the model's claimed brand matches a domain in the generated Majestic-Million brand list, and the sender doesn't |
+
+New evidence classes are added on **probation**: `probationEvidence()` lists
+classes that still count toward the score and the contradiction report but
+cannot carry a rejection by themselves until proven in production. As of this
+writing the list is empty - the four classes added between 26.08. and 28.08.
+(`hijacked-reply-to`, `fake-thread`, `role-name-on-freemail`,
+`fabricated-ticket`, plus the brand-list additions) went live on 30.08. after
+running without a false positive. Re-adding a name to `probationEvidence()`
+puts it back on probation - a one-line change.
 
 A mail that is **verifiably from** one of the listed brands is never rejected
 at all, whatever it links to. The brand list already holds each brand's real
@@ -115,7 +156,7 @@ count.
 
 The rest are hints. They still appear in `stats.log`, and they still inform the
 model, but they cannot carry a rejection alone: `brand-claim-mismatch`,
-`url-shortener`, `cloud-storage-only-links`.
+`url-shortener`, `cloud-storage-only-links`, `reply-to-freemail-swap`.
 
 That split comes from production. `brand-claim-mismatch` fired three times and
 was wrong all three: a cruise line (`Scenic Eclipse` from `mail.scenic.eu`), a
@@ -124,6 +165,57 @@ New Zealand survey firm (`Latitude Surveying Ltd` from `lats.co.nz` - their own
 initials). Companies are not named after their domains, and no amount of string
 matching fixes that. As corroboration the signal is useful; as the sole reason
 to bounce a mail it is not.
+
+## Two paths to the reject threshold
+
+`AI_MAY_REJECT` still gates whether either path is armed. Both additionally
+require: no matched trusted-sender profile, no verified-brand sender, and
+`!partOfRealConversation($mail)` - the mail is not a reply to something we
+actually sent, or to a Message-ID whose domain is one of ours.
+
+**The evidence path** (`$rejectEligible`). The category must allow rejection
+at all (`policy['may_reject']`, i.e. one of `clickbait`/`spam`/`pharma`/
+`phishing`/`fraud` - or a protected category broken open by the override
+below), `confidence >= 0.80`, and `strongEvidence()` non-empty.
+
+**The AI-confident path** (`$confidentReject`, added after a case on 29.08.:
+blood-sugar spam scored 7.53 by Rspamd, 90% model confidence, zero structural
+evidence - and the category cap made a reject arithmetically impossible even
+though both sides agreed it was junk). Fires only when the evidence path
+didn't: `confidence >= AI_CONFIDENT_CONFIDENCE` (0.90) and the model's own
+un-capped score (`$modelScore`, before `MAX_PHISHING_POINTS` clips it) is at
+least `AI_CONFIDENT_SCORE` (7.0). This is **not** the AI rejecting alone: its
+own contribution stays capped at `MAX_PHISHING_POINTS` (10), well under
+`AI_CONFIDENT_TOTAL` (15.5), so Rspamd has to independently contribute the
+remaining ~5.5+ points for the total to actually cross `REJECT_THRESHOLD`
+(15). If Rspamd's own score is too low, the total never gets there and the
+mail is not rejected - the AI-confident path still needs Rspamd's agreement,
+just not in the form of one specific structural signal.
+
+**Category override** (`$categoryOverride`). A protected category
+(`legitimate`/`transactional`/`personal`, `may_reject = false`) can still be
+broken open by the evidence path, but only when `brand-impersonation` is
+present *and* a second, independent strong-evidence class also fired. A
+single brand-list match is not enough on its own for a protected category -
+this followed "AW: Handyvertrag..." from `4g-vodafone.de` being waved through
+as `personal` on 25.08. despite `brand-impersonation` **and**
+`url-on-blocklist` both firing.
+
+**The junk floor** (`JUNK_FLOOR`, 8.0). Independent of both reject paths:
+whenever the category may be rejected, confidence is >= 0.80, and there is no
+trust signal, the total is guaranteed to clear the junk threshold even if
+Rspamd's own score is negative - a confident AI verdict cannot be diluted
+below the junk line by Rspamd credit for clean infrastructure (SPF/DKIM,
+List-Unsubscribe, an aged domain). Unlike the reject paths this needs **no**
+structural evidence - a wrong junk classification just means recoverable mail
+in the spam folder, not a lost mail, so the model's word alone is enough here.
+
+`reject_path` in `stats.log`/`errors.log` records which path fired:
+`evidence`, `ai-confident`, or empty if the mail never qualified at all.
+`reject_eligible` is `$rejectEligible || $confidentReject` - whether the mail
+was *allowed* to try for the threshold, not whether the total actually
+reached it. `ai_score_raw` is the model's score before the category ceiling
+clipped it - useful for seeing how close a mail actually was.
 
 ## Provider profile (provider.conf)
 
@@ -208,9 +300,22 @@ keeps your choice.
 | `MAILCOW_DB_HOST` / `MAILCOW_DB_NAME` / `MAILCOW_DB_USER` | `mysql` / `$MAILCOW_DBNAME` / `$MAILCOW_DBUSER` | Used for the internal-mail lookup. Name, user and password all come from container env vars fed by mailcow's `DBNAME`/`DBUSER`/`DBPASS` in `docker-compose.override.yml` |
 | `MONTHLY_BUDGET_EUR` | `50` | Monthly budget in EUR |
 | `AVG_COST_PER_CALL_EUR` | `0.00034` | Estimated cost per API call, used to derive the monthly call limit. Depends on the model, so a provider profile overrides it; `0` disables the limit |
-| `MAX_SPAM_POINTS` | `4.0` | Max score the AI can add for `spam`/`marketing`/`pharma` |
+| `MAX_SPAM_POINTS` | `4.0` | Max score the AI can add for `legitimate`/`transactional`/`personal` (`newsletter`/`marketing` get `MAX_SPAM_POINTS + 1.0`; the attackable categories use `MAX_PHISHING_POINTS` instead, see below) |
 | `MAX_HAM_POINTS` | `3.0` | Max score the AI can *subtract* for confident ham |
-| `MAX_PHISHING_POINTS` | `10.0` | Max score for `phishing`/`fraud` - deliberately kept **below** Rspamd's reject threshold (15) so the AI can never reject a mail on its own |
+| `MAX_PHISHING_POINTS` | `10.0` | Max score for `phishing`/`fraud`/`spam`/`pharma`/`clickbait` - deliberately kept **below** Rspamd's reject threshold (15) so the AI's own contribution can never reject a mail by itself |
+| `REJECT_THRESHOLD` | `15.0` | Rspamd's own reject action threshold, mirrored here so the checker can reason about it |
+| `MAX_TOTAL_DEFAULT` | `12.0` | Total-score ceiling for `newsletter`/`marketing` and, absent a reject path, `clickbait`/`spam`/`pharma`/`phishing`/`fraud` |
+| `MAX_TOTAL_TRANSACTIONAL` | `8.0` | Total-score ceiling for `legitimate`/`transactional`/`personal` - may land in junk, never rejected (unless the category override applies, see above) |
+| `MAX_TOTAL_REJECTABLE` | `18.0` | Total-score ceiling once a mail qualifies for one of the two reject paths |
+| `AI_MAY_REJECT` | `true` | `false` runs the same logic in shadow mode: every candidate is still logged as "Would reject", but capped below the threshold instead of actually crossing it |
+| `REJECT_FLOOR` | `16.0` | Floor applied once the evidence path fires - guarantees the total clears `REJECT_THRESHOLD` rather than relying on the usual probability/confidence curve, which tops out around two thirds of the budget |
+| `JUNK_FLOOR` | `8.0` | Floor applied whenever a rejectable category is confidently assigned (>= 0.80) with no trust signal, independent of any reject path - stops Rspamd credit for clean infrastructure (SPF/DKIM, an aged domain) from diluting a confident spam verdict back below the junk line |
+| `RSPAMD_CONCUR_SCORE` | `10.0` | Rspamd's own score at or above this counts as the `rspamd-concurs` strong-evidence class |
+| `AI_CONFIDENT_REJECT` | `true` | Enables the second reject path (see above) - the model very confident and scoring high on its own, no structural evidence needed |
+| `AI_CONFIDENT_CONFIDENCE` | `0.90` | Minimum model confidence for the AI-confident path |
+| `AI_CONFIDENT_SCORE` | `7.0` | Minimum un-capped model score for the AI-confident path |
+| `AI_CONFIDENT_TOTAL` | `15.5` | Target total for the AI-confident path - since the AI's own contribution is capped at `MAX_PHISHING_POINTS` (10), Rspamd must independently supply the rest |
+| `BRAND_DOMAINS_FILE` | `brand_domains.txt` next to the script | The generated Majestic-Million brand list (see below); absent means the checker silently falls back to the hand-curated list only |
 | `LOG_SUBJECT` | `true` | Write the subject line to stats.log. Needed to judge a verdict after the fact; kept 30 days, root-only |
 | `LOG_MAIL_CONTENT` | `false` | Write a body excerpt as well. Far more revealing than a subject and not needed for review - debugging only |
 | `LOG_FILE_MODE` | `0600` | Permissions for newly created log files |
@@ -233,11 +338,12 @@ every component up to the version shipped in this repo instead:
 sudo ./install.sh --reinstall
 ```
 
-Kept: your API key (read out of the deployed script) and
-`trusted_sender_profiles.json`. Overwritten: `ai-filter-settings.lua`, the
-`ai_filter` block in `groups.conf`, `docker-compose.override.yml`, and all
-PHP/Lua/script files. Every overwritten file is backed up first. Other groups
-in `groups.conf` and other services in the override file are not touched.
+Kept: your API key (read out of the deployed script), `trusted_sender_profiles.json`,
+`brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`
+and `greylisting.conf`. Overwritten: `ai-filter-settings.lua`, the `ai_filter`
+block in `groups.conf`, `docker-compose.override.yml`, and all PHP/Lua/script
+files. Every overwritten file is backed up first. Other groups in
+`groups.conf` and other services in the override file are not touched.
 
 ## Categories and how hard each may be treated
 
@@ -248,30 +354,15 @@ Expressing the limit as a total rather than as a point budget is what makes
 
 | Category | Total capped at | May be rejected |
 |---|---|---|
-| `legitimate`, `transactional`, `personal` | `MAX_TOTAL_TRANSACTIONAL` (8) | never |
+| `legitimate`, `transactional`, `personal` | `MAX_TOTAL_TRANSACTIONAL` (8) | only via the category override (brand impersonation + a second strong signal), see [Two paths to the reject threshold](#two-paths-to-the-reject-threshold) |
 | `newsletter`, `marketing` | `MAX_TOTAL_DEFAULT` (12) | never |
-| `clickbait`, `spam`, `pharma`, `phishing`, `fraud` | `MAX_TOTAL_DEFAULT` (12) | only via the conjunction below |
+| `clickbait`, `spam`, `pharma`, `phishing`, `fraud` | `MAX_TOTAL_DEFAULT` (12), or `MAX_TOTAL_REJECTABLE` (18) once a reject path fires | via the evidence path or the AI-confident path |
 
-Nothing reaches the reject threshold on its category alone. It additionally
-takes **all** of:
-
-- the category is one of the attackable ones
-- `confidence` >= 0.80
-- at least one structural signal that does **not** come from the AI:
-  cloud-storage-only links, brand impersonation, a blocklist hit, a
-  dangerous attachment, or a URL shortener
-- no trusted sender profile matched
-- no `In-Reply-To` header, i.e. the mail is not part of an ongoing exchange
-
-The structural signal is the point of the exercise: a reject always needs a
-second, independent source to agree, so a single wrong model verdict cannot
-discard mail on its own.
-
-When all of it holds, `REJECT_FLOOR` applies. The usual curve scales with
-probability and confidence and only reaches about two thirds of the budget
-even on a clear verdict - far too little to reject. Once the category is
-assigned and a structural signal agrees, the category *is* the verdict, so
-the score no longer scales down.
+Nothing reaches the reject threshold on category or model confidence alone -
+see [Two paths to the reject threshold](#two-paths-to-the-reject-threshold)
+above for exactly what else has to hold. Either path always needs Rspamd's
+own score to independently agree, in one form or another, so a single wrong
+model verdict cannot discard mail on its own.
 
 **`AI_MAY_REJECT` controls whether that actually happens.** Either way every
 qualifying mail is written to `errors.log`: as `Reject allowed` when armed,
@@ -329,12 +420,16 @@ to the AI, with that mismatch passed along as a risk flag.
 ## Brand impersonation detection
 
 Independent of the trusted-sender profiles, the checker maintains a small
-list of frequently-impersonated brands (PayPal, Amazon, banks, shippers,
-Microsoft, Apple, ...) and checks only the From display-name and address
-(never the body - mentioning a brand in the text is normal) for a claimed
-brand whose domain doesn't match:
+hand-curated list of frequently-impersonated brands (PayPal, Amazon, banks,
+shippers, Microsoft, Apple, ...) and checks only the From display-name and
+address (never the body - mentioning a brand in the text is normal) for a
+claimed brand whose domain doesn't match:
 - **Typosquat** (edit distance <= 2, e.g. `booking.co` vs `booking.com`) adds a large fixed score and blocks the AI from rescuing the mail into ham
 - **Foreign domain** (brand named, domain unrelated) adds a smaller fixed score and is passed to the AI as a strong phishing signal
+
+This is the *list* path from [Brand impersonation: three paths](#brand-impersonation-three-paths)
+above - see there for the generated Majestic-Million list, the federated-brand
+exclusion, and the weaker list-free fallback.
 
 ## URL reputation from Rspamd
 

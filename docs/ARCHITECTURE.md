@@ -18,13 +18,34 @@ What the checker controls is how far it may push that total, and it decides
 that from the category. Protected categories - `legitimate`, `transactional`,
 `personal`, `newsletter`, `marketing` - are capped below the reject
 threshold, so no misjudgement of a real order confirmation or a personal
-message can discard it; the worst case is the junk folder.
+message can discard it; the worst case is the junk folder. `legitimate`,
+`transactional` and `personal` can only be broken open by the category
+override below.
 
-Only unsolicited bulk may go further, and never on the model's word alone:
-it additionally takes a confidence of at least 0.80, a structural signal
-established outside the model, no trusted-sender match, and no `In-Reply-To`
-header. A single wrong verdict therefore cannot throw mail away - a second,
-independent source has to agree.
+Only unsolicited bulk (`clickbait`, `spam`, `pharma`, `phishing`, `fraud`) may
+go further, and never on the model's word alone. There are two ways in:
+
+- **Evidence path** - confidence >= 0.80 and at least one structural signal
+  established outside the model (see `strongEvidence()` in
+  [CONFIGURATION.md](CONFIGURATION.md#evidence-strong-and-weak) - brand
+  impersonation, a blocklist hit, a hijacked reply-to, a fabricated ticket,
+  and eight others).
+- **AI-confident path** - confidence >= 0.90 *and* the model's own raw score
+  >= 7.0, with no structural signal required. The model's contribution alone
+  is still capped well under the reject threshold, so Rspamd's own score has
+  to independently supply the rest for the total to actually cross it.
+
+A protected category can be broken open by the evidence path only when
+`brand-impersonation` fires together with a second, independent strong
+signal (the **category override** - a single brand-list match alone still
+protects `legitimate`/`transactional`/`personal`).
+
+Either way, no trusted-sender match and no reply to an existing thread (a
+forgeable `In-Reply-To` header is not enough by itself - see
+`partOfRealConversation()`) are required. A single wrong verdict therefore
+cannot throw mail away - a second, independent source always has to agree.
+See [CONFIGURATION.md](CONFIGURATION.md#two-paths-to-the-reject-threshold)
+for the full mechanics.
 
 ## System Overview
 
@@ -99,15 +120,17 @@ Incoming Email
 - Receives email context via HTTP POST from Rspamd (from/to, headers, SPF/DKIM/DMARC results, URLs, attachments, content stats, ...)
 - Checks whether both sides are local Mailcow domains (Mailcow DB lookup) -> skip
 - Matches the sender against built-in + custom trusted sender profiles (shippers, marketplaces, banks, telecoms) and checks Reply-To/Return-Path/Message-Id/link-domain alignment -> safe auto-pass if everything lines up and auth is strong
-- Checks for brand impersonation: does the From name/address claim a known brand while the domain doesn't belong to it? (typosquat or entirely foreign domain)
+- Checks for brand impersonation via three mechanisms: a hand-curated list of real brand domains (typosquat/foreign-domain), a generated list of several thousand brands from the Majestic Million (`knownBrandDomains()`), and a weaker word-match fallback (`claimedBrandMismatch()`) - see [CONFIGURATION.md](CONFIGURATION.md#brand-impersonation-three-paths)
 - Turns Rspamd's URL-reputation symbols into risk flags. A blocklist hit also blocks the trusted-sender auto-pass, since even a genuine sender can link a compromised subdomain
+- Computes all structural evidence once (`structuralSignals()`/`collectStructuralEvidence()`) - fake threads, hijacked reply-to, fabricated tickets, role claims on freemail, free-hosting links, and more - shared between the AI prompt's risk flags and the reject-eligibility check, so the two can never drift apart
 - Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
+- Applies the reject-eligibility conjunction, the category override, the junk floor and the two reject paths (see [Design Principle](#design-principle-v3) above)
 - Manages budget tracking
 - Never returns a `reject` action - always `add` (or `pass` for the two skip cases above), with a numeric score for Rspamd to add
 
 ### 3. Rspamd Lua Filter (ai-content-filter.lua)
-- Installed in `plugins.d/`, auto-loaded by rspamd, no loader line anywhere
-- Reads settings from ai-filter-settings.lua
+- Installed in `plugins.d/`, auto-loaded by rspamd as a module (needs the two-line section in `rspamd.conf.local` to not be disabled as "unconfigured" - see [Update Resilience](#update-resilience) below)
+- Reads settings from `ai-filter-settings.lua`, which stays in `lua/` and is loaded explicitly via `loadfile()`, not auto-loaded
 - Postfilter stage (priority 10)
 - Skips authenticated senders, so outgoing mail from your own users is never sent to the AI provider
 - Skips mail re-delivered by the server's own sieve forwarding (`SIEVE_HOST`, `LOCAL_OUTBOUND`). It was already analysed on ingress with the authentication intact, which forwarding destroys - a forwarded legitimate mail otherwise presents exactly the signature of a forged one
@@ -117,10 +140,14 @@ Incoming Email
 - Adds the returned score directly to the `AI_CONTENT_SCORE` symbol (no more weight division or forced reject - the number the checker returns *is* the Rspamd score delta)
 - Supports log-only mode (calls the checker, logs what it would have added, but doesn't apply it)
 
-### 4. AI Analysis
+### 4. Two independent Rspamd modules, not the checker
+- `AI_FILTER_FISHY_TLD` (multimap, weight 2.5): sender domain on an abused TLD (`.shop`, `.top`, `.icu`, ...), list at `data/conf/rspamd/ai-filter-tlds.map`. Never blocks alone
+- Greylisting (`data/conf/rspamd/local.d/greylisting.conf`, threshold 4.0): delays first-contact mail Rspamd already finds middling by a few minutes
+
+### 5. AI Analysis
 - Model: GPT-OSS-120B (120B parameters)
-- Returns `spam_probability` (0-1), `confidence` (0-1) and a category (legitimate/spam/phishing/fraud/pharma/marketing)
-- The category caps how far the score can swing: `phishing`/`fraud` can go up to `MAX_PHISHING_POINTS` (10 - high enough to reach reject together with other signals, low enough never to get there alone), everything else is capped at `MAX_SPAM_POINTS` (4) on the spam side and `MAX_HAM_POINTS` (3) on the ham side
+- Returns `spam_probability` (0-1), `confidence` (0-1), a `category` (`legitimate`/`transactional`/`personal`/`newsletter`/`marketing`/`clickbait`/`spam`/`pharma`/`phishing`/`fraud`) and `claimed_brand` (free text - who the mail claims to be from, used by the list-free brand-impersonation path)
+- The category caps how far the score can swing: attackable categories can go up to `MAX_PHISHING_POINTS` (10 - high enough to reach reject together with other signals, low enough never to get there alone), everything else is capped at `MAX_SPAM_POINTS` (4) on the spam side and `MAX_HAM_POINTS` (3) on the ham side
 
 ## File Structure
 
@@ -130,15 +157,21 @@ Incoming Email
 |   +-- ai-checker/
 |   |   +-- ai-mail-checker.php           # PHP analysis script (incl. API key + all config constants)
 |   |   +-- router.php                       # HTTP router
+|   |   +-- provider.conf                    # active model/provider (root 0600, not in git)
+|   |   +-- brand_domains.txt                # generated Majestic-Million brand list (not shipped, not in git)
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
 |   |   +-- trusted_sender_profiles.json     # your custom trusted senders (optional, not shipped)
 |   +-- conf/rspamd/
+|   |   +-- plugins.d/
+|   |   |   +-- ai-content-filter.lua   # Main filter logic, untracked, auto-loaded as a module
+|   |   +-- rspamd.conf.local       # Two-line section enabling the module above (tracked mailcow stub)
 |   |   +-- lua/
-|   |   |   +-- rspamd.local.lua    # Contains dofile() loader
-|   |   |   +-- ai-content-filter.lua   # Main filter logic
-|   |   |   +-- ai-filter-settings.lua  # Filter settings
+|   |   |   +-- ai-filter-settings.lua  # Filter settings, loaded via loadfile()
 |   |   +-- local.d/
-|   |       +-- groups.conf         # Symbol group definition
+|   |   |   +-- groups.conf         # Symbol group definition
+|   |   |   +-- multimap.conf       # Fishy-TLD scoring entry
+|   |   |   +-- greylisting.conf    # Greylisting settings
+|   |   +-- ai-filter-tlds.map      # Fishy-TLD list, operator-editable
 |   +-- logs/ai-checker/
 |       +-- stats.log               # Analysis results
 |       +-- errors.log              # Error events
@@ -146,18 +179,28 @@ Incoming Email
 +-- docker-compose.override.yml     # Container definition
 ```
 
+`tests/` in this repo (not deployed) holds a fixture corpus (`fixtures.php` +
+`run-fixtures.sh`) that runs real false positives and real catches through a
+router-stripped copy of the checker on every change, to guard against
+regressions.
+
 ## Score Calculation
 
 ```
 direction = (spam_probability - 0.5) * 2      -- -1 .. +1
 magnitude = |direction| * confidence          --  0 .. 1
 
-score =  magnitude * max_spam_points   if direction >= 0   (spam/phishing/fraud)
+score =  magnitude * max_spam_points   if direction >= 0   (spam/phishing/fraud/pharma/clickbait)
 score = -magnitude * MAX_HAM_POINTS    if direction <  0   (confident ham)
 ```
 
-`max_spam_points` is `MAX_PHISHING_POINTS` (10) for category `phishing`/`fraud`,
-otherwise `MAX_SPAM_POINTS` (4). A detected brand impersonation (typosquat or
+That raw score is then subject to the category ceiling, the reject paths and
+the junk floor described under [Design Principle](#design-principle-v3) above
+before it is added to Rspamd's metric.
+
+`max_spam_points` is `MAX_PHISHING_POINTS` (10) for the attackable categories
+(`clickbait`/`spam`/`pharma`/`phishing`/`fraud`), otherwise `MAX_SPAM_POINTS`
+(4). A detected brand impersonation via the hand-curated list (typosquat or
 foreign domain claiming a known brand) adds its own fixed score on top and
 blocks the AI from rescuing the mail into a negative (ham) score.
 
@@ -203,6 +246,6 @@ the filter via `loadfile()` rather than being auto-loaded - keeping it out of
 - No data used for AI model training
 - Pseudonymised logging (first 3 chars + ***); subject/body excerpts are off by default (`LOG_MAIL_CONTENT`)
 - Log files `0600`, log directory `0700`
-- 7-day log retention (configurable via logrotate)
+- 30-day log retention (configurable via logrotate)
 - Outbound mail from authenticated users is never analysed
 - AVV/DPA available from IONOS
