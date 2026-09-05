@@ -105,6 +105,7 @@ setting() {
 ENDPOINT=$(setting endpoint AI_API_ENDPOINT_DEFAULT)
 MODEL=$(setting model AI_MODEL_DEFAULT)
 TOKEN=$(setting token AI_API_TOKEN_DEFAULT)
+REASONING=$(conf_value reasoning_effort || echo "")
 
 [[ -n "$TOKEN" ]] || { echo -e "${RED}Kein API-Token gefunden${NC} - ai-filter-model.sh pruefen"; exit 1; }
 
@@ -224,12 +225,18 @@ ist, antworte mit leerer "beschreibung". Rate nichts zusammen.'
 
 classify() {
     local text="$1" payload resp content json
-    payload=$(jq -n --arg m "$MODEL" --arg s "$SYS_PROMPT" --arg u "$text" '{
+    # 2000, nicht 500: Reasoning-Modelle (GPT-OSS, Qwen3.5, ...) denken
+    # erst und antworten dann - bei zu knappem Budget bricht das JSON
+    # mitten im Denkprozess ab, bevor ueberhaupt eine Antwort geschrieben
+    # wurde. Derselbe Fehler war schon in analyzeWithAI() aufgetreten,
+    # siehe die Konstante dort. reasoning_effort mitgeben, wenn im
+    # Provider-Profil gesetzt, spart genau dieses Risiko UND Zeit/Kosten.
+    payload=$(jq -n --arg m "$MODEL" --arg s "$SYS_PROMPT" --arg u "$text" --arg r "$REASONING" '{
         model: $m,
         messages: [ {role:"system",content:$s}, {role:"user",content:$u} ],
         temperature: 0,
-        max_completion_tokens: 500
-    }')
+        max_completion_tokens: 2000
+    } + (if $r != "" then {reasoning_effort: $r} else {} end)')
     resp=$(curl -sS --max-time 90 "$ENDPOINT" \
              -H "Authorization: Bearer $TOKEN" \
              -H 'Content-Type: application/json' \
