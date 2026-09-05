@@ -199,6 +199,12 @@ define('RSPAMD_CONCUR_SCORE', 10.0);
 // BRAND_DOMAINS_FILE" auf jeder einzelnen Mail seit dem 31.08.
 define('BRAND_DOMAINS_FILE', __DIR__ . '/brand_domains.txt');
 
+// Was macht der EMPFAENGER eigentlich? Erzeugt von ai-filter-context.sh,
+// vom Betreiber korrigierbar. Fehlt die Datei, verhaelt sich der Filter
+// wie vorher. Gleicher Ort wie oben und aus demselben Grund: Der Router
+// laeuft textuell vor den Helferfunktionen.
+define('BUSINESS_CONTEXT_FILE', __DIR__ . '/business_context.json');
+
 // --- Zweiter Reject-Pfad: das Modell allein, wenn es sehr sicher ist -----
 //
 // Der Beleg-Pfad verlangt einen unabhaengigen Strukturbeleg. Der fehlt aber
@@ -578,6 +584,55 @@ function knownBrandDomains() {
         $map[mb_strtolower($parts[0])] = normalizeHost($parts[1]);
     }
     return $map;
+}
+
+// ---------------------------------------------------------------------
+//  Was macht der Empfaenger beruflich?
+//
+//  Bis hierhin beurteilte der Filter jede Mail ohne zu wissen, an WEN sie
+//  geht. Damit blieb eine ganze Betrugsart unsichtbar: Post, die den
+//  Empfaenger als Anbieter einer Leistung anspricht, die er gar nicht
+//  erbringt. Am 04.09. kamen vier fast gleichlautende Zimmeranfragen von
+//  einer Steuerkanzlei, einer IT-Firma, einem Hotel und einer Oelmuehle -
+//  Absender echt, Authentifizierung einwandfrei (gekaperte Konten),
+//  Rspamd unauffaellig, Modellurteil "personal" mit -2.16. Das einzige,
+//  woran die Masche zu erkennen war: Der Empfaenger vermietet keine Zimmer.
+//
+//  Erzeugt von ai-filter-context.sh, korrigierbar vom Betreiber. Fehlt
+//  die Datei oder die Domain, kommt '' zurueck und im Prompt steht
+//  "(unbekannt)" - der Filter verhaelt sich dann wie vorher.
+// ---------------------------------------------------------------------
+function businessContextFor($address) {
+    static $map = null;
+
+    if ($map === null) {
+        $map = [];
+        if (is_readable(BUSINESS_CONTEXT_FILE)) {
+            $data = json_decode(file_get_contents(BUSINESS_CONTEXT_FILE), true);
+            if (is_array($data) && isset($data['domains']) && is_array($data['domains'])) {
+                foreach ($data['domains'] as $domain => $entry) {
+                    if (is_array($entry)) {
+                        $map[normalizeHost($domain)] = $entry;
+                    }
+                }
+            }
+        }
+    }
+
+    $domain = normalizeHost(extractDomainFromAddress($address));
+    if ($domain === '' || !isset($map[$domain])) {
+        return '';
+    }
+
+    // "unbekannt" ist eine bewusste Aussage: Seite nicht auswertbar. Eine
+    // erfundene Beschreibung waere schlimmer als gar keine, weil sie das
+    // Modell in beide Richtungen in die Irre fuehren kann.
+    $entry = $map[$domain];
+    if (($entry['art'] ?? '') === 'unbekannt') {
+        return '';
+    }
+
+    return trim((string)($entry['beschreibung'] ?? ''));
 }
 
 // ---------------------------------------------------------------------
@@ -1220,6 +1275,41 @@ Passwort-Reset AUSGIBT, es aber nicht ist, ist "phishing" - niemals
 Im Zweifel die geschuetztere Kategorie waehlen. Ausnahme: Bei "clickbait"
 darfst du dich klar festlegen - ein Fehlurteil kostet dort niemanden etwas.
 
+EMPFAENGER-KONTEXT:
+Die Zeile "Empfaenger-Kontext" beschreibt, was der Betrieb tut, an den diese
+Mail geht - ermittelt aus seiner eigenen Website, gepflegt vom Betreiber.
+Steht dort "(unbekannt)", ueberspringe diesen Abschnitt vollstaendig.
+
+Damit laesst sich eine Masche erkennen, die sonst unsichtbar bleibt: Die Mail
+spricht den Empfaenger als ANBIETER einer Leistung an, die er gar nicht
+erbringt - eine Zimmerbuchung bei einer Softwarefirma, eine Stornierung bei
+einer Schreinerei, eine Reservierungsanfrage bei einer Anwaltskanzlei. Das ist
+kein Zufall: Solche Vorwaende werden an tausende Adressen gestreut, oft ueber
+gekaperte Konten echter Firmen - Absenderdomain echt, SPF/DKIM/DMARC sauber,
+Rspamd-Score unauffaellig. Der Rollenbruch ist dann das einzige Merkmal, das
+ueberhaupt noch uebrig bleibt.
+
+ENTSCHEIDEND IST DIE ROLLE, NICHT DAS THEMA:
+- Wird vom Empfaenger eine Leistung VERLANGT, die er laut Kontext nicht
+  anbietet (buchen, reservieren, stornieren, liefern, reparieren)?
+  -> starkes Warnsignal.
+- Geht es um eine Leistung, die der Empfaenger SELBST woanders eingekauft hat
+  - Hotelbestaetigung, Flugticket, Bestellung, Rechnung, Lieferavis,
+  Terminbestaetigung, Kontoauszug? -> voellig normal, KEIN Signal. Jede Firma
+  bucht Hotels, bestellt Waren und bekommt Rechnungen. Ob das Thema zum
+  Betrieb passt, sagt hier ueberhaupt nichts.
+Verwechselst du diese beiden Faelle, vernichtest du echte Geschaeftspost.
+
+Ein Rollenbruch allein ist unerwuenschte Post -> "spam".
+Kommt ein Link, ein Anhang oder eine Handlungsaufforderung dazu ("klicken Sie
+hier", "Daten bestaetigen", "Dokument einsehen", "Formular ausfuellen"), ist
+das zusammen ein sehr starkes Betrugssignal -> "phishing" oder "fraud" mit
+hoher Confidence.
+
+NICHT anwenden auf Post, die sich an jeden Betrieb richten kann: Bewerbungen,
+Presse- und Lieferantenanfragen, Rechnungen, Behoerdenpost, Einladungen. Das
+ist kein Rollenbruch, auch wenn es thematisch nicht zum Betrieb passt.
+
 ABSENDER-BEHAUPTUNG - "claimed_brand":
 Als welches Unternehmen oder welche Organisation gibt sich diese Mail aus?
 Trage den Namen so ein, wie er behauptet wird ("N26", "Sparkasse",
@@ -1254,11 +1344,16 @@ PROMPT;
         return $a['name'] ?? '';
     }, $mail['attachments']);
 
+    // Was macht der Empfaenger? Leer, wenn nichts hinterlegt ist - dann
+    // steht "(unbekannt)" im Prompt und der Abschnitt greift nicht.
+    $businessContext = businessContextFor($mail['to'] ?? '');
+
     $userPrompt = sprintf(
         "From: %s\n"            .
         "From-Domain: %s\n"     .
         "Display-Name: %s\n"    .
         "Subject: %s\n"         .
+        "Empfaenger-Kontext: %s\n" .
         "Rspamd-Score: %.1f\n"  .
         "SPF/DKIM/DMARC: %s / %s / %s\n" .
         "Reply-To-Domain (falls abweichend): %s\n" .
@@ -1272,6 +1367,7 @@ PROMPT;
         safePromptValue($mail['from_domain']),
         safePromptValue($mail['from_display_name']),
         safePromptValue($mail['subject']),
+        safePromptValue($businessContext !== '' ? $businessContext : '(unbekannt)'),
         $mail['rspamd_score'],
         safePromptValue($mail['auth']['spf']),
         safePromptValue($mail['auth']['dkim']),

@@ -31,4 +31,9 @@ php -l "$tmp/lib.php" >/dev/null
 [ -f "$root/tests/brand_domains.sample.txt" ] \
   && cp "$root/tests/brand_domains.sample.txt" "$tmp/brand_domains.txt"
 
+# Dasselbe fuer den Unternehmenskontext - liegt im Betrieb ebenfalls neben
+# dem Checker und wird ueber __DIR__ gefunden.
+[ -f "$root/tests/business_context.sample.json" ] \
+  && cp "$root/tests/business_context.sample.json" "$tmp/business_context.json"
+
 php -r 'require $argv[1]; require $argv[2];' "$tmp/lib.php" "$root/tests/fixtures.php"

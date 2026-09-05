@@ -1,0 +1,29 @@
+{
+  "_hinweis": "Testdaten fuer run-fixtures.sh. Deckt die drei Zustaende ab, die businessContextFor() unterscheiden muss: firma (Beschreibung geht in den Prompt), privat (ebenfalls eine Aussage), unbekannt (muss leer bleiben).",
+  "domains": {
+    "karrerlabs.de": {
+      "art": "firma",
+      "beschreibung": "Softwareentwicklung und IT-Beratung; kein Beherbergungs- oder Gastgewerbe.",
+      "quelle": "https://karrerlabs.de/",
+      "notiz": "",
+      "geprueft": "2026-09-05",
+      "manuell": false
+    },
+    "karrer.info": {
+      "art": "privat",
+      "beschreibung": "Private Domain ohne oeffentlich erreichbare Website - kein Betrieb, der Leistungen fuer Dritte anbietet.",
+      "quelle": "",
+      "notiz": "HTTP 404",
+      "geprueft": "2026-09-05",
+      "manuell": false
+    },
+    "moving-pictures.de": {
+      "art": "unbekannt",
+      "beschreibung": "",
+      "quelle": "https://moving-pictures.de/",
+      "notiz": "Seite erreichbar, aber kaum auswertbarer Text (84 Zeichen)",
+      "geprueft": "2026-09-05",
+      "manuell": false
+    }
+  }
+}
