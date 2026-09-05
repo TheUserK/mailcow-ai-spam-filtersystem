@@ -181,6 +181,41 @@ render_group() {
     return 0
 }
 
+# Empfaengerdomains, zu denen kein Unternehmenskontext hinterlegt ist.
+#
+# Keine Gruppe von Logzeilen, sondern eine Luecke in der Konfiguration:
+# Ohne die Angabe, was der Betrieb tut, kann das Modell nicht beurteilen,
+# ob eine Anfrage ueberhaupt zu ihm passt - und genau daran haengt die
+# Erkennung der Zimmeranfragen vom 04.09. Neue Mailcow-Domains fallen so
+# von selbst auf, ohne dass jemand daran denken muss.
+#
+# Die Domain steht auch im pseudonymisierten Log noch vollstaendig drin
+# (and***@example.com), deshalb genuegt das Log als Quelle - kein
+# Datenbankzugriff noetig.
+render_missing_context() {
+    local ctx="data/ai-checker/business_context.json" seen out
+    [[ -f "$ctx" ]] || return 1
+
+    seen=$(read_logs | jq -r --arg since "$SINCE" '
+            select(.timestamp >= $since) | (.to // "") | split("@") | .[1] // empty' 2>/dev/null \
+           | tr '[:upper:]' '[:lower:]' | sort -u)
+    [[ -n "$seen" ]] || return 1
+
+    out=$(while IFS= read -r domain; do
+            [[ -n "$domain" ]] || continue
+            jq -e --arg d "$domain" '.domains[$d]' "$ctx" >/dev/null 2>&1 \
+                || printf '    %s\n' "$domain"
+          done <<<"$seen")
+
+    [[ -z "$out" ]] && return 1
+    echo
+    echo "  Empfaengerdomain ohne hinterlegten Unternehmenskontext"
+    echo "  Das Modell kann bei diesen Domains nicht pruefen, ob eine Anfrage zum Betrieb passt."
+    echo "$out"
+    echo "    Nachtragen mit: ai-filter-context.sh"
+    return 0
+}
+
 FOUND=0
 BODY=$(
     # 1. Abgewiesen, obwohl der Absender per DMARC beglaubigt ist.
@@ -267,6 +302,9 @@ BODY=$(
         '(.category == "fraud" or .category == "phishing")
          and ((.evidence // []) | length) == 0
          and ((.rejected // false) | not)' && FOUND=1
+
+    # 8. Keine Logzeilen-Gruppe, sondern eine Konfigurationsluecke.
+    render_missing_context && FOUND=1
 )
 
 if [[ -z "$BODY" ]]; then

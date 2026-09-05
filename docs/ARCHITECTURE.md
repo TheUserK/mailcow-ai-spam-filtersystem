@@ -123,6 +123,7 @@ Incoming Email
 - Checks for brand impersonation via three mechanisms: a hand-curated list of real brand domains (typosquat/foreign-domain), a generated list of several thousand brands from the Majestic Million (`knownBrandDomains()`), and a weaker word-match fallback (`claimedBrandMismatch()`) - see [CONFIGURATION.md](CONFIGURATION.md#brand-impersonation-three-paths)
 - Turns Rspamd's URL-reputation symbols into risk flags. A blocklist hit also blocks the trusted-sender auto-pass, since even a genuine sender can link a compromised subdomain
 - Computes all structural evidence once (`structuralSignals()`/`collectStructuralEvidence()`) - fake threads, hijacked reply-to, fabricated tickets, role claims on freemail, free-hosting links, and more - shared between the AI prompt's risk flags and the reject-eligibility check, so the two can never drift apart
+- Adds the recipient's own business context to the prompt (`businessContextFor()`, from `business_context.json`) so the model can tell whether the mail even makes sense for this recipient - it catches mail addressing you as the provider of a service you don't offer, and deliberately not confirmations for services you bought elsewhere. See [CONFIGURATION.md](CONFIGURATION.md#recipient-context-business_contextjson)
 - Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
 - Applies the reject-eligibility conjunction, the category override, the junk floor and the two reject paths (see [Design Principle](#design-principle-v3) above)
 - Manages budget tracking
@@ -159,6 +160,7 @@ Incoming Email
 |   |   +-- router.php                       # HTTP router
 |   |   +-- provider.conf                    # active model/provider (root 0600, not in git)
 |   |   +-- brand_domains.txt                # generated Majestic-Million brand list (not shipped, not in git)
+|   |   +-- business_context.json            # what each of your own domains does (ai-filter-context.sh, operator-editable)
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
 |   |   +-- trusted_sender_profiles.json     # your custom trusted senders (optional, not shipped)
 |   +-- conf/rspamd/

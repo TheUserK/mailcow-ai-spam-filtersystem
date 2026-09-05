@@ -514,6 +514,35 @@ else
     fi
 fi
 
+# === UNTERNEHMENSKONTEXT ===
+# Was macht der Empfaenger eigentlich? Ohne diese Angabe beurteilt das
+# Modell jede Mail ohne zu wissen, an wen sie geht - und eine Zimmeranfrage
+# an eine Softwarefirma sieht dann aus wie normale Geschaeftspost.
+# Woechentlich, damit neu angelegte Mailcow-Domains dazukommen; bestehende
+# Eintraege werden dabei nicht angefasst.
+cat > /etc/cron.d/ai-filter-context <<'CRON'
+# Unternehmenskontext der eigenen Domains, sonntags um 5 Uhr.
+# Nur neue Domains. Alles neu bestimmen: ai-filter-context.sh --refresh
+0 5 * * 0 root /usr/local/bin/ai-filter-context.sh >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/ai-filter-context
+
+if [[ -f "data/ai-checker/business_context.json" ]] \
+   && grep -q '"art"' data/ai-checker/business_context.json 2>/dev/null; then
+    echo -e "${GREEN}[OK]${NC} Unternehmenskontext bereits hinterlegt (bleibt unveraendert)"
+else
+    echo ""
+    echo "Bestimme, was die eigenen Domains beruflich tun (je ein Website-Abruf"
+    echo "und eine kurze KI-Anfrage) ..."
+    if /usr/local/bin/ai-filter-context.sh; then
+        :
+    else
+        echo -e "${YELLOW}[INFO]${NC} Unternehmenskontext konnte nicht bestimmt werden."
+        echo "       Der Filter laeuft ohne ihn weiter wie bisher. Spaeter nachholen:"
+        echo "         ai-filter-context.sh"
+    fi
+fi
+
 if [[ -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
     echo ""
     echo "The report mails you the cases where the filter contradicts itself."

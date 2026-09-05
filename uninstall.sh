@@ -84,6 +84,8 @@ fi
 
 rm -f data/ai-checker/trusted_sender_profiles.json.example
 rm -f data/ai-checker/trusted_sender_profiles.json
+rm -f data/ai-checker/business_context.json
+rm -f data/ai-checker/brand_domains.txt
 
 rmdir data/ai-checker 2>/dev/null || true
 
@@ -96,7 +98,10 @@ fi
 # Remove system scripts
 rm -f /usr/local/bin/ai-filter-*.sh
 rm -f /etc/logrotate.d/ai-filter
-echo -e "${GREEN}[OK]${NC} Scripts removed"
+# Ohne das laufen die Cron-Eintraege weiter und rufen geloeschte Skripte
+# auf - taeglich eine Fehlermail an root, ohne erkennbaren Absender.
+rm -f /etc/cron.d/ai-filter-report /etc/cron.d/ai-filter-brands /etc/cron.d/ai-filter-context
+echo -e "${GREEN}[OK]${NC} Scripts and cron entries removed"
 
 read -p "Restart Rspamd? (y/N): " restart
 [[ $restart =~ ^[Yy]$ ]] && $COMPOSE_CMD restart rspamd-mailcow

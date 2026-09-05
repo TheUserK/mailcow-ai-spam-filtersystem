@@ -217,6 +217,89 @@ was *allowed* to try for the threshold, not whether the total actually
 reached it. `ai_score_raw` is the model's score before the category ceiling
 clipped it - useful for seeing how close a mail actually was.
 
+## Recipient context (business_context.json)
+
+The filter used to judge every mail without knowing who it was addressed to.
+That gap is what one campaign lives on: an enquiry that would be perfectly
+ordinary for a hotel is nonsense at a software company - but nothing in the
+headers says which of the two you are.
+
+`ai-filter-context.sh` closes it. For each of your own mailcow domains it
+fetches the website, follows only links that actually appear on the page (same
+domain, nothing guessed - `/impressum`, `/ueber-uns` and similar are preferred
+*when linked*), and has the model summarise the business in one sentence:
+
+```json
+{
+  "domains": {
+    "example.de": {
+      "art": "firma",
+      "beschreibung": "Softwareentwicklung und IT-Beratung; kein Beherbergungs- oder Gastgewerbe.",
+      "quelle": "https://example.de/",
+      "notiz": "",
+      "geprueft": "2026-09-05",
+      "manuell": false
+    }
+  }
+}
+```
+
+`art` is one of:
+
+| Wert | Bedeutung | Wirkung |
+|---|---|---|
+| `firma` | Website ausgewertet | `beschreibung` geht in jeden Prompt |
+| `privat` | keine erreichbare Website | ebenfalls eine Aussage - ein privater Anschluss bietet keine Leistungen an |
+| `unbekannt` | Seite erreichbar, aber nicht auswertbar (JS-only, Platzhalter), oder API-Fehler | **kein** Kontext im Prompt, der Filter verhält sich wie vorher |
+
+`unbekannt` ist Absicht: Eine erfundene Beschreibung wäre schlimmer als gar
+keine, weil sie das Modell in beide Richtungen in die Irre führen kann.
+
+**Ergebnis einmal durchsehen.** Das Modell sieht nur eine Website und kann
+danebenliegen. Zum Korrigieren die `beschreibung` anpassen und
+`"manuell": true` setzen - dann rührt kein weiterer Lauf den Eintrag an.
+`install.sh` startet das Skript einmalig und legt einen wöchentlichen Cron an
+(sonntags 05:00, nur neue Domains); fehlende Einträge meldet zusätzlich der
+Widerspruchs-Report.
+
+### Die Rolle entscheidet, nicht das Thema
+
+Das ist der Punkt, an dem dieses Signal nützlich oder gefährlich wird:
+
+| Mail an eine Softwarefirma | Signal? |
+|---|---|
+| "Bitte bestätigen Sie meine Zimmerbuchung bei Ihnen" | **ja** - wir sollen etwas anbieten, das wir nicht anbieten |
+| "Ihre Hotelbuchung in Wien ist bestätigt" | **nein** - eingekaufte Leistung, ein Mitarbeiter war auf Dienstreise |
+
+Beide sind thematisch "Hotel". Nur die erste ist ein Rollenbruch. Eine Regel
+"Thema passt nicht zum Betrieb → verdächtig" würde jede Hotelbestätigung,
+jedes Flugticket und jede branchenfremde Rechnung anzünden - also genau die
+Transaktionsmail, hinter der niemand sitzt, der einen Bounce bemerkt. Der
+Systemprompt formuliert die Unterscheidung deshalb ausdrücklich, samt
+Ausnahmen für Bewerbungen, Presse- und Lieferantenanfragen und Behördenpost.
+
+Ein Rollenbruch allein ist `spam`. Kommt ein Link, ein Anhang oder eine
+Handlungsaufforderung dazu, ist es `phishing`/`fraud` mit hoher Confidence.
+
+### Warum das keine Struktur-Evidenz ist
+
+Der Rollenbruch ist ein **Urteil des Modells**, kein maschinell prüfbarer
+Fakt - und `strongEvidence()` ist per Definition die Menge der Belege, die
+*nicht* vom Modell stammen. Ihn dort einzutragen würde die Kernzusicherung
+des Systems aushebeln (ein Reject braucht eine zweite, unabhängige Quelle).
+Er wirkt deshalb ausschließlich über Kategorie und Confidence des Modells und
+läuft danach durch alle bestehenden Deckel: Eine Mail kann dadurch im Junk
+landen, aber nicht allein deswegen abgewiesen werden.
+
+### Kosten und Datenschutz
+
+Ein KI-Aufruf pro Domain, einmalig plus wöchentliche Auffrischung für neue
+Domains - Centbeträge. Pro Mail kommen ~30-60 Token Prompt dazu, kein
+zusätzlicher Aufruf. Übertragen wird die eigene, öffentliche Website an den
+bereits beauftragten KI-Anbieter; dauerhaft gespeichert wird nur der eine
+Beschreibungssatz, nicht der Rohtext der Seite (Impressumsseiten enthalten
+personenbezogene Daten).
+
 ## Provider profile (provider.conf)
 
 The three `_DEFAULT` constants below are the shipped values. If

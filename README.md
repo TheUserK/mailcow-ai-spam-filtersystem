@@ -50,6 +50,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **Uses Rspamd's own URL reputation** - Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank and the fresh-domain zone are queried by stock mailcow anyway; their results are folded into the analysis as risk flags. No extra service, no additional lookups, no new dependency.
 - **Brand-impersonation detection, two mechanisms** - A short hand-curated list of real domains per brand catches typosquats and foreign-domain claims; a separately generated list of several thousand brand names (from the Majestic Million, see below) catches the model's own claimed-brand text against a domain that has nothing to do with it. Federated brand names (Sparkasse, Volksbank, Sparda - hundreds of independently run banks sharing one name) are deliberately excluded from the single-domain check, which is structurally wrong for that shape.
 - **Fishy-TLD scoring and greylisting** - A small, operator-editable score bump for sender domains on frequently-abused top-level domains (`.shop`, `.top`, `.icu`, ...), and greylisting for anything Rspamd already finds middling - both cheap, both never block on their own.
+- **The filter knows what you actually do** - Each of your own domains is classified once from its own website, and that one-line description goes into every prompt. It catches a class of fraud nothing else sees: mail that addresses you as the *provider* of a service you do not offer - a room booking at a software company, sent from a hijacked but perfectly authenticated account. Confirmations for services you bought elsewhere (hotel, flight, invoice) are explicitly excluded - every company books hotels.
 - **Internal-mail detection** - Mail between two local Mailcow domains skips analysis entirely (queries the Mailcow DB for active domains).
 - **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt. A fixture corpus (`tests/`) built from real false positives and real catches guards against regressions on every change.
 - **Untouched by mailcow updates** - Installed into `plugins.d/`, which mailcow's update never writes to, so there is no loader line that can go missing
@@ -193,6 +194,8 @@ ai-filter-model.sh                # Which model/provider is active
 ai-filter-report.sh               # Cases where the filter contradicts itself
 ai-filter-brands.sh --status      # Brand-domain list: size, age, last update
 ai-filter-brands.sh               # Regenerate it (downloads the Majestic Million, ~80 MB)
+ai-filter-context.sh --status     # What your own domains are classified as
+ai-filter-context.sh              # Classify domains that have no entry yet
 install.sh --check                # Same health check
 ```
 
@@ -255,6 +258,40 @@ that Rspamd already finds middling by a few minutes - long enough that most
 spam sources, which never retry, give up. Legitimate senders retry
 automatically and are not asked twice. This adds latency to some first
 contacts, which is worth knowing if you have time-sensitive inbound mail.
+
+### What your own business actually does
+
+Until now the filter judged every mail without knowing who it was for. That
+blind spot is what one campaign lives on: on 04.09. four nearly identical
+German room-booking enquiries arrived within twenty minutes - from a British
+accountancy firm, a Portuguese IT company, a Romanian hotel and a Brazilian
+oil mill. Every sender domain real, every one properly authenticated (hijacked
+accounts), Rspamd unremarkable, the model's verdict "personal" at -2.16. The
+only thing wrong with them: the recipient does not rent out rooms.
+
+`ai-filter-context.sh` fetches each of your own domains' website, follows only
+links that actually appear on the page (same domain, nothing guessed), and has
+the model describe in one sentence what the business does. The result lands in
+`data/ai-checker/business_context.json` and goes into every later prompt.
+
+```bash
+ai-filter-context.sh              # classify domains that have no entry yet
+ai-filter-context.sh --refresh    # redo all of them
+ai-filter-context.sh --status     # what is currently stored
+```
+
+`install.sh` runs it once and schedules a weekly pass so domains you add to
+mailcow later get picked up; anything still missing an entry also shows up in
+the contradiction report. **Read the result once** - the model only sees a
+website and can be wrong. To correct an entry, edit its description and set
+`"manuell": true`; no later run will touch it again. A domain with no
+reachable website is recorded as private, which is a usable statement in
+itself.
+
+What matters is the *role*, not the topic: being asked to provide something
+you don't offer is the signal. A hotel confirmation, a flight ticket or an
+invoice for something you bought yourself is ordinary business mail and is
+explicitly excluded, as are applications, press enquiries and official mail.
 
 ### The contradiction report
 
@@ -332,7 +369,7 @@ What the upgrade replaces, and what it leaves alone:
 | | |
 |---|---|
 | Replaced | `ai-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
-| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
+| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `business_context.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
 | Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ai-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
 
 The override matters: it carries the build context that brings `pdo_mysql`

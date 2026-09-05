@@ -399,6 +399,21 @@ function runFixtures() {
             'scoreFromAi'    => $scores,
         ];
     }
+
+    // Haengt an keiner einzelnen Mail, sondern an der Kontextdatei neben
+    // dem Checker - deshalb ein eigener Block. Entscheidend ist die letzte
+    // Zeile: "unbekannt" MUSS leer bleiben. Eine erfundene Beschreibung
+    // waere schlimmer als gar keine, weil sie das Modell in beide
+    // Richtungen in die Irre fuehren kann.
+    $out['_empfaenger_kontext'] = [
+        'firma'                 => businessContextFor('info@karrerlabs.de'),
+        'firma_gross_gemischt'  => businessContextFor('Info@KarrerLabs.DE'),
+        'privat'                => businessContextFor('andi@karrer.info'),
+        'unbekannt_bleibt_leer' => businessContextFor('info@moving-pictures.de'),
+        'fremde_domain'         => businessContextFor('kunde@example.org'),
+        'leere_adresse'         => businessContextFor(''),
+    ];
+
     return $out;
 }
 
