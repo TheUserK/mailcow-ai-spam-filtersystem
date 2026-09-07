@@ -156,7 +156,9 @@ count.
 
 The rest are hints. They still appear in `stats.log`, and they still inform the
 model, but they cannot carry a rejection alone: `brand-claim-mismatch`,
-`url-shortener`, `cloud-storage-only-links`, `reply-to-freemail-swap`.
+`url-shortener`, `cloud-storage-only-links`, `reply-to-freemail-swap`,
+`undisclosed-recipient` (no visible recipient in the `To:` header - common in
+legitimate BCC mailouts too, so deliberately never strong on its own).
 
 That split comes from production. `brand-claim-mismatch` fired three times and
 was wrong all three: a cruise line (`Scenic Eclipse` from `mail.scenic.eu`), a

@@ -318,6 +318,10 @@ rspamd_config:register_symbol({
     local references = header_str(task, 'References')
     local list_unsubscribe = header_str(task, 'List-Unsubscribe')
     local list_id = header_str(task, 'List-Id')
+    -- Fuer die "Undisclosed recipients"-Erkennung: kein einzelner sichtbarer
+    -- Empfaenger im To-Header. Die Auswertung (leer, oder RFC-5322-Leerformel
+    -- "Undisclosed recipients:;") passiert im PHP-Checker.
+    local to_header = header_str(task, 'To')
     local precedence = header_str(task, 'Precedence')
     local authentication_results = header_str(task, 'Authentication-Results')
 
@@ -393,6 +397,7 @@ rspamd_config:register_symbol({
         list_id = list_id,
         precedence = precedence,
         authentication_results = authentication_results,
+        to_header = to_header,
       },
       auth = {
         spf = spf,

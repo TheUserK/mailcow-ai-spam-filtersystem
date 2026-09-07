@@ -10,7 +10,9 @@ function fixtures() {
         'content_stats' => [],
         'urls' => [],
         'attachments' => [],
-        'headers' => [],
+        // Normal befuellter To-Header als Vorgabe, damit nur die Faelle,
+        // die das gezielt testen, "undisclosed-recipient" ausloesen.
+        'headers' => ['to_header' => 'empfaenger@example.com'],
     ];
 
     $cases = [];
@@ -167,6 +169,54 @@ function fixtures() {
         'rspamd_score' => 3.5,
         'reply_to' => 'sammelpostfach@gmail.com',
         'signals' => ['freemail_reply_to' => true, 'suspicious_reply_to' => true],
+    ]);
+
+    // Echter Fall vom 06.09.: gekapertes .gob.pe-Konto, "Kontaktpruefung"
+    // ohne sichtbaren Empfaenger. Deckt zwei Dinge gleichzeitig ab: dass
+    // hijacked-reply-to jetzt auch als Risk-Flag im Prompt landet (vorher
+    // nur als Evidenz nach dem API-Aufruf - das Modell sah es nie), und
+    // dass undisclosed-recipient zusaetzlich feuert.
+    $cases['kontaktpruefung-gekapert'] = array_replace_recursive($base, [
+        'from' => 'mitarbeiter@behoerde-pe.example', 'from_email' => 'mitarbeiter@behoerde-pe.example',
+        'from_display_name' => 'Mitarbeiter Behoerde',
+        'to' => 'buchhaltung@moving-pictures.de',
+        'subject' => 'Kontaktpruefung', 'body' => 'Ist diese E-Mail-Adresse noch gueltig?',
+        'rspamd_score' => 4.1,
+        'reply_to' => 'sammelpostfach@att.net',
+        'signals' => ['freemail_reply_to' => true, 'suspicious_reply_to' => true],
+        'headers' => ['to_header' => ''],
+    ]);
+
+    // Leerformel statt fehlendem Header - muss denselben Effekt haben.
+    $cases['undisclosed-recipients-formel'] = array_replace_recursive($base, [
+        'from' => 'absender@example.com', 'from_email' => 'absender@example.com',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Hinweis', 'body' => 'Kurzer Text.',
+        'rspamd_score' => 1.0,
+        'headers' => ['to_header' => 'Undisclosed recipients:;'],
+    ]);
+
+    // Kontrollfall: Vereinsrundmail per BCC, sonst voellig unauffaellig.
+    // Darf niemals ueber strongEvidence() ablehnen koennen - dafuer gibt
+    // es zu viele legitime Gruende fuer eine verborgene Empfaengerliste.
+    $cases['vereinsrundmail-bcc'] = array_replace_recursive($base, [
+        'from' => 'vorstand@sportverein-beispiel.de', 'from_email' => 'vorstand@sportverein-beispiel.de',
+        'from_display_name' => 'SV Beispiel e.V.',
+        'to' => 'mitglied@karrerlabs.de',
+        'subject' => 'Einladung zur Jahreshauptversammlung',
+        'body' => 'Liebe Mitglieder, wir laden herzlich zur Jahreshauptversammlung am 20. Oktober ein.',
+        'rspamd_score' => -1.0,
+        'headers' => ['to_header' => 'Undisclosed-Recipients:;'],
+    ]);
+
+    // Normaler Fall: To-Header vorhanden und mit sichtbarem Empfaenger.
+    // Darf NICHT als undisclosed-recipient feuern.
+    $cases['normale-direkte-adressierung'] = array_replace_recursive($base, [
+        'from' => 'kunde@partner.example', 'from_email' => 'kunde@partner.example',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Rueckfrage zum Angebot', 'body' => 'Koennten Sie mir das Angebot nochmal zusenden?',
+        'rspamd_score' => 0.0,
+        'headers' => ['to_header' => 'info@karrerlabs.de'],
     ]);
 
     $cases['newsletter-mit-abo'] = array_replace_recursive($base, [

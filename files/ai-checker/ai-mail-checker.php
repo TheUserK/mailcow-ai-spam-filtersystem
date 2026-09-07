@@ -422,6 +422,7 @@ function prepareMailContext(array $data) {
             'list_id' => cleanTextValue($headers['list_id'] ?? $data['list_id'] ?? ''),
             'precedence' => cleanTextValue($headers['precedence'] ?? $data['precedence'] ?? ''),
             'authentication_results' => cleanTextValue($headers['authentication_results'] ?? $data['authentication_results'] ?? ''),
+            'to_header' => cleanTextValue($headers['to_header'] ?? $data['to_header'] ?? ''),
         ],
         'auth' => [
             'spf' => normalizeTriState($auth['spf'] ?? 'unknown'),
@@ -895,6 +896,7 @@ function structuralSignals(array $mail, $verifiedBrand = '') {
         'cloud_storage_only'     => allUrlsAreCloudStorage($mail['url_domains']),
         'hijacked_reply_to'      => hijackedReplyTo($mail),
         'reply_to_freemail_swap' => freemailReplyToSwap($mail),
+        'no_disclosed_recipient' => noDisclosedRecipient($mail),
         'fake_thread'            => fakeThreadClaim($mail),
         'role_name_source'       => institutionalRoleSource($mail),
         'role_name_on_freemail'  => institutionalRoleSource($mail) !== '',
@@ -949,6 +951,19 @@ function analyzeLocally(array $mail, $requestId) {
     }
     if ($struct['reply_to_freemail_swap']) {
         $riskFlags[] = 'reply-to-freemail-swap';
+    }
+    // Wurde berechnet, aber nie an den Prompt weitergegeben - dieselbe
+    // Fehlerklasse wie beim PayPal-Fall vom 25.08. (siehe Kommentar zu
+    // verified-brand oben): die Erkenntnis existierte im Code, kam beim
+    // Modell aber nie an. Am 06.09. stufte das Modell deshalb eine
+    // "Kontaktpruefung" von einem gekaperten .gob.pe-Konto mit
+    // Reply-To-Swap als "personal", 90% sicher, -2.16 ein - der Beleg
+    // hatte korrekt gefeuert, aber blind fuer das Modell.
+    if ($struct['hijacked_reply_to']) {
+        $riskFlags[] = 'hijacked-reply-to';
+    }
+    if ($struct['no_disclosed_recipient']) {
+        $riskFlags[] = 'undisclosed-recipient';
     }
     if ($struct['fake_thread']) {
         $riskFlags[] = 'fake-thread';
@@ -1165,11 +1180,32 @@ Zu den Absender-Flags:
   Freemail-Anbieter (z.B. beide @gmail.com), aber auf unterschiedlichen
   Postfaechern. Die Antwort soll also bei jemand anderem landen als dem,
   der scheinbar schreibt - klassisches Muster bei Vorschussbetrug.
+- "hijacked-reply-to": Die Absenderdomain ist ECHT und sauber authentifiziert
+  (keine Freemail-Adresse), aber Reply-To zeigt auf ein fremdes Freemail-
+  Postfach. Der Fingerabdruck eines gekaperten Kontos: Der Angreifer versendet
+  ueber den echten, kompromittierten Account einer Firma, Universitaet oder
+  Behoerde - Authentifizierung und Reputation sind deshalb sauber -, will die
+  Antwort aber bei sich haben. STARKES Betrugssignal, unabhaengig davon wie
+  harmlos der Text klingt (z.B. eine simple "ist diese Adresse noch gueltig"-
+  Nachfrage: das ist die Aufklaerungsstufe VOR dem eigentlichen Vorschuss-
+  betrug, keine private Nachfrage). Stufe eine Mail mit diesem Flag als
+  "fraud" oder "phishing" ein, nicht als "personal" oder "legitimate" -
+  ausser der restliche Inhalt widerlegt das eindeutig.
 - "first-contact-freemail": Absender bei einem Freemail-Anbieter, von dem
   hier noch nie Post kam. Allein voellig unverdaechtig - jede Beziehung
   faengt so an. Nur zusammen mit anderen Signalen relevant. Fehlt das Flag,
   heisst das NICHT "bekannt": ueber Firmendomains wird gar nicht Buch
   gefuehrt.
+- "undisclosed-recipient": Kein sichtbarer Einzelempfaenger im To-Header
+  (leer oder die Formel "Undisclosed recipients:;") - die Mail ging an eine
+  verborgene Liste. Kommt bei legitimen Rundmails vor (Vereine, Kunden-
+  ankuendigungen, oft bewusst aus Datenschutzgruenden), ist bei echter
+  persoenlich gerichteter Post aber ungewoehnlich. Werte es deutlicher als
+  ein reines first-contact-Flag: in Kombination mit einem weiteren Signal
+  - vor allem "hijacked-reply-to", einer Geldforderung oder einer
+  Kontaktpruefung ohne erkennbaren Anlass - erhoeht es die Sicherheit
+  spuerbar. Allein, bei sonst unauffaelliger Mail, kein Grund zum Einstufen
+  als Spam.
 - "verified-brand:MARKE": Die From-Domain gehoert nachweislich (per DMARC)
   zu MARKE - kein Anzeigename-Trick, die Mail kommt wirklich von deren
   eigenen Servern. SEHR STARKES Ham-Signal, staerker als einzelne
@@ -1780,6 +1816,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if ($struct['reply_to_freemail_swap']) {
         $evidence[] = 'reply-to-freemail-swap';
     }
+    if ($struct['no_disclosed_recipient']) {
+        $evidence[] = 'undisclosed-recipient';
+    }
     if ($struct['fake_thread']) {
         $evidence[] = 'fake-thread';
     }
@@ -1925,6 +1964,30 @@ function hijackedReplyTo(array $mail) {
     return !empty($mail['signals']['freemail_reply_to'])
         && !empty($mail['signals']['suspicious_reply_to'])
         && empty($mail['signals']['freemail_from']);
+}
+
+// ---------------------------------------------------------------------
+//  Kein sichtbarer Einzelempfaenger im To-Header.
+//
+//  Entweder fehlt der Header ganz, oder er traegt die leere RFC-5322-
+//  Gruppenformel ("Undisclosed recipients:;", "Undisclosed-Recipients:;",
+//  auch ohne Bindestrich oder mit anderem Gruppennamen wie "Recipients:;").
+//  Echte Geschaefts- und Privatpost adressiert fast immer direkt; wer
+//  seine Empfaengerliste verbirgt, verschickt an viele auf einmal.
+//
+//  BEWUSST schwach (kein Eintrag in strongEvidence()): Vereinsrundmails,
+//  Kunden-BCC-Ankuendigungen und manche Systembenachrichtigungen nutzen
+//  das genauso, oft gerade um die Empfaengerliste aus Datenschutzgruenden
+//  nicht offenzulegen. Dafuer gibt es also eine haeufige harmlose
+//  Erklaerung - anders als z.B. bei einem gefaelschten Anhang.
+// ---------------------------------------------------------------------
+function noDisclosedRecipient(array $mail) {
+    $to = trim((string)($mail['headers']['to_header'] ?? ''));
+    if ($to === '') {
+        return true;
+    }
+    // "undisclosed-recipients:;", "Undisclosed Recipients : ;", "recipients:;"
+    return (bool)preg_match('/^["\']?[a-z][a-z \-]*recipients?["\']?\s*:\s*;?\s*$/i', $to);
 }
 
 // ---------------------------------------------------------------------
