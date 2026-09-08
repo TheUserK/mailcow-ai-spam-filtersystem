@@ -35,6 +35,34 @@ detect_compose_cmd() {
     fi
 }
 
+# Fehlende, optionale Kommandozeilenwerkzeuge einmalig gesammelt anbieten,
+# statt an drei verschiedenen Stellen im Skript einzeln nachzufragen. Nichts
+# davon ist fuer die Kerninstallation zwingend - fehlt eins, laufen nur die
+# jeweiligen Zusatzfunktionen (Unternehmenskontext, Domain-Rang-Datenbank)
+# spaeter ohne Daten weiter, siehe deren eigene command-v-Pruefungen.
+offer_install_missing_tools() {
+    local missing=() tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+
+    echo -e "${YELLOW}[INFO]${NC} Fehlt: ${missing[*]} (fuer optionale Zusatzfunktionen)"
+    # In einer nicht-interaktiven Shell (Cron, CI) liefert read leer zurueck
+    # und faellt sauber auf "Nein" - kein apt-Aufruf ohne jemanden, der die
+    # Frage tatsaechlich sieht.
+    read -p "Jetzt installieren (apt install ${missing[*]})? (y/N): " install_missing
+    if [[ $install_missing =~ ^[Yy]$ ]]; then
+        if apt-get install -y "${missing[@]}"; then
+            echo -e "${GREEN}[OK]${NC} installiert: ${missing[*]}"
+        else
+            echo -e "${RED}[FAIL]${NC} Installation fehlgeschlagen - von Hand nachholen: apt install ${missing[*]}"
+        fi
+    else
+        echo "       Spaeter von Hand: apt install ${missing[*]}"
+    fi
+}
+
 preflight_checks() {
     local errors=0
 
@@ -62,10 +90,10 @@ preflight_checks() {
         errors=$((errors + 1))
     fi
 
-    # curl available
-    if ! command -v curl &> /dev/null; then
-        echo -e "${YELLOW}[WARN]${NC} curl not found (needed for testing)"
-    fi
+    # curl, jq, perl, sqlite3: keins davon blockiert die Kerninstallation,
+    # aber ohne sie bleiben Unternehmenskontext (jq/perl) und die
+    # Domain-Rang-Datenbank (sqlite3) leer. curl braucht auch ai-filter-test.sh.
+    offer_install_missing_tools curl jq perl sqlite3
 
     return $errors
 }
@@ -546,24 +574,8 @@ fi
 # === DOMAIN-RANG-DATENBANK ===
 # Wie etabliert ist eine Absenderdomain (Majestic Million, volle 1-Mio.-
 # Liste)? Braucht sqlite3 zum Erzeugen und pdo_sqlite im Checker-Container
-# (siehe Dockerfile) zum Abfragen - beides neu, deshalb hier geprueft.
-if ! command -v sqlite3 >/dev/null 2>&1; then
-    echo -e "${YELLOW}[INFO]${NC} sqlite3 fehlt - wird fuer die Domain-Rang-Datenbank gebraucht."
-    # In einer nicht-interaktiven Shell (Cron, CI) liefert read leer zurueck
-    # und faellt sauber auf "Nein" - kein apt-Aufruf ohne jemanden, der die
-    # Frage tatsaechlich sieht, genau wie bei den anderen y/N-Abfragen hier.
-    read -p "Jetzt installieren (apt install sqlite3)? (y/N): " install_sqlite
-    if [[ $install_sqlite =~ ^[Yy]$ ]]; then
-        if apt-get install -y sqlite3; then
-            echo -e "${GREEN}[OK]${NC} sqlite3 installiert"
-        else
-            echo -e "${RED}[FAIL]${NC} Installation fehlgeschlagen - von Hand nachholen: apt install sqlite3"
-        fi
-    else
-        echo "       Spaeter von Hand: apt install sqlite3, dann: ai-filter-rank.sh"
-    fi
-fi
-
+# (siehe Dockerfile) zum Abfragen. sqlite3 wurde schon bei den Preflight-
+# Checks ganz am Anfang angeboten - hier nur noch der Stand.
 if ! command -v sqlite3 >/dev/null 2>&1; then
     echo -e "${YELLOW}[INFO]${NC} Ohne sqlite3 bleibt die Domain-Rang-Datenbank aus - Filter laeuft normal weiter."
 else
