@@ -1686,8 +1686,20 @@ PROMPT;
         && !partOfRealConversation($mail);
 
     if ($junkFloorApplies) {
+        // KEIN min(..., policy['points']) hier - anders als beim
+        // AI_CONFIDENT_TOTAL-Zweig oben ist der Deckel hier nicht Teil der
+        // Absicherung, sondern hebelt sie aus. Am 08.09. verfehlte eine mit
+        // 97% Sicherheit erkannte Kaltakquise-Mail (follows.ch) die
+        // Junk-Schwelle um 0.17 Punkte: Rspamd hatte -2.17 vergeben (sauber
+        // authentifiziert), der auf policy['points'] (10) gedeckelte
+        // KI-Anteil reichte nicht, um JUNK_FLOOR (8.0) zu erreichen - macht
+        // 7.83 statt der zugesagten 8.0, und die Mail blieb im normalen
+        // Posteingang. clampToTotalCeiling() gleich danach begrenzt den
+        // tatsaechlichen Endwert ohnehin auf policy['max_total'] (>=
+        // JUNK_FLOOR fuer jede angreifbare Kategorie) - die eigentliche
+        // Sicherheitsgrenze liegt dort, nicht hier.
         $needed = JUNK_FLOOR - $mail['rspamd_score'];
-        $score = max($score, min($needed, $policy['points']));
+        $score = max($score, $needed);
     }
 
     $scoreBeforeCeiling = $score;
