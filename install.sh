@@ -549,7 +549,23 @@ fi
 # (siehe Dockerfile) zum Abfragen - beides neu, deshalb hier geprueft.
 if ! command -v sqlite3 >/dev/null 2>&1; then
     echo -e "${YELLOW}[INFO]${NC} sqlite3 fehlt - wird fuer die Domain-Rang-Datenbank gebraucht."
-    echo "       apt install sqlite3, dann: ai-filter-rank.sh"
+    # In einer nicht-interaktiven Shell (Cron, CI) liefert read leer zurueck
+    # und faellt sauber auf "Nein" - kein apt-Aufruf ohne jemanden, der die
+    # Frage tatsaechlich sieht, genau wie bei den anderen y/N-Abfragen hier.
+    read -p "Jetzt installieren (apt install sqlite3)? (y/N): " install_sqlite
+    if [[ $install_sqlite =~ ^[Yy]$ ]]; then
+        if apt-get install -y sqlite3; then
+            echo -e "${GREEN}[OK]${NC} sqlite3 installiert"
+        else
+            echo -e "${RED}[FAIL]${NC} Installation fehlgeschlagen - von Hand nachholen: apt install sqlite3"
+        fi
+    else
+        echo "       Spaeter von Hand: apt install sqlite3, dann: ai-filter-rank.sh"
+    fi
+fi
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo -e "${YELLOW}[INFO]${NC} Ohne sqlite3 bleibt die Domain-Rang-Datenbank aus - Filter laeuft normal weiter."
 else
     cat > /etc/cron.d/ai-filter-rank <<'CRON'
 # Domain-Rang-Datenbank (Majestic Million, volle Liste), sonntags um 6 Uhr.
