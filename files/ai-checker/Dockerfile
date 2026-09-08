@@ -11,4 +11,11 @@
 # workers automatically, unlike PHP's own per-process static cache.
 FROM php:8.4-cli
 
-RUN docker-php-ext-install pdo_mysql pdo_sqlite
+# pdo_sqlite needs libsqlite3-dev at build time (the sqlite3 pkg-config
+# package) - unlike pdo_mysql, the base image has neither the lib nor the
+# headers, so the configure step fails without it ("Package 'sqlite3',
+# required by 'virtual:world', not found").
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && docker-php-ext-install pdo_mysql pdo_sqlite
