@@ -464,6 +464,16 @@ function runFixtures() {
         'leere_adresse'         => businessContextFor(''),
     ];
 
+    // Domain-Rang: bekannte Domain, unbekannte Domain, leere Eingabe.
+    // Bekannte Domain muss die Zahlen aus domain_ranks.sample.tsv liefern,
+    // unbekannte und leere Eingabe muessen still null ergeben (kein Fehler,
+    // kein erfundener Wert) - siehe domainRank().
+    $out['_domain_rang'] = [
+        'bekannt'    => domainRank('tchibo.de'),
+        'unbekannt'  => domainRank('nie-gesehene-domain-xyz.de'),
+        'leer'       => domainRank(''),
+    ];
+
     return $out;
 }
 

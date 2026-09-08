@@ -302,6 +302,88 @@ bereits beauftragten KI-Anbieter; dauerhaft gespeichert wird nur der eine
 Beschreibungssatz, nicht der Rohtext der Seite (Impressumsseiten enthalten
 personenbezogene Daten).
 
+## Sender-domain reputation (domain_ranks.sqlite)
+
+Real German retailers - Tchibo, Zooplus, Baldur-Garten - kept swinging
+between "newsletter" (score 0) and "spam" (score up to 10) for structurally
+identical mail: same domain, same `list_headers: true`, same red flags,
+different day. `evidence` was empty in every one of those cases - nothing
+structural backed the "spam" verdicts, it was pure model inconsistency on
+subjective tone (an aggressive "FLASHSALE" subject line scored spam, a mild
+one the same day scored 0).
+
+The existing brand list (`getImpersonationBrands()`/`knownBrandDomains()`)
+couldn't fix this: it's a yes/no membership check, and these domains simply
+aren't on it - not because the list is broken, but because Majestic Million
+ranks *worldwide* linkage, and a national retailer's backlinks stay mostly
+national. Checked against the real Majestic Million data: `tchibo.de` ranks
+23,080th globally, `zooplus.de` 41,798th, `baldur-garten.de` 282,431st - all
+well outside any cutoff that stays small enough to avoid noise (see below).
+
+### Why a number, not another list
+
+`ai-filter-rank.sh` stores the *rank itself* for the full Majestic Million
+(~1 million domains) rather than extracting a filtered "brand" subset with a
+cutoff. This sidesteps the cutoff problem entirely - there is no threshold to
+pick, the model sees the actual number and weighs it. Checked directly
+against the real dataset before building this: raising a brand-extraction
+cutoff far enough to catch `baldur-garten.de` (rank 282,431) pulls in ~33x
+more entries than the default brand-list cutoff, including a meaningful
+fraction of gambling/pharma-adjacent domains and, more relevantly, generic
+single-word "brands" (`global` -> `global.toyota`, `best` -> `best.com`) that
+would cause false `brand-claim-vs-known-domain` hits on any innocent sender
+whose company name happens to contain a common word. A raw rank lookup by
+the sender's own domain avoids that: there is no brand-label extraction, so
+no generic-word collision is possible.
+
+### Why SQLite, not a PHP array
+
+The checker runs 4 request workers in parallel
+(`PHP_CLI_SERVER_WORKERS=4`), each its own OS process with its own memory -
+a PHP static-cached array is not shared between them. Measured directly: a
+1-million-row associative array costs **~120 MB per worker**, ~480 MB total,
+against a documented baseline of ~50 MB for the whole container. SQLite
+instead reads only the handful of disk pages a single query touches, and the
+OS page cache is shared across all 4 workers automatically since they all
+read the same file. Measured: near-zero additional PHP memory per lookup,
+0.2-1.2 ms per query. `pdo_sqlite` is added in the Dockerfile for this
+(the official `php:8.4-cli` image does not ship it, same situation as
+`pdo_mysql`).
+
+```bash
+ai-filter-rank.sh              # download (~80 MB) + rebuild
+ai-filter-rank.sh --status     # row count, size, age
+ai-filter-rank.sh --show tchibo.de
+```
+
+`install.sh` builds it once and schedules a weekly refresh
+(`/etc/cron.d/ai-filter-rank`, Sundays 06:00); an existing database with
+fewer than 500,000 rows is treated as damaged and rebuilt, same guard as the
+brand list.
+
+### What goes into the prompt, and how it's meant to be weighed
+
+`domainRank($mail['from_domain'])` looks up the sender domain and produces
+one line: `Absender-Domain-Rang: global 23080, .de-Rang 572`, or
+`nicht gelistet` if the domain isn't in the top ~1 million or the database
+doesn't exist yet (fails silently to "no data", never an error). The system
+prompt tells the model to weigh a good rank *strongly* - a domain established
+enough to rank at all took years of real, broad linkage to get there, which
+is not something a fresh phishing domain can fake - and explicitly that
+promotional tone (discounts, emoji, urgency) is normal for an established
+retailer and not itself a spam signal once the rank backs the sender up.
+"Not listed" is explicitly framed as *no signal either way* - small, new, or
+purely local senders (clubs, small businesses, new startups) are extremely
+common and legitimate.
+
+This is prompt context only, feeding the model's own category/confidence
+judgement - not a new `strongEvidence()` class and not a code-level score
+cap. A good rank doesn't exempt a domain from anything else the filter
+checks: an established domain stays established even when its mailbox is
+hijacked, so `hijacked-reply-to`, a business-context role conflict, or any
+other structural evidence still applies exactly as before, regardless of
+rank.
+
 ## Provider profile (provider.conf)
 
 The three `_DEFAULT` constants below are the shipped values. If

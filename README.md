@@ -51,6 +51,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **Brand-impersonation detection, two mechanisms** - A short hand-curated list of real domains per brand catches typosquats and foreign-domain claims; a separately generated list of several thousand brand names (from the Majestic Million, see below) catches the model's own claimed-brand text against a domain that has nothing to do with it. Federated brand names (Sparkasse, Volksbank, Sparda - hundreds of independently run banks sharing one name) are deliberately excluded from the single-domain check, which is structurally wrong for that shape.
 - **Fishy-TLD scoring and greylisting** - A small, operator-editable score bump for sender domains on frequently-abused top-level domains (`.shop`, `.top`, `.icu`, ...), and greylisting for anything Rspamd already finds middling - both cheap, both never block on their own.
 - **The filter knows what you actually do** - Each of your own domains is classified once from its own website, and that one-line description goes into every prompt. It catches a class of fraud nothing else sees: mail that addresses you as the *provider* of a service you do not offer - a room booking at a software company, sent from a hijacked but perfectly authenticated account. Confirmations for services you bought elsewhere (hotel, flight, invoice) are explicitly excluded - every company books hotels.
+- **Sender-domain reputation, as a number, not a yes/no list** - Every sender domain's global web-link ranking (Majestic Million, the full list) goes into the prompt so the model can weigh it itself, instead of a fixed "known brand" list with an arbitrary cutoff. A domain established enough to rank in the top few hundred thousand worldwide is hard to fake quickly - that holds regardless of how promotional a legitimate retailer's subject line sounds.
 - **Internal-mail detection** - Mail between two local Mailcow domains skips analysis entirely (queries the Mailcow DB for active domains).
 - **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt. A fixture corpus (`tests/`) built from real false positives and real catches guards against regressions on every change.
 - **Untouched by mailcow updates** - Installed into `plugins.d/`, which mailcow's update never writes to, so there is no loader line that can go missing
@@ -196,6 +197,8 @@ ai-filter-brands.sh --status      # Brand-domain list: size, age, last update
 ai-filter-brands.sh               # Regenerate it (downloads the Majestic Million, ~80 MB)
 ai-filter-context.sh --status     # What your own domains are classified as
 ai-filter-context.sh              # Classify domains that have no entry yet
+ai-filter-rank.sh --status        # Domain-rank database: size, age
+ai-filter-rank.sh --show DOMAIN   # Look up one domain's rank
 install.sh --check                # Same health check
 ```
 
@@ -293,6 +296,44 @@ you don't offer is the signal. A hotel confirmation, a flight ticket or an
 invoice for something you bought yourself is ordinary business mail and is
 explicitly excluded, as are applications, press enquiries and official mail.
 
+### Sender-domain reputation
+
+The brand list above is a yes/no check: is this domain one of a known set.
+For catching false spam verdicts on legitimate senders, a fixed list is the
+wrong shape - Tchibo and zooplus are well-known German retailers, but rank
+far outside any sensible "top N" cutoff, because Majestic Million measures
+*worldwide* linkage, and a national retailer's backlinks stay mostly
+national. Raising the cutoff enough to include them pulls in far more noise
+than value long before it reaches domains that are only prominent within one
+country.
+
+`ai-filter-rank.sh` sidesteps the cutoff problem entirely: it stores the
+*rank itself*, for the full Majestic Million (all ~1 million domains,
+CC BY 3.0 - same source and licensing as the brand list, generated locally,
+not shipped), and lets the model weigh the number - "global rank 23,080,
+.de-rank 572" carries very different weight than "not listed", without the
+code drawing an arbitrary line.
+
+A million rows is too many for a PHP array without a real memory cost - the
+checker runs 4 request workers in parallel, each with its own process
+memory, so a million-entry array would cost roughly 120 MB *per worker*
+(measured), not once. The database is SQLite instead: each lookup reads only
+the handful of pages it needs from disk, and the OS page cache is shared
+across all 4 workers automatically. Measured cost: near-zero PHP memory,
+well under a millisecond per lookup.
+
+```bash
+ai-filter-rank.sh              # download + rebuild (~80 MB download)
+ai-filter-rank.sh --status     # size and age of the current database
+ai-filter-rank.sh --show DOMAIN
+```
+
+`install.sh` builds it once and schedules a weekly refresh. A good rank is
+not immunity from a hijacked account - an established domain stays
+established even when its mailbox is compromised - so this is prompt
+context for the model's own judgment, not a code-level exemption from
+anything else the filter checks.
+
 ### The contradiction report
 
 Every mistake this filter has had was found the same way: somebody read a log
@@ -369,7 +410,7 @@ What the upgrade replaces, and what it leaves alone:
 | | |
 |---|---|
 | Replaced | `ai-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
-| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `business_context.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
+| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `business_context.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `domain_ranks.sqlite` (rebuilt only if under 500,000 rows), `ai-filter-tlds.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
 | Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ai-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
 
 The override matters: it carries the build context that brings `pdo_mysql`

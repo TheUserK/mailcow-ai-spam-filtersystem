@@ -36,4 +36,15 @@ php -l "$tmp/lib.php" >/dev/null
 [ -f "$root/tests/business_context.sample.json" ] \
   && cp "$root/tests/business_context.sample.json" "$tmp/business_context.json"
 
+# Domain-Rang-Datenbank: im Betrieb SQLite, hier aus einer Textdatei
+# gebaut, damit im Repo nichts Binaeres liegt.
+if [ -f "$root/tests/domain_ranks.sample.tsv" ] && command -v sqlite3 >/dev/null; then
+  sqlite3 "$tmp/domain_ranks.sqlite" <<SQL
+CREATE TABLE ranks (domain TEXT, global_rank INTEGER, tld_rank INTEGER);
+.mode tabs
+.import '$root/tests/domain_ranks.sample.tsv' ranks
+CREATE INDEX idx_domain ON ranks(domain);
+SQL
+fi
+
 php -r 'require $argv[1]; require $argv[2];' "$tmp/lib.php" "$root/tests/fixtures.php"

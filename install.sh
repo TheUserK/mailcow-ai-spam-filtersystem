@@ -543,6 +543,46 @@ else
     fi
 fi
 
+# === DOMAIN-RANG-DATENBANK ===
+# Wie etabliert ist eine Absenderdomain (Majestic Million, volle 1-Mio.-
+# Liste)? Braucht sqlite3 zum Erzeugen und pdo_sqlite im Checker-Container
+# (siehe Dockerfile) zum Abfragen - beides neu, deshalb hier geprueft.
+if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo -e "${YELLOW}[INFO]${NC} sqlite3 fehlt - wird fuer die Domain-Rang-Datenbank gebraucht."
+    echo "       apt install sqlite3, dann: ai-filter-rank.sh"
+else
+    cat > /etc/cron.d/ai-filter-rank <<'CRON'
+# Domain-Rang-Datenbank (Majestic Million, volle Liste), sonntags um 6 Uhr.
+# Von Hand: ai-filter-rank.sh          Stand: ai-filter-rank.sh --status
+0 6 * * 0 root /usr/local/bin/ai-filter-rank.sh >/dev/null 2>&1
+CRON
+    chmod 644 /etc/cron.d/ai-filter-rank
+
+    RANK_ROWS=0
+    if [[ -f "data/ai-checker/domain_ranks.sqlite" ]]; then
+        RANK_ROWS=$(sqlite3 "data/ai-checker/domain_ranks.sqlite" 'SELECT COUNT(*) FROM ranks' 2>/dev/null || echo 0)
+    fi
+
+    # Wie bei der Markenliste: eine kaputte/abgebrochene Datei nicht auf
+    # ewig stillschweigend behalten. Die volle Liste hat ~1 Mio. Zeilen.
+    if [[ "$RANK_ROWS" -ge 500000 ]]; then
+        echo -e "${GREEN}[OK]${NC} Domain-Rang-Datenbank vorhanden ($RANK_ROWS Domains, bleibt unveraendert)"
+    else
+        if [[ "$RANK_ROWS" -gt 0 ]]; then
+            echo -e "${YELLOW}[INFO]${NC} Domain-Rang-Datenbank hat nur $RANK_ROWS Zeilen - wird neu erzeugt"
+        else
+            echo "Erzeuge die Domain-Rang-Datenbank (einmaliger Download, ca. 80 MB) ..."
+        fi
+        if /usr/local/bin/ai-filter-rank.sh; then
+            :
+        else
+            echo -e "${YELLOW}[INFO]${NC} Domain-Rang-Datenbank konnte nicht erzeugt werden."
+            echo "       Der Filter laeuft ohne sie weiter. Spaeter nachholen:"
+            echo "         ai-filter-rank.sh"
+        fi
+    fi
+fi
+
 if [[ -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
     echo ""
     echo "The report mails you the cases where the filter contradicts itself."

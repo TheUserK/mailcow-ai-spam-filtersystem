@@ -124,6 +124,7 @@ Incoming Email
 - Turns Rspamd's URL-reputation symbols into risk flags. A blocklist hit also blocks the trusted-sender auto-pass, since even a genuine sender can link a compromised subdomain
 - Computes all structural evidence once (`structuralSignals()`/`collectStructuralEvidence()`) - fake threads, hijacked reply-to, fabricated tickets, role claims on freemail, free-hosting links, and more - shared between the AI prompt's risk flags and the reject-eligibility check, so the two can never drift apart
 - Adds the recipient's own business context to the prompt (`businessContextFor()`, from `business_context.json`) so the model can tell whether the mail even makes sense for this recipient - it catches mail addressing you as the provider of a service you don't offer, and deliberately not confirmations for services you bought elsewhere. See [CONFIGURATION.md](CONFIGURATION.md#recipient-context-business_contextjson)
+- Adds the sender domain's web-reputation rank to the prompt (`domainRank()`, from `domain_ranks.sqlite` - the full Majestic Million, looked up via SQLite rather than loaded into memory, see [CONFIGURATION.md](CONFIGURATION.md#sender-domain-reputation-domain_rankssqlite)) so the model can weigh how established a sender is as a number, not a fixed list membership
 - Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
 - Applies the reject-eligibility conjunction, the category override, the junk floor and the two reject paths (see [Design Principle](#design-principle-v3) above)
 - Manages budget tracking
@@ -161,6 +162,7 @@ Incoming Email
 |   |   +-- provider.conf                    # active model/provider (root 0600, not in git)
 |   |   +-- brand_domains.txt                # generated Majestic-Million brand list (not shipped, not in git)
 |   |   +-- business_context.json            # what each of your own domains does (ai-filter-context.sh, operator-editable)
+|   |   +-- domain_ranks.sqlite              # sender-domain web-reputation lookup (ai-filter-rank.sh, not shipped, not in git)
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
 |   |   +-- trusted_sender_profiles.json     # your custom trusted senders (optional, not shipped)
 |   +-- conf/rspamd/

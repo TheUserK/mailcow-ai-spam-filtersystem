@@ -205,6 +205,14 @@ define('BRAND_DOMAINS_FILE', __DIR__ . '/brand_domains.txt');
 // laeuft textuell vor den Helferfunktionen.
 define('BUSINESS_CONTEXT_FILE', __DIR__ . '/business_context.json');
 
+// Wie etabliert ist die Absenderdomain, weltweit und unter .de? Erzeugt
+// von ai-filter-rank.sh (volle Majestic-Million-Liste, 1 Mio. Domains).
+// SQLite statt PHP-Array: eine Million Eintraege im Array kostet ~120 MB
+// PRO Worker-Prozess (PHP_CLI_SERVER_WORKERS=4 -> ~480 MB) - SQLite liest
+// nur die Seiten von der Platte, die eine Abfrage braucht, und der
+// Betriebssystem-Cache wird von allen 4 Workern automatisch geteilt.
+define('DOMAIN_RANK_DB', __DIR__ . '/domain_ranks.sqlite');
+
 // --- Zweiter Reject-Pfad: das Modell allein, wenn es sehr sicher ist -----
 //
 // Der Beleg-Pfad verlangt einen unabhaengigen Strukturbeleg. Der fehlt aber
@@ -634,6 +642,56 @@ function businessContextFor($address) {
     }
 
     return trim((string)($entry['beschreibung'] ?? ''));
+}
+
+// ---------------------------------------------------------------------
+//  Wie etabliert ist eine Domain (weltweit / unter .de)?
+//
+//  Anders als die Markenliste (getImpersonationBrands()/knownBrandDomains())
+//  ist das kein Ja/Nein "das ist eine bekannte Marke", sondern eine Zahl,
+//  die das Modell selbst gewichten kann - genau deshalb keine feste
+//  Schwelle im Code. Tchibo, Zooplus & Co. sind in Deutschland etablierte
+//  Firmen, liegen aber weit ausserhalb jeder sinnvollen "Top-N"-Schwelle,
+//  weil Majestic weltweit misst.
+//
+//  Verbindung wird einmal pro Worker-Prozess aufgebaut und wiederverwendet
+//  (statisch), nicht die Daten selbst - die bleiben in SQLite, nicht im
+//  PHP-Speicher. Fehlt die Datenbank (noch nicht erzeugt), wird das still
+//  als "keine Angabe" behandelt statt eines Fehlers.
+// ---------------------------------------------------------------------
+function domainRank($domain) {
+    static $pdo = false; // false = noch nicht versucht, null = fehlgeschlagen
+
+    $domain = normalizeHost($domain);
+    if ($domain === '') {
+        return null;
+    }
+
+    if ($pdo === false) {
+        if (!is_readable(DOMAIN_RANK_DB)) {
+            $pdo = null;
+        } else {
+            try {
+                $pdo = new PDO('sqlite:' . DOMAIN_RANK_DB);
+                $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            } catch (Exception $e) {
+                $pdo = null;
+            }
+        }
+    }
+    if ($pdo === null) {
+        return null;
+    }
+
+    try {
+        $stmt = $pdo->prepare('SELECT global_rank, tld_rank FROM ranks WHERE domain = :d LIMIT 1');
+        $stmt->execute([':d' => $domain]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        return null;
+    }
+
+    return $row ?: null;
 }
 
 // ---------------------------------------------------------------------
@@ -1217,6 +1275,28 @@ Zu den Absender-Flags:
   "url-domain-mismatch" deutlich weniger - die Grundsatzfrage "ist das
   wirklich MARKE" ist bereits beantwortet.
 
+ABSENDER-DOMAIN-RANG:
+Die Zeile "Absender-Domain-Rang" zeigt, wie etabliert die Absenderdomain
+ist - gemessen an weltweiter Verlinkung (Majestic Million, ueber 1 Million
+Domains). Format: "global X, .tld-Rang Y" (Rang innerhalb der jeweiligen
+Endung, nicht immer .de) oder "nicht gelistet". Niedrigere
+Zahl = etablierter; unter den Top paar hunderttausend zu stehen bedeutet
+jahrelang gewachsene, breite Verlinkung - das faelscht niemand kurzfristig,
+auch keine gut gemachte Phishing-Seite. GEWICHTE DAS STARK: eine gelistete
+Domain, erst recht mit gutem .de-Rang, IST mit sehr hoher Wahrscheinlichkeit
+ein echtes, etabliertes Unternehmen - das gilt unabhaengig davon, wie
+werblich oder dringlich der Ton der einzelnen Mail klingt. Rabattmails,
+Flashsales und Emoji-Betreffzeilen sind bei etablierten Versandhaendlern
+normaler Alltag, kein Spam-Indiz. "nicht gelistet" ist dagegen KEIN
+Verdachtsmoment fuer sich allein - viele echte, kleine oder neue Absender
+(Vereine, lokale Betriebe, junge Startups) haben schlicht noch keine breite
+Verlinkung aufgebaut. Es bedeutet nur: hier hilft dieses Signal nicht, andere
+Kriterien entscheiden.
+Ein guter Rang schuetzt trotzdem NICHT vor einem gekaperten Konto - eine
+etablierte Domain bleibt etabliert, auch wenn ihr Postfach gerade missbraucht
+wird. Signale wie "hijacked-reply-to" oder ein inhaltlicher Rollenbruch zum
+Empfaenger-Kontext gelten also unabhaengig vom Rang weiter.
+
 Die Risk-/Trust-Flags der lokalen Vorpruefung sind nur Hinweise, kein Urteil.
 Ausnahme: Ein Flag "brand-impersonation:MARKE" bedeutet, dass sich der
 Absender als bekannte Marke ausgibt, obwohl die Domain nicht dazu passt.
@@ -1384,12 +1464,24 @@ PROMPT;
     // steht "(unbekannt)" im Prompt und der Abschnitt greift nicht.
     $businessContext = businessContextFor($mail['to'] ?? '');
 
+    // Wie etabliert ist die Absenderdomain? Fehlt die Datenbank oder ist
+    // die Domain nicht gelistet, steht "nicht gelistet" da - bewusst kein
+    // Fehlerzustand, siehe domainRank(). Die TLD kommt aus der Domain
+    // selbst, nicht hart ".de" - die Mehrheit der Post ist zwar deutsch,
+    // aber laengst nicht alle (siehe z.B. .pe/.ro-Faelle diese Woche).
+    $rank = domainRank($mail['from_domain'] ?? '');
+    $rankTld = strrchr((string)($mail['from_domain'] ?? ''), '.');
+    $rankLine = $rank
+        ? sprintf('global %d, %s-Rang %d', $rank['global_rank'], $rankTld ?: 'TLD', $rank['tld_rank'])
+        : 'nicht gelistet';
+
     $userPrompt = sprintf(
         "From: %s\n"            .
         "From-Domain: %s\n"     .
         "Display-Name: %s\n"    .
         "Subject: %s\n"         .
         "Empfaenger-Kontext: %s\n" .
+        "Absender-Domain-Rang: %s\n" .
         "Rspamd-Score: %.1f\n"  .
         "SPF/DKIM/DMARC: %s / %s / %s\n" .
         "Reply-To-Domain (falls abweichend): %s\n" .
@@ -1404,6 +1496,7 @@ PROMPT;
         safePromptValue($mail['from_display_name']),
         safePromptValue($mail['subject']),
         safePromptValue($businessContext !== '' ? $businessContext : '(unbekannt)'),
+        safePromptValue($rankLine),
         $mail['rspamd_score'],
         safePromptValue($mail['auth']['spf']),
         safePromptValue($mail['auth']['dkim']),
