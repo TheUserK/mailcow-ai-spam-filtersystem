@@ -695,6 +695,52 @@ function domainRank($domain) {
 }
 
 // ---------------------------------------------------------------------
+//  Die Rangzeile, die ins Prompt geht.
+//
+//  Majestic listet registrierbare Domains, keine Subdomains - "sage.com"
+//  steht mit Rang 3225 drin, "credit.sage.com" nicht. Genau von solchen
+//  Subdomains kommt aber ein Grossteil echter Transaktions- und Massenpost.
+//  Die reine Exaktsuche meldete dafuer "nicht gelistet" und nahm dem Modell
+//  das staerkste Ham-Signal, das es fuer diese Absender gibt: Am 09./10.09.
+//  traf das gleich drei Mails, die daraufhin zu hart eingestuft wurden
+//  (credit.sage.com -> phishing, mail.hiscox.de, email.mydealz.de).
+//
+//  Der Rang der Hauptdomain wird deshalb nachgeschlagen, aber NICHT als
+//  Rang des Absenders ausgegeben: Beide Fakten stehen nebeneinander, damit
+//  das Modell selbst urteilen kann, ob die Subdomain plausibel zur Firma
+//  gehoert. Bei "credit.sage.com" ist sie das; bei einer Plattform, auf der
+//  sich jeder eine Subdomain nehmen kann, nicht. Ein stiller Fallback wuerde
+//  genau diesen Unterschied verschweigen - und die Entscheidung dem Code
+//  aufbuerden, der dafuer eine vollstaendige Plattformliste braeuchte.
+// ---------------------------------------------------------------------
+function senderRankLine($fromDomain) {
+    $domain = normalizeHost($fromDomain);
+    if ($domain === '') {
+        return 'nicht gelistet';
+    }
+
+    $tld = strrchr($domain, '.') ?: 'TLD';
+
+    $rank = domainRank($domain);
+    if ($rank) {
+        return sprintf('global %d, %s-Rang %d', $rank['global_rank'], $tld, $rank['tld_rank']);
+    }
+
+    $parent = registrableDomain($domain);
+    if ($parent !== $domain) {
+        $parentRank = domainRank($parent);
+        if ($parentRank) {
+            return sprintf(
+                '%s nicht gelistet; uebergeordnete Domain %s: global %d, %s-Rang %d',
+                $domain, $parent, $parentRank['global_rank'], $tld, $parentRank['tld_rank']
+            );
+        }
+    }
+
+    return 'nicht gelistet';
+}
+
+// ---------------------------------------------------------------------
 //  Die behauptete Marke ist eine bekannte Domain - der Absender nicht.
 //
 //  Schliesst die Luecke, die brandLinkedNotSender() offen laesst: Dort
@@ -1292,6 +1338,16 @@ Verdachtsmoment fuer sich allein - viele echte, kleine oder neue Absender
 (Vereine, lokale Betriebe, junge Startups) haben schlicht noch keine breite
 Verlinkung aufgebaut. Es bedeutet nur: hier hilft dieses Signal nicht, andere
 Kriterien entscheiden.
+Steht dort eine zweite Domain ("X nicht gelistet; uebergeordnete Domain Y:
+global ..."), dann ist der Absender eine Subdomain, und der Rang gehoert Y,
+nicht X. Die Liste kennt nur registrierbare Domains - genau ueber Subdomains
+laeuft aber ein Grossteil echter Transaktions- und Massenpost
+(credit.sage.com, mail.hiscox.de, email.mydealz.de). Gehoert die Subdomain
+erkennbar zur Firma hinter Y, zaehlt der Rang von Y voll: Es ist deren eigene
+Infrastruktur. Entscheide das aber selbst und nicht mechanisch - bei
+Plattformen, auf denen sich jeder eine Subdomain nehmen kann (Baukasten-,
+Hosting- und Blogdienste), sagt ein guter Rang der Hauptdomain ueber DIESEN
+Absender nichts aus.
 Ein guter Rang schuetzt trotzdem NICHT vor einem gekaperten Konto - eine
 etablierte Domain bleibt etabliert, auch wenn ihr Postfach gerade missbraucht
 wird. Signale wie "hijacked-reply-to" oder ein inhaltlicher Rollenbruch zum
@@ -1465,15 +1521,9 @@ PROMPT;
     $businessContext = businessContextFor($mail['to'] ?? '');
 
     // Wie etabliert ist die Absenderdomain? Fehlt die Datenbank oder ist
-    // die Domain nicht gelistet, steht "nicht gelistet" da - bewusst kein
-    // Fehlerzustand, siehe domainRank(). Die TLD kommt aus der Domain
-    // selbst, nicht hart ".de" - die Mehrheit der Post ist zwar deutsch,
-    // aber laengst nicht alle (siehe z.B. .pe/.ro-Faelle diese Woche).
-    $rank = domainRank($mail['from_domain'] ?? '');
-    $rankTld = strrchr((string)($mail['from_domain'] ?? ''), '.');
-    $rankLine = $rank
-        ? sprintf('global %d, %s-Rang %d', $rank['global_rank'], $rankTld ?: 'TLD', $rank['tld_rank'])
-        : 'nicht gelistet';
+    // weder sie noch ihre Hauptdomain gelistet, steht "nicht gelistet" da -
+    // bewusst kein Fehlerzustand, siehe domainRank() und senderRankLine().
+    $rankLine = senderRankLine($mail['from_domain'] ?? '');
 
     $userPrompt = sprintf(
         "From: %s\n"            .
@@ -3009,6 +3059,36 @@ function brandToken($value) {
 function organisationalLabels($domain) {
     $parts = explode('.', $domain);
     return array_slice($parts, -2);
+}
+
+// ---------------------------------------------------------------------
+//  Die registrierbare Domain eines Absenders: "credit.sage.com" -> "sage.com".
+//
+//  organisationalLabels() allein taugt dafuer nicht: Bei "mail.n26.co.uk"
+//  liefert es "co.uk" - und "co.uk" steht mit Rang 112412 tatsaechlich in
+//  der Majestic-Liste. Ohne die Sperre hier bekaeme jede .co.uk-Mail den
+//  Rang eines Laendersuffixes als Absenderreputation gemeldet.
+//
+//  Erkannt wird ein solches Suffix an seiner Form: Registry-Kennung vor
+//  einer zweibuchstabigen Laender-TLD. Liegt die Regel einmal daneben (eine
+//  Firma, die wirklich "net.de" heisst), entsteht daraus kein falsches
+//  Vertrauen - die Suche geht dann bloss ins Leere wie bisher.
+// ---------------------------------------------------------------------
+function registrableDomain($domain) {
+    $domain = normalizeHost($domain);
+    $parts  = explode('.', $domain);
+    if (count($parts) <= 2) {
+        return $domain;
+    }
+
+    static $registryLabels = ['co', 'com', 'org', 'net', 'ac', 'gov', 'edu', 'mil'];
+
+    $labels = organisationalLabels($domain);
+    if (in_array($labels[0], $registryLabels, true) && mb_strlen($labels[1]) === 2) {
+        $labels = array_slice($parts, -3);
+    }
+
+    return implode('.', $labels);
 }
 
 // Wofuer sich halb Deutschland ausgibt, ist keine Marke. Ohne diese

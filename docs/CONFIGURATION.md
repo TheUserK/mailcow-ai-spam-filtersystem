@@ -363,10 +363,11 @@ brand list.
 
 ### What goes into the prompt, and how it's meant to be weighed
 
-`domainRank($mail['from_domain'])` looks up the sender domain and produces
+`senderRankLine($mail['from_domain'])` looks up the sender domain and produces
 one line: `Absender-Domain-Rang: global 23080, .de-Rang 572`, or
-`nicht gelistet` if the domain isn't in the top ~1 million or the database
-doesn't exist yet (fails silently to "no data", never an error). The system
+`nicht gelistet` if neither the domain nor its registrable parent is in the
+top ~1 million, or the database doesn't exist yet (fails silently to "no
+data", never an error). The system
 prompt tells the model to weigh a good rank *strongly* - a domain established
 enough to rank at all took years of real, broad linkage to get there, which
 is not something a fresh phishing domain can fake - and explicitly that
@@ -375,6 +376,41 @@ retailer and not itself a spam signal once the rank backs the sender up.
 "Not listed" is explicitly framed as *no signal either way* - small, new, or
 purely local senders (clubs, small businesses, new startups) are extremely
 common and legitimate.
+
+### Subdomain senders
+
+Majestic lists registrable domains, not subdomains - `sage.com` is ranked
+3,225rd, `credit.sage.com` is not in the list at all. A plain exact-match
+lookup therefore reported `nicht gelistet` for exactly the senders that use a
+dedicated subdomain for transactional and bulk mail, which is most large
+companies. Observed on 09./10.09.: `credit.sage.com`, `mail.hiscox.de` and
+`email.mydealz.de` all lost the signal this way, and all three were judged
+more harshly than they should have been (the Sage one as `phishing`).
+
+When the exact host misses, `registrableDomain()` derives the parent and it
+is looked up as well - but the result is **not** presented as the sender's own
+rank. Both facts go into the prompt side by side:
+
+```
+Absender-Domain-Rang: credit.sage.com nicht gelistet; uebergeordnete Domain sage.com: global 3225, .com-Rang 1670
+```
+
+This is deliberate. A silent fallback would hand every subdomain its parent's
+reputation invisibly, which is right for `credit.sage.com` and wrong for any
+platform that hands out subdomains to anyone (site builders, blog and hosting
+services) - and telling those apart by code would need a complete, permanently
+maintained platform list. The prompt instead explains the two-part format and
+asks the model to judge whether the subdomain plausibly belongs to the
+company, which is the same "give it the number, let it weigh it" approach the
+rank feature is built on.
+
+`registrableDomain()` guards against public suffixes: `organisationalLabels()`
+would reduce `mail.n26.co.uk` to `co.uk`, which is itself in the list (rank
+112,412), so every `.co.uk` sender would inherit a country suffix's rank. A
+registry label (`co`, `com`, `org`, `net`, `ac`, `gov`, `edu`, `mil`) in front
+of a two-letter ccTLD is treated as a suffix and one more label is taken.
+Where that heuristic misses, the lookup simply finds nothing - the failure
+mode is the old "not listed", never unearned trust.
 
 This is prompt context only, feeding the model's own category/confidence
 judgement - not a new `strongEvidence()` class and not a code-level score

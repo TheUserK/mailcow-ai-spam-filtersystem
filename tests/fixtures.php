@@ -474,6 +474,18 @@ function runFixtures() {
         'leer'       => domainRank(''),
     ];
 
+    // Die Rangzeile fuer den Prompt. Wichtig sind die beiden mittleren
+    // Faelle: Eine Subdomain muss den Rang ihrer Hauptdomain sehen, aber als
+    // solchen ausgewiesen - und "mail.n26.co.uk" darf NICHT den Rang von
+    // "co.uk" melden, das mit 112412 tatsaechlich in der Liste steht.
+    $out['_rangzeile'] = [
+        'exakt'           => senderRankLine('tchibo.de'),
+        'subdomain'       => senderRankLine('credit.sage.com'),
+        'suffix_gesperrt' => senderRankLine('mail.n26.co.uk'),
+        'unbekannt'       => senderRankLine('nie-gesehene-domain-xyz.de'),
+        'leer'            => senderRankLine(''),
+    ];
+
     return $out;
 }
 
