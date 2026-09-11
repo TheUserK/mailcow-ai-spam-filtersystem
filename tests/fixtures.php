@@ -187,6 +187,62 @@ function fixtures() {
         'headers' => ['to_header' => ''],
     ]);
 
+    // Echter Fall vom 11.09.: dieselbe Masche wie oben, aber das
+    // Antwortpostfach liegt bei einem Kabelanbieter, den Rspamd nicht als
+    // Freemail fuehrt - deshalb KEIN freemail_reply_to-Signal und
+    // hijacked-reply-to bleibt still. Muss ueber
+    // reply-to-unrelated-domain trotzdem auffallen.
+    $cases['kontaktpruefung-ohne-freemail-treffer'] = array_replace_recursive($base, [
+        'from' => 'verwaltung@behoerde.example', 'from_email' => 'verwaltung@behoerde.example',
+        'from_display_name' => 'Verwaltung',
+        'to' => 'buchhaltung@moving-pictures.de',
+        'subject' => 'Guten Tag', 'body' => 'Ist diese E-Mail-Adresse noch gueltig?',
+        'rspamd_score' => -1.1,
+        'reply_to' => 'sammelpostfach@kabelanbieter.example',
+        'signals' => ['suspicious_reply_to' => true],
+    ]);
+
+    // Gegenprobe A: Newsletter ueber einen Versanddienst. Fremde
+    // Reply-To-Domain, aber Listenkoepfe - der Fall, an dem am 24.08. eine
+    // echte Madeleine-Mail beinahe als Phishing ausgewiesen wurde. Darf
+    // NICHT feuern.
+    $cases['newsletter-fremdes-reply-to'] = array_replace_recursive($base, [
+        'from' => 'news@madeleine.com', 'from_email' => 'news@madeleine.com',
+        'from_display_name' => 'MADELEINE',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Dark Denim: Looks in tiefem Blau',
+        'body' => 'Die neue Kollektion ist da.',
+        'rspamd_score' => 0.5,
+        'reply_to' => 'bounce@spotler-mail.com',
+        'signals' => ['suspicious_reply_to' => true, 'has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://madeleine.com/u>'],
+    ]);
+
+    // Gegenprobe B: Antwort geht an eine Schwesterdomain desselben
+    // Unternehmens - anderer Name, gleiche Organisation. Darf NICHT feuern.
+    $cases['reply-to-schwesterdomain'] = array_replace_recursive($base, [
+        'from' => 'kundenservice@mail.beispielfirma.de',
+        'from_email' => 'kundenservice@mail.beispielfirma.de',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Ihre Anfrage', 'body' => 'Wir melden uns dazu.',
+        'rspamd_score' => 0.0,
+        'reply_to' => 'service@beispielfirma.de',
+        'signals' => ['suspicious_reply_to' => true],
+    ]);
+
+    // Gegenprobe C: fremdes Reply-To, aber DMARC nicht bestanden. Dann ist
+    // schon die Absenderidentitaet ungeklaert - der Antwortweg ist nicht
+    // das auffaellige Merkmal, und andere Belege greifen ohnehin.
+    $cases['reply-to-fremd-ohne-dmarc'] = array_replace_recursive($base, [
+        'from' => 'buero@beispiel-gmbh.de', 'from_email' => 'buero@beispiel-gmbh.de',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Kurze Frage', 'body' => 'Melden Sie sich bitte.',
+        'rspamd_score' => 2.0,
+        'reply_to' => 'kontakt@ganz-andere-domain.net',
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+        'signals' => ['suspicious_reply_to' => true],
+    ]);
+
     // Leerformel statt fehlendem Header - muss denselben Effekt haben.
     $cases['undisclosed-recipients-formel'] = array_replace_recursive($base, [
         'from' => 'absender@example.com', 'from_email' => 'absender@example.com',

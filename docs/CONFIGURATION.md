@@ -103,6 +103,7 @@ justify one on their own:
 | `url-on-blocklist` | external reputation data (Spamhaus, SURBL, URIBL, ...) |
 | `dangerous-attachment` | an executable attachment |
 | `hijacked-reply-to` | the reply is meant to go to a stranger's freemail account, from a non-freemail sender |
+| `reply-to-unrelated-domain` | same pattern, but the reply mailbox sits at a provider the freemail detection doesn't know. Requires DMARC pass, a non-freemail sender, no list headers, and a Reply-To domain unrelated to the sender's. **On probation** |
 | `fake-thread` | a Re:/AW: subject or a quoted-reply body with no In-Reply-To/References header |
 | `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
 | `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
@@ -113,12 +114,17 @@ justify one on their own:
 
 New evidence classes are added on **probation**: `probationEvidence()` lists
 classes that still count toward the score and the contradiction report but
-cannot carry a rejection by themselves until proven in production. As of this
-writing the list is empty - the four classes added between 26.08. and 28.08.
-(`hijacked-reply-to`, `fake-thread`, `role-name-on-freemail`,
-`fabricated-ticket`, plus the brand-list additions) went live on 30.08. after
-running without a false positive. Re-adding a name to `probationEvidence()`
-puts it back on probation - a one-line change.
+cannot carry a rejection by themselves until proven in production. The four
+classes added between 26.08. and 28.08. (`hijacked-reply-to`, `fake-thread`,
+`role-name-on-freemail`, `fabricated-ticket`, plus the brand-list additions)
+went live on 30.08. after running without a false positive. Currently on
+probation: `reply-to-unrelated-domain` (since 11.09.) - there are legitimate
+reasons for an off-domain reply route (ticket systems on a vendor domain,
+external consultants, deliberately redirected replies), and one real hit is
+not a basis for an irreversible rejection. Watch the report group "Beleg auf
+Bewaehrung hat gefeuert" and arm it by deleting the line once it has proven
+itself. Re-adding a name to `probationEvidence()` puts it back on probation -
+a one-line change either way.
 
 A mail that is **verifiably from** one of the listed brands is never rejected
 at all, whatever it links to. The brand list already holds each brand's real

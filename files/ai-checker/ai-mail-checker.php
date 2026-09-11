@@ -999,6 +999,7 @@ function structuralSignals(array $mail, $verifiedBrand = '') {
         'free_hosting_links'     => findFreeHostingLinks($mail['url_domains'], $mail['from_domain']),
         'cloud_storage_only'     => allUrlsAreCloudStorage($mail['url_domains']),
         'hijacked_reply_to'      => hijackedReplyTo($mail),
+        'reply_to_unrelated'     => replyToUnrelatedDomain($mail),
         'reply_to_freemail_swap' => freemailReplyToSwap($mail),
         'no_disclosed_recipient' => noDisclosedRecipient($mail),
         'fake_thread'            => fakeThreadClaim($mail),
@@ -1065,6 +1066,13 @@ function analyzeLocally(array $mail, $requestId) {
     // hatte korrekt gefeuert, aber blind fuer das Modell.
     if ($struct['hijacked_reply_to']) {
         $riskFlags[] = 'hijacked-reply-to';
+    }
+    // Muss ein eigener Flag-Name sein und darf nicht unter
+    // "suspicious-reply-to-symbol" laufen: Der Prompt entwertet die drei
+    // Struktur-Symbole bei auth:strong ausdruecklich als Rauschen - und
+    // genau "auth:strong" ist bei einem gekaperten Konto der Normalfall.
+    if ($struct['reply_to_unrelated']) {
+        $riskFlags[] = 'reply-to-unrelated-domain:' . $mail['reply_to_domain'];
     }
     if ($struct['no_disclosed_recipient']) {
         $riskFlags[] = 'undisclosed-recipient';
@@ -1295,6 +1303,21 @@ Zu den Absender-Flags:
   betrug, keine private Nachfrage). Stufe eine Mail mit diesem Flag als
   "fraud" oder "phishing" ein, nicht als "personal" oder "legitimate" -
   ausser der restliche Inhalt widerlegt das eindeutig.
+- "reply-to-unrelated-domain:DOMAIN": Dieselbe Masche wie
+  "hijacked-reply-to", nur liegt das Antwortpostfach bei einem Anbieter,
+  den unsere Freemail-Erkennung nicht kennt (Kabel- und Telefonanbieter,
+  regionale Provider, Firmendomains). Die Absenderdomain hat DMARC
+  bestanden, ist also nachweislich echt, die Mail ist kein Massenversand -
+  und trotzdem sollen Antworten bei DOMAIN landen, die mit dem Absender
+  nichts zu tun hat. Eine Organisation, die ihre Post sauber
+  authentifiziert, leitet Antworten nicht auf ein fremdes Postfach um.
+  Bewerte das wie "hijacked-reply-to". Der Hinweis auf die Auth-Staerke
+  weiter unten gilt hier AUSDRUECKLICH NICHT: Bei einem gekaperten Konto
+  ist eine einwandfreie Authentifizierung der Normalfall, kein Entlastungs-
+  beweis. Ein harmloser oder belangloser Text entlastet ebenfalls nicht -
+  "ist diese Adresse noch gueltig", eine kurze Begruessung oder eine
+  Nachfrage ohne erkennbaren Anlass sind die Aufklaerungsstufe VOR dem
+  eigentlichen Betrug.
 - "first-contact-freemail": Absender bei einem Freemail-Anbieter, von dem
   hier noch nie Post kam. Allein voellig unverdaechtig - jede Beziehung
   faengt so an. Nur zusammen mit anderen Signalen relevant. Fehlt das Flag,
@@ -1968,6 +1991,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if ($struct['hijacked_reply_to']) {
         $evidence[] = 'hijacked-reply-to';
     }
+    if ($struct['reply_to_unrelated']) {
+        $evidence[] = 'reply-to-unrelated-domain';
+    }
     if ($struct['reply_to_freemail_swap']) {
         $evidence[] = 'reply-to-freemail-swap';
     }
@@ -2119,6 +2145,66 @@ function hijackedReplyTo(array $mail) {
     return !empty($mail['signals']['freemail_reply_to'])
         && !empty($mail['signals']['suspicious_reply_to'])
         && empty($mail['signals']['freemail_from']);
+}
+
+// ---------------------------------------------------------------------
+//  Dieselbe Masche wie hijackedReplyTo(), nur ausserhalb der Freemail-Liste.
+//
+//  Am 11.09. kam "Guten Tag - Ist diese E-Mail-Adresse noch gueltig?" an
+//  die Buchhaltung, von einem gekaperten Konto der brasilianischen Behoerde
+//  behoerde.example (DMARC p=reject bestanden, DKIM gueltig, Versand ueber
+//  deren Google Workspace - gefaelscht werden kann das nicht). Reply-To
+//  zeigte auf sammelpostfach@kabelanbieter.example, ein Endkunden-Postfach bei Charter.
+//  hijackedReplyTo() blieb still, weil Rspamd kabelanbieter.example nicht als Freemail
+//  fuehrt - der Beleg haengt dort an einer Liste, die diesen Anbieter
+//  einfach nicht kennt. Uebrig blieb "suspicious-reply-to-symbol", und das
+//  entwertet der Prompt bei auth:strong ausdruecklich als Infrastruktur-
+//  Rauschen. Ergebnis: "personal", 90 % sicher, -2.16 Ham-Bonus. Exakt
+//  dieselben Zahlen wie am 06.09. beim gekaperten .gob.pe-Konto.
+//
+//  Deshalb hier bewusst OHNE Anbieterliste: Wer seine Post sauber
+//  authentifiziert, ist eine Organisation - und eine Organisation laesst
+//  Antworten nicht auf eine fremde, unverwandte Domain laufen. Der
+//  Widerspruch steckt in der Mail selbst und braucht keine gepflegte Liste,
+//  die auf Dauer ohnehin unvollstaendig bleibt.
+//
+//  Massenversand bleibt aussen vor: Newsletter laufen ueber Dienstleister
+//  mit eigener Bounce-Domain, tragen aber Listenkoepfe. Genau diese
+//  Konstellation hat am 24.08. eine echte Madeleine-Mail beinahe als
+//  Phishing ausgewiesen.
+// ---------------------------------------------------------------------
+function replyToUnrelatedDomain(array $mail) {
+    // Nur wenn der scharfe Beleg nicht schon greift - sonst stuende
+    // derselbe Sachverhalt zweimal als "zwei" Belege da.
+    if (hijackedReplyTo($mail)) {
+        return false;
+    }
+
+    // Ein Freemail-Absender ist keine Organisation, deren Identitaet der
+    // fremde Antwortweg widersprechen koennte. Dafuer gibt es
+    // freemailReplyToSwap().
+    if (!empty($mail['signals']['freemail_from'])) {
+        return false;
+    }
+
+    // Ohne bestandenes DMARC ist gar nicht belegt, dass die Absenderdomain
+    // wirklich diese Mail verschickt hat - dann ist der Antwortweg nicht
+    // der auffaellige Teil.
+    if (($mail['auth']['dmarc'] ?? '') !== 'pass') {
+        return false;
+    }
+
+    if (!empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id'])) {
+        return false;
+    }
+
+    $from    = normalizeHost($mail['from_domain']);
+    $replyTo = normalizeHost($mail['reply_to_domain']);
+    if ($from === '' || $replyTo === '' || $from === $replyTo) {
+        return false;
+    }
+
+    return !relatedToSenderDomain($replyTo, $from);
 }
 
 // ---------------------------------------------------------------------
@@ -2453,6 +2539,7 @@ function strongEvidence(array $evidence) {
         'url-on-blocklist',      // externe Reputationsdaten
         'dangerous-attachment',  // ausfuehrbarer Anhang
         'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
+        'reply-to-unrelated-domain', // dasselbe, nur ausserhalb der Freemail-Liste
         'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
@@ -2488,7 +2575,15 @@ function probationEvidence() {
     // Fehlalarm im Betrieb, und ein score-basierter Reject landet in
     // mailcows Quarantaene, ist also wiederherstellbar.
     // Wieder auf Bewaehrung setzen = Name hier eintragen, eine Zeile.
-    return [];
+    return [
+        // Seit 11.09. Es gibt legitime Gruende fuer einen fremden
+        // Antwortweg - Ticketsysteme auf einer Anbieterdomain, externe
+        // Berater, bewusst umgeleitete Antworten. Wie oft das hier
+        // vorkommt, weiss bisher niemand: ein einziger echter Treffer
+        // (behoerde.example) ist keine Datengrundlage fuer eine
+        // unwiderrufliche Ablehnung. Erst im Report beobachten.
+        'reply-to-unrelated-domain',
+    ];
 }
 
 // ---------------------------------------------------------------------
