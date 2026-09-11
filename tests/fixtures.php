@@ -33,7 +33,7 @@ function fixtures() {
 
     $cases['ecuador-fraud'] = array_replace_recursive($base, [
         'from' => 'konto@hochschule-beispiel.edu', 'from_email' => 'konto@hochschule-beispiel.edu',
-        'from_display_name' => 'Blanca',
+        'from_display_name' => 'Mitarbeiterin',
         'to' => 'info@karrerlabs.de',
         'subject' => '', 'body' => 'Good day. I have a confidential proposal for you.',
         'rspamd_score' => 11.66,
@@ -71,7 +71,7 @@ function fixtures() {
         'from_display_name' => 'Privatperson Beispiel',
         'to' => 'info@moving-pictures.de',
         'subject' => 'Link zum Plugin',
-        'body' => "Wie versprochen findest du hier den Link zum WordPress Plugin.\nhttps://neo-plugins.com/v27/neo-alt/\nViele Gruesse, Privatperson Beispiel",
+        'body' => "Wie versprochen findest du hier den Link zum WordPress Plugin.\nhttps://neo-plugins.com/v27/neo-alt/\nViele Gruesse",
         'rspamd_score' => -0.5,
         'urls' => ['https://neo-plugins.com/v27/neo-alt/'],
             'url_domains' => ['neo-plugins.com'],
@@ -333,7 +333,7 @@ function fixtures() {
         'from_display_name' => 'Art Manager Beispiel',
         'to' => 'info@moving-pictures.de',
         'subject' => 'Syt-X - High-Fidelity 3D & Motion Production Support',
-        'body' => 'To the Moving Pictures Team, I am reaching out to introduce Syt-X. My name is Art Manager Beispiel, Art Manager at Syt-X. We act as a production extension for creative teams.',
+        'body' => 'To the Moving Pictures Team, I am reaching out to introduce Syt-X. My name is Alex Beispiel, Art Manager at Syt-X. We act as a production extension for creative teams.',
         'rspamd_score' => 3.0,
         'signals' => ['freemail_from' => true, 'unknown_sender' => true],
     ]);

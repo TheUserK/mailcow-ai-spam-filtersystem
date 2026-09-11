@@ -2150,17 +2150,17 @@ function hijackedReplyTo(array $mail) {
 // ---------------------------------------------------------------------
 //  Dieselbe Masche wie hijackedReplyTo(), nur ausserhalb der Freemail-Liste.
 //
-//  Am 11.09. kam "Guten Tag - Ist diese E-Mail-Adresse noch gueltig?" an
-//  die Buchhaltung, von einem gekaperten Konto der brasilianischen Behoerde
-//  behoerde.example (DMARC p=reject bestanden, DKIM gueltig, Versand ueber
-//  deren Google Workspace - gefaelscht werden kann das nicht). Reply-To
-//  zeigte auf sammelpostfach@kabelanbieter.example, ein Endkunden-Postfach bei Charter.
-//  hijackedReplyTo() blieb still, weil Rspamd kabelanbieter.example nicht als Freemail
-//  fuehrt - der Beleg haengt dort an einer Liste, die diesen Anbieter
-//  einfach nicht kennt. Uebrig blieb "suspicious-reply-to-symbol", und das
-//  entwertet der Prompt bei auth:strong ausdruecklich als Infrastruktur-
-//  Rauschen. Ergebnis: "personal", 90 % sicher, -2.16 Ham-Bonus. Exakt
-//  dieselben Zahlen wie am 06.09. beim gekaperten .gob.pe-Konto.
+//  Am 11.09. kam eine "ist diese Adresse noch gueltig"-Nachfrage an die
+//  Buchhaltung, von einem gekaperten Konto einer auslaendischen Behoerde
+//  (DMARC p=reject bestanden, DKIM gueltig, Versand ueber deren Google
+//  Workspace - gefaelscht werden kann das nicht). Reply-To zeigte auf ein
+//  Endkunden-Postfach bei einem US-Kabelanbieter. hijackedReplyTo() blieb
+//  still, weil Rspamd dessen Domain nicht als Freemail fuehrt - der Beleg
+//  haengt dort an einer Liste, die diesen Anbieter einfach nicht kennt.
+//  Uebrig blieb "suspicious-reply-to-symbol", und das entwertet der Prompt
+//  bei auth:strong ausdruecklich als Infrastruktur-Rauschen. Ergebnis:
+//  "personal", 90 % sicher, -2.16 Ham-Bonus. Exakt dieselben Zahlen wie am
+//  06.09. beim gekaperten Behoerdenkonto aus Peru.
 //
 //  Deshalb hier bewusst OHNE Anbieterliste: Wer seine Post sauber
 //  authentifiziert, ist eine Organisation - und eine Organisation laesst
@@ -2339,7 +2339,7 @@ function bareLinkFromStranger(array $mail) {
 //  Eine Institution, die aus einem Freemail-Postfach schreibt.
 //
 //  Betrug gegen Firmen kommt oft voellig ohne Link, Anhang und behauptete
-//  Markendomain: "Support Service <rolle-beispiel@libero.it>" schreibt
+//  Markendomain: ein "Support Service" aus einem libero.it-Postfach schreibt
 //  einen "Guest Experience Report" an ein Hotel, angeblich automatisch
 //  erzeugt, und baut auf Schadensersatz hinaus. Strukturell war daran
 //  bisher nichts zu fassen - die Kategorie "fraud" sass richtig, aber ohne
@@ -2359,9 +2359,9 @@ function institutionalRoleOnFreemail(array $mail) {
 }
 
 // Woher stammt der Rollenanspruch - Anzeigename oder Fliesstext? Am 27.08.
-// stellte sich "Art Manager Beispiel" <...@gmail.com> im TEXT als "Art
-// Manager at Syt-X" vor und warb im Namen einer Firma. Der Anzeigename war
-// ein reiner Personenname, die Pruefung lief ins Leere.
+// stellte sich eine Kaltakquise aus einem gmail-Postfach im TEXT als "Art
+// Manager" einer Produktionsfirma vor und warb in deren Namen. Der
+// Anzeigename war ein reiner Personenname, die Pruefung lief ins Leere.
 function institutionalRoleSource(array $mail) {
     if (empty($mail['signals']['freemail_from'])) {
         return '';
@@ -2451,8 +2451,8 @@ function fabricatedTicketClaim(array $mail) {
 //  auf demselben Freemail-Anbieter (z.B. beide @gmail.com), nur die
 //  Mailbox ist eine andere. Rspamds REPLYTO_DOM_NEQ_FROM_DOM vergleicht
 //  nur Domains und schlaegt hier nie an - genau diese Luecke nutzt eine
-//  Betrugsmail, die als "absender@gmail.com" schreibt und auf
-//  "antwortpostfach@gmail.com" antworten laesst.
+//  Betrugsmail, die aus einem gmail-Postfach schreibt und Antworten auf ein
+//  zweites, anderes gmail-Postfach umleitet.
 // ---------------------------------------------------------------------
 function freemailReplyToSwap(array $mail) {
     if (empty($mail['signals']['freemail_from']) || empty($mail['signals']['freemail_reply_to'])) {
@@ -2579,9 +2579,9 @@ function probationEvidence() {
         // Seit 11.09. Es gibt legitime Gruende fuer einen fremden
         // Antwortweg - Ticketsysteme auf einer Anbieterdomain, externe
         // Berater, bewusst umgeleitete Antworten. Wie oft das hier
-        // vorkommt, weiss bisher niemand: ein einziger echter Treffer
-        // (behoerde.example) ist keine Datengrundlage fuer eine
-        // unwiderrufliche Ablehnung. Erst im Report beobachten.
+        // vorkommt, weiss bisher niemand: ein einziger echter Treffer ist
+        // keine Datengrundlage fuer eine unwiderrufliche Ablehnung.
+        // Erst im Report beobachten.
         'reply-to-unrelated-domain',
     ];
 }
