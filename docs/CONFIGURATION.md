@@ -289,6 +289,56 @@ Ausnahmen für Bewerbungen, Presse- und Lieferantenanfragen und Behördenpost.
 Ein Rollenbruch allein ist `spam`. Kommt ein Link, ein Anhang oder eine
 Handlungsaufforderung dazu, ist es `phishing`/`fraud` mit hoher Confidence.
 
+### Betreiber-Hinweis (`hinweise` / `adressen`)
+
+`beschreibung` sagt, was ein Betrieb **tut** - daraus muss das Modell erst
+ableiten, was er folglich nie bekommt. Manches ist so gar nicht ableitbar:
+dass Rechnungen ausschließlich von einem bestimmten Anbieter kommen, dass die
+alte Domain stillgelegt ist, dass der Vermieter privat schreibt. Das weiß nur
+der Betreiber. Dafür gibt es zwei optionale Freitextfelder:
+
+```json
+"example.de": {
+  "art": "firma",
+  "beschreibung": "Softwareentwicklung und IT-Beratung; kein Beherbergungs- oder Gastgewerbe.",
+  "hinweise": "Wir versenden keine Ware - Paketbenachrichtigungen sind bei uns immer gefaelscht.",
+  "adressen": {
+    "buchhaltung@example.de": "Hier sind Rechnungen und Zahlungsavise normal, auch von unbekannten Absendern."
+  }
+}
+```
+
+Bewusst Freitext und kein Schema: Der Raum solcher Aussagen ist offen, und
+offene Räume beschreibt man in Sprache. Der Text kommt aus einer Datei, die
+nur `root` schreiben kann - anders als der Mailinhalt ist er vertrauenswürdig,
+und der Systemprompt sagt dem Modell das auch.
+
+**Beide Ebenen gehen zusammen ins Prompt**, die Adresse als vorrangig
+gekennzeichnet. Sie ersetzt die Domain-Angabe nicht, denn Prosa lässt sich
+nicht verrechnen - auflösen muss das Modell. Genau dafür ist die Aufteilung
+da: „keine Rechnungen" stimmt für die Domain und ist für `buchhaltung@` genau
+falsch.
+
+**Der Hinweis kann nichts abweisen.** Liegt für einen Empfänger einer vor,
+bleibt der `ai-confident`-Reject-Pfad für diese Mail zu. Der Hinweis macht das
+Modell gezielt sicherer - das ist sein Zweck -, und dieselbe erhöhte
+Sicherheit darf nicht zugleich die Ablehnung tragen, sonst verwirft ein Satz
+aus einer Konfigurationsdatei Post ohne zweite Quelle. Und solche Sätze sind
+schnell zu weit formuliert: „Zimmerbuchungen sind bei uns immer Betrug" trifft
+auch die Bestätigung der eigenen Dienstreise. Einsortieren darf der Hinweis
+voll, verwerfen nicht - Rejects über strukturelle Belege bleiben unberührt.
+
+**Sichtbarkeit statt Testbarkeit.** Freitext lässt sich nicht per Fixture
+absichern. Der Ersatz: `business_hint` steht im Stats-Log, und der Report hat
+die Gruppe „Durch Betreiber-Hinweis beeinflusst" (Hinweis gesetzt und Mail
+belastet). Sammelt ein Satz mehr ein als gedacht, sieht man es dort und
+korrigiert einen Satz statt Code.
+
+Der wöchentliche Cron läuft ohnehin nur über neue Domains und rührt bestehende
+Einträge nicht an. Ein Handlauf mit `--refresh` ersetzt den Eintrag zwar neu,
+schreibt die von der Website ermittelten Felder aber per `+=` hinein - `hinweise`
+und `adressen` bleiben erhalten.
+
 ### Warum das keine Struktur-Evidenz ist
 
 Der Rollenbruch ist ein **Urteil des Modells**, kein maschinell prüfbarer

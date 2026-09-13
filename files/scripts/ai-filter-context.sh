@@ -363,9 +363,14 @@ for domain in $DOMAINS; do
         echo -e "${YELLOW}privat${NC} ${DIM}($NOTIZ)${NC}"
     fi
 
+    # "+=" statt "=": Der woechentliche Cron laeuft ohnehin nur ueber neue
+    # Domains, ein Handlauf mit --refresh wuerde den Eintrag aber komplett
+    # ersetzen - und damit die vom Betreiber gepflegten Felder "hinweise"
+    # und "adressen" stillschweigend loeschen. Ermittelt wird hier nur, was
+    # von der Website kommt; alles andere bleibt stehen.
     jq --arg d "$domain" --arg art "$ART" --arg b "$BESCHREIBUNG" \
        --arg q "$QUELLE" --arg n "$NOTIZ" --arg t "$(date '+%Y-%m-%d')" \
-       '.domains[$d] = {art: $art, beschreibung: $b, quelle: $q, notiz: $n, geprueft: $t, manuell: false}' \
+       '.domains[$d] += {art: $art, beschreibung: $b, quelle: $q, notiz: $n, geprueft: $t, manuell: false}' \
        "$OUT" > "$TMP/out.json" && mv "$TMP/out.json" "$OUT"
     chmod 644 "$OUT"
     CHANGED=$((CHANGED + 1))

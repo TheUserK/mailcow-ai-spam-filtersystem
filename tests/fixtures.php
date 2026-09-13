@@ -520,6 +520,20 @@ function runFixtures() {
         'leere_adresse'         => businessContextFor(''),
     ];
 
+    // Betreiber-Hinweis: beide Ebenen. Entscheidend sind die ersten beiden
+    // Zeilen - fuer eine Adresse mit eigenem Eintrag muessen BEIDE Angaben
+    // ankommen, die Adresse als vorrangig gekennzeichnet. Aufloesen muss das
+    // Modell, weil sich Prosa nicht verrechnen laesst ("keine Rechnungen"
+    // global vs. "Rechnungen sind normal" bei buchhaltung@).
+    $out['_betreiber_hinweis'] = [
+        'nur_domain'       => businessHintsFor('info@karrerlabs.de'),
+        'domain_plus_adr'  => businessHintsFor('buchhaltung@karrerlabs.de'),
+        'gross_gemischt'   => businessHintsFor('Buchhaltung@KarrerLabs.DE'),
+        'ohne_hinweis'     => businessHintsFor('andi@karrer.info'),
+        'fremde_domain'    => businessHintsFor('kunde@example.org'),
+        'leere_adresse'    => businessHintsFor(''),
+    ];
+
     // Domain-Rang: bekannte Domain, unbekannte Domain, leere Eingabe.
     // Bekannte Domain muss die Zahlen aus domain_ranks.sample.tsv liefern,
     // unbekannte und leere Eingabe muessen still null ergeben (kein Fehler,

@@ -283,6 +283,17 @@ BODY=$(
     #    duerfen (noch) nicht abweisen, und jeder Treffer gehoert einzeln
     #    beurteilt. Stimmt er, kann die Klasse scharf geschaltet werden -
     #    in probationEvidence() eine Zeile loeschen.
+    # 0b. Was der eigene Betreiber-Hinweis eingesammelt hat.
+    #
+    # Freitext laesst sich nicht per Fixture absichern - deshalb wird er
+    # sichtbar gemacht. Ein zu weit formulierter Satz ("Zimmerbuchungen sind
+    # bei uns immer Betrug") faengt auch die Bestaetigung der eigenen
+    # Dienstreise ein. Steht das hier, korrigiert man einen Satz in
+    # business_context.json statt Code.
+    render_group "Durch Betreiber-Hinweis beeinflusst" \
+        "$(printf 'Fuer diesen Empfaenger ist ein Hinweis hinterlegt und die Mail wurde belastet - stimmt das Urteil?')" \
+        '(.business_hint == true) and ((.ai_score // 0) > 0)' && FOUND=1
+
     render_group "Beleg auf Bewaehrung hat gefeuert" \
         "$(printf 'Diese Belege weisen noch nicht ab. Stimmt das Urteil, koennen sie scharf geschaltet werden.')" \
         '((.probation // []) | length) > 0' && FOUND=1

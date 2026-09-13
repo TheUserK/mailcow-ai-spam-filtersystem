@@ -1,5 +1,5 @@
 {
-  "_hinweis": "Testdaten fuer run-fixtures.sh. Deckt die drei Zustaende ab, die businessContextFor() unterscheiden muss: firma (Beschreibung geht in den Prompt), privat (ebenfalls eine Aussage), unbekannt (muss leer bleiben).",
+  "_hinweis": "Testdaten fuer run-fixtures.sh. Deckt die drei Zustaende ab, die businessContextFor() unterscheiden muss: firma (Beschreibung geht in den Prompt), privat (ebenfalls eine Aussage), unbekannt (muss leer bleiben). Dazu die beiden Ebenen von businessHintsFor(): Domain-Hinweis und Adress-Hinweis, der ihm vorgeht.",
   "domains": {
     "karrerlabs.de": {
       "art": "firma",
@@ -7,7 +7,11 @@
       "quelle": "https://karrerlabs.de/",
       "notiz": "",
       "geprueft": "2026-09-05",
-      "manuell": false
+      "manuell": false,
+      "hinweise": "Wir versenden keine Ware - Paketbenachrichtigungen sind bei uns immer gefaelscht. Rechnungen erhalten wir ausschliesslich von unserem Steuerbuero.",
+      "adressen": {
+        "buchhaltung@karrerlabs.de": "Hier sind Rechnungen und Zahlungsavise normal, auch von unbekannten Absendern."
+      }
     },
     "karrer.info": {
       "art": "privat",
