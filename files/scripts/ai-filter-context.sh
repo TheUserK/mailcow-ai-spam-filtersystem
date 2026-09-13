@@ -31,6 +31,15 @@
 #    ai-filter-context.sh --status     was aktuell hinterlegt ist
 #    ai-filter-context.sh --show D     Eintrag einer Domain ansehen
 #
+#  Betreiber-Hinweise - was das Modell aus der Website NICHT ableiten kann
+#  ("Rechnungen kommen nur von X", "wir versenden nichts"):
+#    ai-filter-context.sh --hint ZIEL "Text"   setzen (ZIEL = Domain ODER Adresse)
+#    ai-filter-context.sh --hint ZIEL ""       loeschen
+#    ai-filter-context.sh --hints              alle Hinweise anzeigen
+#  Eine Adresse geht der Domain vor: global "keine Rechnungen", bei
+#  buchhaltung@ "Rechnungen sind hier normal". Ein Hinweis kann Post
+#  einsortieren, aber nie allein abweisen.
+#
 #  Ergebnis: data/ai-checker/business_context.json
 #  Eintraege mit "manuell": true werden nie ueberschrieben - so korrigiert
 #  man eine Fehleinschaetzung dauerhaft.
@@ -41,6 +50,8 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; DIM='\033[2m'; NC='\0
 
 ACTION=new
 ONE_DOMAIN=""
+HINT_TARGET=""
+HINT_TEXT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,7 +59,13 @@ while [[ $# -gt 0 ]]; do
         --domain)  ACTION=one; ONE_DOMAIN="${2:-}"; shift 2 ;;
         --status)  ACTION=status; shift ;;
         --show)    ACTION=show; ONE_DOMAIN="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # Der Text darf leer sein (= loeschen), deshalb hier kein ":-" mit
+        # Vorgabewert, sondern eine eigene Pruefung auf die Argumentzahl.
+        --hint)    ACTION=hint
+                   [[ $# -ge 3 ]] || { echo "Usage: --hint ZIEL \"Text\" (leerer Text loescht)"; exit 1; }
+                   HINT_TARGET="$2"; HINT_TEXT="$3"; shift 3 ;;
+        --hints)   ACTION=hints; shift ;;
+        -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -76,7 +93,9 @@ if [[ "$ACTION" == "status" ]]; then
     fi
     echo -e "${GREEN}Vorhanden${NC}: $OUT"
     jq -r '.domains | to_entries[] |
-           "  \(.key)\n      \(.value.art)\(if .value.manuell then " (manuell)" else "" end): \(.value.beschreibung)"' "$OUT"
+           "  \(.key)\n      \(.value.art)\(if .value.manuell then " (manuell)" else "" end)\(if (.value.hinweise // "") != "" or ((.value.adressen // {}) | length) > 0 then " (+Hinweis)" else "" end): \(.value.beschreibung)"' "$OUT"
+    echo ""
+    echo "Betreiber-Hinweise im Detail: ai-filter-context.sh --hints"
     exit 0
 fi
 
@@ -84,6 +103,81 @@ if [[ "$ACTION" == "show" ]]; then
     [[ -f "$OUT" ]] || { echo -e "${RED}Datei fehlt${NC}"; exit 1; }
     jq -e --arg d "$ONE_DOMAIN" '.domains[$d]' "$OUT" 2>/dev/null \
         || { echo -e "${YELLOW}Kein Eintrag fuer '$ONE_DOMAIN'${NC}"; exit 1; }
+    exit 0
+fi
+
+if [[ "$ACTION" == "hints" ]]; then
+    [[ -f "$OUT" ]] || { echo -e "${YELLOW}Noch nichts hinterlegt${NC}"; exit 0; }
+    if ! jq -e '[.domains[] | select((.hinweise // "") != "" or ((.adressen // {}) | length) > 0)] | length > 0' "$OUT" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Keine Betreiber-Hinweise gesetzt${NC}"
+        echo "  Setzen mit: ai-filter-context.sh --hint DOMAIN-ODER-ADRESSE \"Text\""
+        exit 0
+    fi
+    jq -r '.domains | to_entries[] |
+           select((.value.hinweise // "") != "" or ((.value.adressen // {}) | length) > 0) |
+           "  \(.key)" ,
+           (if (.value.hinweise // "") != "" then "      Domain: \(.value.hinweise)" else empty end),
+           ((.value.adressen // {}) | to_entries[] | "      \(.key): \(.value)")' "$OUT"
+    exit 0
+fi
+
+# --- Betreiber-Hinweis setzen oder loeschen ---------------------------
+#
+# Ohne diesen Weg muesste man die JSON-Datei von Hand bearbeiten - alles
+# andere in diesem Projekt ist ueber ein Skript konfigurierbar.
+if [[ "$ACTION" == "hint" ]]; then
+    [[ -n "$HINT_TARGET" ]] || { echo -e "${RED}Kein Ziel angegeben${NC}"; exit 1; }
+    TARGET=$(printf '%s' "$HINT_TARGET" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$TARGET" == *"@"* ]]; then
+        HINT_DOMAIN="${TARGET##*@}"
+    else
+        HINT_DOMAIN="$TARGET"
+    fi
+    [[ -n "$HINT_DOMAIN" ]] || { echo -e "${RED}Ziel '$HINT_TARGET' ergibt keine Domain${NC}"; exit 1; }
+
+    mkdir -p "$(dirname "$OUT")"
+    [[ -f "$OUT" ]] || echo '{"domains":{}}' > "$OUT"
+
+    # Der Hinweis soll auch dann funktionieren, wenn die Website noch nicht
+    # ausgewertet wurde - dann entsteht hier ein Grundeintrag. "unbekannt"
+    # heisst nur, dass keine Beschreibung vorliegt; die Hinweise wirken
+    # unabhaengig davon.
+    if ! jq -e --arg d "$HINT_DOMAIN" '.domains[$d]' "$OUT" >/dev/null 2>&1; then
+        TMP_NEW=$(mktemp)
+        jq --arg d "$HINT_DOMAIN" \
+           '.domains[$d] = {art: "unbekannt", beschreibung: "", quelle: "", notiz: "fuer Betreiber-Hinweis angelegt", geprueft: "", manuell: false}' \
+           "$OUT" > "$TMP_NEW" && mv "$TMP_NEW" "$OUT"
+        echo -e "${DIM}Grundeintrag fuer $HINT_DOMAIN angelegt${NC}"
+    fi
+
+    TMP_HINT=$(mktemp)
+    if [[ "$TARGET" == *"@"* ]]; then
+        if [[ -z "$HINT_TEXT" ]]; then
+            jq --arg d "$HINT_DOMAIN" --arg a "$TARGET" \
+               'if .domains[$d].adressen then .domains[$d].adressen |= del(.[$a]) else . end
+                | if (.domains[$d].adressen // {}) == {} then .domains[$d] |= del(.adressen) else . end' \
+               "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} Hinweis fuer $TARGET geloescht"
+        else
+            jq --arg d "$HINT_DOMAIN" --arg a "$TARGET" --arg t "$HINT_TEXT" \
+               '.domains[$d].adressen[$a] = $t' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} Hinweis fuer $TARGET gesetzt ${DIM}(geht dem Domain-Hinweis vor)${NC}"
+        fi
+    else
+        if [[ -z "$HINT_TEXT" ]]; then
+            jq --arg d "$HINT_DOMAIN" '.domains[$d] |= del(.hinweise)' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} Hinweis fuer $HINT_DOMAIN geloescht"
+        else
+            jq --arg d "$HINT_DOMAIN" --arg t "$HINT_TEXT" \
+               '.domains[$d].hinweise = $t' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} Hinweis fuer $HINT_DOMAIN gesetzt"
+        fi
+    fi
+    chmod 644 "$OUT"
+
+    echo -e "${DIM}Wirkt ab der naechsten Mail. Ein Hinweis kann einsortieren, aber nie allein abweisen.${NC}"
+    echo -e "${DIM}Kontrolle spaeter im Report: Gruppe \"Durch Betreiber-Hinweis beeinflusst\".${NC}"
     exit 0
 fi
 

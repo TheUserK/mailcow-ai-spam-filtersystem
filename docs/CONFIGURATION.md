@@ -308,6 +308,20 @@ der Betreiber. Dafür gibt es zwei optionale Freitextfelder:
 }
 ```
 
+Gesetzt wird das nicht von Hand, sondern über das Skript - Ziel ist eine
+Domain **oder** eine einzelne Adresse, erkannt am `@`:
+
+```bash
+ai-filter-context.sh --hint example.de "Wir versenden keine Ware - Paketbenachrichtigungen sind bei uns immer gefaelscht."
+ai-filter-context.sh --hint buchhaltung@example.de "Rechnungen und Zahlungsavise sind hier normal."
+ai-filter-context.sh --hint buchhaltung@example.de ""    # löschen
+ai-filter-context.sh --hints                             # alle Hinweise anzeigen
+```
+
+Ist für die Domain noch kein Eintrag da, legt das Skript einen Grundeintrag
+an - der Hinweis wirkt also auch, bevor die Website ausgewertet wurde.
+`--status` markiert Domains mit Hinweis zusätzlich mit `(+Hinweis)`.
+
 Bewusst Freitext und kein Schema: Der Raum solcher Aussagen ist offen, und
 offene Räume beschreibt man in Sprache. Der Text kommt aus einer Datei, die
 nur `root` schreiben kann - anders als der Mailinhalt ist er vertrauenswürdig,
