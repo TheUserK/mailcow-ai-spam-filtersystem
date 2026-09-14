@@ -1671,12 +1671,16 @@ Mail auf die Regel, setze "reject_rule_match": true, sonst false.
 Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
 - Im Zweifel false. Nur setzen, wenn die Mail erkennbar das beschriebene
   Muster erfuellt.
-- Eine Leistung, die der EMPFAENGER selbst eingekauft hat, erfuellt NIE eine
-  Regel: die Bestaetigung einer eigenen Hotelbuchung, eine Rechnung fuer eine
-  eigene Bestellung, ein Lieferavis. Eine Regel gegen Zimmeranfragen meint
-  Fremde, die BEIM EMPFAENGER buchen wollen - nicht die Reise eines
-  Mitarbeiters. Das gilt auch dann, wenn die Regel das nicht ausdruecklich
-  ausnimmt.
+- Entscheidend ist die RICHTUNG, nicht das Thema. Eine Regel meint immer das,
+  was von aussen an den Empfaenger herangetragen wird - nicht die Antwort auf
+  etwas, das der Empfaenger selbst veranlasst hat. Post zu einem eigenen
+  Vorgang (bestellte Ware, gebuchte Reise, angeforderte Unterlagen,
+  beauftragte Leistung) erfuellt deshalb NIE eine Regel, auch wenn sie
+  thematisch genau darauf passt und die Regel das nicht ausdruecklich
+  ausnimmt. Beispiele: "keine Zimmeranfragen" meint Fremde, die beim
+  Empfaenger buchen wollen, nicht die Bestaetigung einer eigenen Buchung;
+  "keine Paketbenachrichtigungen" meint unbestellte, nicht das selbst
+  bestellte Paket.
 - Steht in der Regel eine Adressebene ("geht der Domain-Angabe vor"), gilt
   diese fuer dieses Postfach.
 Bei true: nenne in "reasoning" kurz, woran du das Muster erkannt hast.

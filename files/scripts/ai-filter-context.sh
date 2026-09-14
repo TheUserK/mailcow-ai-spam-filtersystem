@@ -47,9 +47,10 @@
 #    ai-filter-context.sh --reject-hints              alle Regeln anzeigen
 #  Beispiel: "Wir sind kein Hotel oder Beherbergungsbetrieb. Alle Anfragen,
 #  die darauf abzielen, sind abzuweisen." Anders als ein Hinweis weist das
-#  wirklich ab, auch in sonst geschuetzten Kategorien. Bestaetigungen selbst
-#  eingekaufter Leistungen (eigene Reise, eigene Bestellung) sind immer
-#  ausgenommen.
+#  wirklich ab, auch in sonst geschuetzten Kategorien. Immer ausgenommen
+#  bleibt Post zu einem eigenen Vorgang (bestellte Ware, gebuchte Reise,
+#  angeforderte Unterlagen) - eine Regel trifft nur, was von aussen
+#  herangetragen wird.
 #
 #  Ergebnis: data/ai-checker/business_context.json
 #  Eintraege mit "manuell": true werden nie ueberschrieben - so korrigiert
@@ -80,7 +81,7 @@ while [[ $# -gt 0 ]]; do
                         [[ $# -ge 3 ]] || { echo "Usage: --reject-hint ZIEL \"Text\" (leerer Text loescht)"; exit 1; }
                         HINT_TARGET="$2"; HINT_TEXT="$3"; shift 3 ;;
         --reject-hints) ACTION=rejecthints; shift ;;
-        -h|--help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -234,7 +235,8 @@ if [[ "$ACTION" == "hint" || "$ACTION" == "rejecthint" ]]; then
 
     if [[ "$ACTION" == "rejecthint" && -n "$HINT_TEXT" ]]; then
         echo -e "${YELLOW}Achtung:${NC} Diese Regel weist Post ab, auch in sonst geschuetzten Kategorien."
-        echo -e "${DIM}Ausgenommen bleiben Bestaetigungen selbst eingekaufter Leistungen (eigene Reise, eigene Bestellung).${NC}"
+        echo -e "${DIM}Ausgenommen bleibt immer Post zu einem eigenen Vorgang - bestellte Ware, gebuchte Reise, angeforderte Unterlagen.${NC}"
+        echo -e "${DIM}Die Regel trifft nur, was von aussen herangetragen wird, nicht die Antwort auf etwas Selbstveranlasstes.${NC}"
         echo -e "${DIM}Treffer im Report: Gruppe \"Eigene Reject-Regel hat gegriffen\".${NC}"
     else
         echo -e "${DIM}Wirkt ab der naechsten Mail. Ein Hinweis kann einsortieren, aber nie allein abweisen.${NC}"

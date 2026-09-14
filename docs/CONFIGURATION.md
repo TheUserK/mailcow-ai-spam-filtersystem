@@ -391,11 +391,18 @@ Leseverständnis, nicht die schwankende Gesamteinschätzung „ist das Spam". Oh
 hinterlegte Regel wird ein gemeldetes `true` außerdem verworfen, ein
 halluzinierter Treffer kann also nichts auslösen.
 
-**Fest verdrahtete Ausnahme:** Bestätigungen selbst eingekaufter Leistungen
-(eigene Hotelbuchung, Rechnung zur eigenen Bestellung, Lieferavis) erfüllen
-**nie** eine Regel - auch wenn die Regel das nicht ausdrücklich ausnimmt. Das
-steht so im Prompt, damit „Zimmerbuchungen sind bei uns Betrug" nicht die
-Bestätigung der eigenen Dienstreise mitnimmt.
+**Fest verdrahtete Ausnahme - es zählt die Richtung, nicht das Thema:** Eine
+Regel trifft immer nur, was von außen an den Empfänger herangetragen wird.
+Post zu einem eigenen Vorgang - bestellte Ware, gebuchte Reise, angeforderte
+Unterlagen, beauftragte Leistung - erfüllt **nie** eine Regel, auch wenn sie
+thematisch genau darauf passt und die Regel das nicht ausdrücklich ausnimmt.
+
+Das gilt für jede Regel, nicht nur für Buchungen: „keine
+Paketbenachrichtigungen" darf nicht das selbst bestellte Paket treffen, „keine
+Rechnungen von Unbekannten" nicht die angeforderte Rechnung. Ohne diese
+Klammer würde jede thematisch formulierte Regel beide Richtungen desselben
+Themas erwischen - und damit ausgerechnet Transaktionsmail, hinter der niemand
+sitzt, der einen Bounce bemerkt.
 
 **Kontrolle:** Report-Gruppe „Eigene Reject-Regel hat gegriffen" listet jeden
 Treffer. Solange eine Regel neu ist, gehört da hineingeschaut.
