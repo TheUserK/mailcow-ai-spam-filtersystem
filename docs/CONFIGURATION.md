@@ -407,6 +407,25 @@ sitzt, der einen Bounce bemerkt.
 **Kontrolle:** Report-Gruppe „Eigene Reject-Regel hat gegriffen" listet jeden
 Treffer. Solange eine Regel neu ist, gehört da hineingeschaut.
 
+**Wo die Antwort gelesen wird.** Das Feld `reject_rule_match` ist der reguläre
+Weg, aber das Modell hält sich nicht immer daran: Am 14.09. erkannte es eine
+Zimmerbuchungs-Masche korrekt und schrieb `reject_rule_match true` in den
+Begründungstext statt ins Feld - der Treffer ging verloren, die Mail kam durch.
+In derselben Antwort waren auch `red_flags` und `claimed_brand` leer; bei
+niedrigem `reasoning_effort` füllt das Modell zuverlässig `category`,
+`confidence` und `reasoning`, alles andere nach Tagesform.
+
+`ruleMatchSignal()` akzeptiert deshalb beides. Ein **gesetztes** Feld gilt
+immer, auch wenn es `false` sagt - ein ausdrückliches Nein darf nicht vom
+Fließtext überstimmt werden. Nur wenn das Feld ganz fehlt, wird im
+Begründungstext nachgesehen, und dort zählt ausschließlich die ausdrückliche
+Bejahung direkt hinter dem Feldnamen.
+
+Das Log hält fest, welcher Weg gegriffen hat - `reject_rule` ist `""` (kein
+Treffer), `"field"` oder `"text"`. Häufen sich `"text"`-Einträge, antwortet das
+Modell schlampig; das ist ein Grund, den `reasoning_effort` anzuheben, aber
+kein Grund für einen Fehlalarm.
+
 ### Warum das keine Struktur-Evidenz ist
 
 Der Rollenbruch ist ein **Urteil des Modells**, kein maschinell prüfbarer

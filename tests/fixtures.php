@@ -545,6 +545,21 @@ function runFixtures() {
         'leere_adresse'   => businessRejectRuleFor(''),
     ];
 
+    // Wie das Modell einen Regel-Treffer meldet. Der Fall "text" stammt aus
+    // einer echten Antwort vom 14.09.: Das Modell hatte die Masche erkannt,
+    // schrieb die Antwort aber in den Begruendungstext statt ins Feld - und
+    // der Treffer ging verloren. Die Verneinungen muessen still bleiben.
+    $out['_regel_signal'] = [
+        'feld_true'      => ruleMatchSignal(['reject_rule_match' => true]),
+        'feld_string'    => ruleMatchSignal(['reject_rule_match' => 'true']),
+        'feld_false'     => ruleMatchSignal(['reject_rule_match' => false]),
+        'text_echt'      => ruleMatchSignal(['reasoning' => 'Anfrage zur Zimmerbuchung, Empfaenger ist kein Hotel - entspricht Ablehnungsregel, Rollenbruch -> spam, reject_rule_match true']),
+        'text_false'     => ruleMatchSignal(['reasoning' => 'geprueft, reject_rule_match false']),
+        'text_erwaehnt'  => ruleMatchSignal(['reasoning' => 'die Regel reject_rule_match war nicht einschlaegig']),
+        'feld_schlaegt_text' => ruleMatchSignal(['reject_rule_match' => false, 'reasoning' => 'reject_rule_match true']),
+        'leer'           => ruleMatchSignal([]),
+    ];
+
     // Domain-Rang: bekannte Domain, unbekannte Domain, leere Eingabe.
     // Bekannte Domain muss die Zahlen aus domain_ranks.sample.tsv liefern,
     // unbekannte und leere Eingabe muessen still null ergeben (kein Fehler,

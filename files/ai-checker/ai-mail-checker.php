@@ -1683,7 +1683,10 @@ Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
   bestellte Paket.
 - Steht in der Regel eine Adressebene ("geht der Domain-Angabe vor"), gilt
   diese fuer dieses Postfach.
-Bei true: nenne in "reasoning" kurz, woran du das Muster erkannt hast.
+Gib die Antwort als eigenes JSON-Feld "reject_rule_match" aus - ein Satz im
+Begruendungstext reicht nicht, das Feld wird maschinell ausgewertet.
+Bei true: nenne in "reasoning" zusaetzlich kurz, woran du das Muster erkannt
+hast.
 
 ABSENDER-BEHAUPTUNG - "claimed_brand":
 Als welches Unternehmen oder welche Organisation gibt sich diese Mail aus?
@@ -1698,7 +1701,7 @@ Diese Angabe wird maschinell gegen die tatsaechliche Absenderdomain geprueft.
 Rate nicht - im Zweifel leer lassen.
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
-{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "claimed_brand": "", "reject_rule_match": true|false, "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "reject_rule_match": true|false, "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
 
 Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
 "reasoning" hoechstens 150 Zeichen - laengere Antworten werden abgeschnitten.
@@ -1997,9 +2000,8 @@ PROMPT;
     // Sicherung: Ohne hinterlegte Regel wird ein gemeldeter Treffer
     // verworfen. Sonst koennte ein halluziniertes "true" Post abweisen, fuer
     // die nie jemand eine Regel geschrieben hat.
-    $ruleMatched = $rejectRule !== ''
-        && filter_var($analysis['reject_rule_match'] ?? false, FILTER_VALIDATE_BOOLEAN)
-        && $confidence >= 0.80;
+    $ruleSignal = ruleMatchSignal($analysis);
+    $ruleMatched = $rejectRule !== '' && $ruleSignal !== '' && $confidence >= 0.80;
     if ($ruleMatched) {
         $evidence[] = 'operator-reject-rule';
     }
@@ -2144,6 +2146,11 @@ PROMPT;
         // Damit im Report sichtbar wird, was ein Betreibersatz tatsaechlich
         // einsammelt - der Ersatz fuer die Testbarkeit, die Freitext nicht hat.
         'business_hint'   => $hasOperatorHint,
+        // Leer = kein Treffer, "field" = sauber im JSON, "text" = nur im
+        // Begruendungstext. Ohne diese Unterscheidung liess sich am 14.09.
+        // nicht sagen, ob das Modell verneint oder nur schlampig geantwortet
+        // hatte.
+        'reject_rule'     => $rejectRule !== '' ? $ruleSignal : '',
         'auth_strength'   => $localContext['auth_strength'] ?? 'unknown',
         'confidence'      => $confidence,
         // Was das Modell vergeben WOLLTE, bevor die Obergrenze zuschlug.
@@ -2912,6 +2919,41 @@ function sanitizeAiNumberWords($content) {
 //  zurueck, wenn nicht einmal die Wahrscheinlichkeit lesbar ist - dann war
 //  die Antwort wirklich unbrauchbar.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  Hat das Modell einen Treffer auf die Betreiber-Regel gemeldet - und wo?
+//
+//  Am 14.09. kam eine Zimmerbuchungs-Masche durch, obwohl das Modell sie
+//  erkannt hatte. Seine Begruendung lautete woertlich "... entspricht
+//  Ablehnungsregel, Rollenbruch -> spam, reject_rule_match true" - die
+//  Antwort stand im Fliesstext statt im JSON-Feld, und der Code las nur das
+//  Feld. In derselben Antwort waren auch "red_flags" und "claimed_brand"
+//  leer: Bei niedrigem reasoning_effort fuellt das Modell zuverlaessig
+//  category, confidence und reasoning, alles andere nach Tagesform.
+//
+//  Deshalb beides akzeptieren. Der Rueckgabewert sagt, welcher Weg gegriffen
+//  hat - sonst laesst sich im Nachhinein wieder nicht unterscheiden, ob das
+//  Modell "nein" gesagt oder die Frage nie beantwortet hat.
+// ---------------------------------------------------------------------
+function ruleMatchSignal(array $analysis) {
+    // Hat das Modell das Feld gesetzt, gilt es - auch wenn es false sagt.
+    // Ein ausdrueckliches Nein darf nicht vom Fliesstext ueberstimmt werden,
+    // sonst wuerde eine geschwaetzige Begruendung eine Ablehnung ausloesen,
+    // die das Modell gerade verneint hat.
+    if (array_key_exists('reject_rule_match', $analysis)) {
+        return filter_var($analysis['reject_rule_match'], FILTER_VALIDATE_BOOLEAN) ? 'field' : '';
+    }
+
+    // Nur wenn das Feld fehlt: die ausdrueckliche Bejahung direkt hinter dem
+    // Feldnamen. "reject_rule_match false" oder eine blosse Erwaehnung
+    // zaehlen nicht.
+    $reasoning = (string)($analysis['reasoning'] ?? '');
+    if (preg_match('/reject[_ ]?rule[_ ]?match\W{0,4}(true|ja|yes)\b/i', $reasoning)) {
+        return 'text';
+    }
+
+    return '';
+}
+
 function recoverTruncatedAnalysis($content) {
     if (!preg_match('/"spam_probability"\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)/', $content, $p)) {
         return null;
@@ -2933,6 +2975,12 @@ function recoverTruncatedAnalysis($content) {
     }
     if (preg_match('/"reasoning"\s*:\s*"([^"]*)/', $content, $r)) {
         $analysis['reasoning'] = rtrim($r[1]) . ' [abgeschnitten]';
+    }
+    // Ohne das hier ginge der Regel-Treffer bei einer abgeschnittenen
+    // Antwort still verloren - und Stille ist bei einer Ablehnung die
+    // falsche Fehlerrichtung.
+    if (preg_match('/"reject_rule_match"\s*:\s*(true|false)/i', $content, $rr)) {
+        $analysis['reject_rule_match'] = (mb_strtolower($rr[1]) === 'true');
     }
 
     return $analysis;
@@ -3664,6 +3712,9 @@ function logStats($requestId, $data) {
         // ungefragte Werbung - der Unterschied ist im Nachhinein nur
         // sichtbar, wenn er mitgeschrieben wird.
         'list_headers' => !empty($data['list_headers']),
+        // Wie der Regel-Treffer gemeldet wurde: "" (keiner), "field" oder
+        // "text". Siehe ruleMatchSignal().
+        'reject_rule' => (string)($data['reject_rule'] ?? ''),
         // Lag fuer diesen Empfaenger ein Betreiber-Hinweis vor? Freitext
         // laesst sich nicht per Fixture absichern - sichtbar machen, was er
         // einsammelt, ist der Ersatz dafuer (Report-Gruppe).
