@@ -534,6 +534,17 @@ function runFixtures() {
         'leere_adresse'    => businessHintsFor(''),
     ];
 
+    // Reject-Regel. Die dritte Zeile ist die wichtige: Ein Adresseintrag in
+    // Kurzform (blosser String = Hinweis) darf keine Regel ergeben, sonst
+    // wuerde ein alter Hinweis ploetzlich Post abweisen.
+    $out['_reject_regel'] = [
+        'nur_domain'      => businessRejectRuleFor('info@karrerlabs.de'),
+        'domain_plus_adr' => businessRejectRuleFor('empfang@karrerlabs.de'),
+        'kurzform_adresse'=> businessRejectRuleFor('buchhaltung@karrerlabs.de'),
+        'ohne_regel'      => businessRejectRuleFor('andi@karrer.info'),
+        'leere_adresse'   => businessRejectRuleFor(''),
+    ];
+
     // Domain-Rang: bekannte Domain, unbekannte Domain, leere Eingabe.
     // Bekannte Domain muss die Zahlen aus domain_ranks.sample.tsv liefern,
     // unbekannte und leere Eingabe muessen still null ergeben (kein Fehler,

@@ -9,8 +9,13 @@
       "geprueft": "2026-09-05",
       "manuell": false,
       "hinweise": "Wir versenden keine Ware - Paketbenachrichtigungen sind bei uns immer gefaelscht. Rechnungen erhalten wir ausschliesslich von unserem Steuerbuero.",
+      "abweisen": "Wir sind kein Hotel oder Beherbergungsbetrieb. Alle Anfragen, die darauf abzielen, bei uns zu uebernachten, sind abzuweisen.",
       "adressen": {
-        "buchhaltung@karrerlabs.de": "Hier sind Rechnungen und Zahlungsavise normal, auch von unbekannten Absendern."
+        "buchhaltung@karrerlabs.de": "Hier sind Rechnungen und Zahlungsavise normal, auch von unbekannten Absendern.",
+        "empfang@karrerlabs.de": {
+          "hinweis": "Allgemeine Anlaufstelle.",
+          "abweisen": "Auch hier keine Zimmeranfragen."
+        }
       }
     },
     "karrer.info": {

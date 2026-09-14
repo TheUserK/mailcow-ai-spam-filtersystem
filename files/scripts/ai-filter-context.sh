@@ -40,6 +40,17 @@
 #  buchhaltung@ "Rechnungen sind hier normal". Ein Hinweis kann Post
 #  einsortieren, aber nie allein abweisen.
 #
+#  Reject-Regel - Post, die grundsaetzlich nicht gewollt ist und ABGEWIESEN
+#  werden soll:
+#    ai-filter-context.sh --reject-hint ZIEL "Text"   setzen
+#    ai-filter-context.sh --reject-hint ZIEL ""       loeschen
+#    ai-filter-context.sh --reject-hints              alle Regeln anzeigen
+#  Beispiel: "Wir sind kein Hotel oder Beherbergungsbetrieb. Alle Anfragen,
+#  die darauf abzielen, sind abzuweisen." Anders als ein Hinweis weist das
+#  wirklich ab, auch in sonst geschuetzten Kategorien. Bestaetigungen selbst
+#  eingekaufter Leistungen (eigene Reise, eigene Bestellung) sind immer
+#  ausgenommen.
+#
 #  Ergebnis: data/ai-checker/business_context.json
 #  Eintraege mit "manuell": true werden nie ueberschrieben - so korrigiert
 #  man eine Fehleinschaetzung dauerhaft.
@@ -65,7 +76,11 @@ while [[ $# -gt 0 ]]; do
                    [[ $# -ge 3 ]] || { echo "Usage: --hint ZIEL \"Text\" (leerer Text loescht)"; exit 1; }
                    HINT_TARGET="$2"; HINT_TEXT="$3"; shift 3 ;;
         --hints)   ACTION=hints; shift ;;
-        -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --reject-hint)  ACTION=rejecthint
+                        [[ $# -ge 3 ]] || { echo "Usage: --reject-hint ZIEL \"Text\" (leerer Text loescht)"; exit 1; }
+                        HINT_TARGET="$2"; HINT_TEXT="$3"; shift 3 ;;
+        --reject-hints) ACTION=rejecthints; shift ;;
+        -h|--help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -96,6 +111,7 @@ if [[ "$ACTION" == "status" ]]; then
            "  \(.key)\n      \(.value.art)\(if .value.manuell then " (manuell)" else "" end)\(if (.value.hinweise // "") != "" or ((.value.adressen // {}) | length) > 0 then " (+Hinweis)" else "" end): \(.value.beschreibung)"' "$OUT"
     echo ""
     echo "Betreiber-Hinweise im Detail: ai-filter-context.sh --hints"
+    echo "Reject-Regeln:                ai-filter-context.sh --reject-hints"
     exit 0
 fi
 
@@ -113,21 +129,55 @@ if [[ "$ACTION" == "hints" ]]; then
         echo "  Setzen mit: ai-filter-context.sh --hint DOMAIN-ODER-ADRESSE \"Text\""
         exit 0
     fi
+    # Adresseintraege gibt es in zwei Formen: als blossen String (aelterer
+    # Hinweis) und als Objekt mit "hinweis"/"abweisen".
     jq -r '.domains | to_entries[] |
            select((.value.hinweise // "") != "" or ((.value.adressen // {}) | length) > 0) |
            "  \(.key)" ,
            (if (.value.hinweise // "") != "" then "      Domain: \(.value.hinweise)" else empty end),
-           ((.value.adressen // {}) | to_entries[] | "      \(.key): \(.value)")' "$OUT"
+           ((.value.adressen // {}) | to_entries[]
+              | (if (.value | type) == "string" then .value else (.value.hinweis // "") end) as $h
+              | select($h != "")
+              | "      \(.key): \($h)")' "$OUT"
     exit 0
 fi
 
-# --- Betreiber-Hinweis setzen oder loeschen ---------------------------
+if [[ "$ACTION" == "rejecthints" ]]; then
+    [[ -f "$OUT" ]] || { echo -e "${YELLOW}Noch nichts hinterlegt${NC}"; exit 0; }
+    if ! jq -e '[.domains[] | select((.abweisen // "") != "" or ((.adressen // {}) | to_entries[] | select((.value | type) == "object" and (.value.abweisen // "") != "")) )] | length > 0' "$OUT" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Keine Reject-Regeln gesetzt${NC}"
+        echo "  Setzen mit: ai-filter-context.sh --reject-hint DOMAIN \"Wir sind kein Hotel ...\""
+        exit 0
+    fi
+    jq -r '.domains | to_entries[] |
+           . as $e |
+           select(($e.value.abweisen // "") != "" or ([($e.value.adressen // {}) | to_entries[] | select((.value | type) == "object" and (.value.abweisen // "") != "")] | length) > 0) |
+           "  \($e.key)" ,
+           (if ($e.value.abweisen // "") != "" then "      Domain: \($e.value.abweisen)" else empty end),
+           (($e.value.adressen // {}) | to_entries[]
+              | select((.value | type) == "object" and (.value.abweisen // "") != "")
+              | "      \(.key): \(.value.abweisen)")' "$OUT"
+    echo ""
+    echo -e "${DIM}Diese Regeln weisen Post ab. Treffer siehst du im Report unter \"Eigene Reject-Regel hat gegriffen\".${NC}"
+    exit 0
+fi
+
+# --- Betreiber-Hinweis oder Reject-Regel setzen/loeschen ---------------
 #
 # Ohne diesen Weg muesste man die JSON-Datei von Hand bearbeiten - alles
 # andere in diesem Projekt ist ueber ein Skript konfigurierbar.
-if [[ "$ACTION" == "hint" ]]; then
+#
+# Beide Faelle teilen sich den Code, sie unterscheiden sich nur im Feld:
+# "hinweise"/"hinweis" beschreibt, "abweisen" weist ab.
+if [[ "$ACTION" == "hint" || "$ACTION" == "rejecthint" ]]; then
     [[ -n "$HINT_TARGET" ]] || { echo -e "${RED}Kein Ziel angegeben${NC}"; exit 1; }
     TARGET=$(printf '%s' "$HINT_TARGET" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$ACTION" == "rejecthint" ]]; then
+        DOMAIN_FIELD="abweisen"; ADDR_FIELD="abweisen"; LABEL="Reject-Regel"
+    else
+        DOMAIN_FIELD="hinweise"; ADDR_FIELD="hinweis";  LABEL="Hinweis"
+    fi
 
     if [[ "$TARGET" == *"@"* ]]; then
         HINT_DOMAIN="${TARGET##*@}"
@@ -139,45 +189,57 @@ if [[ "$ACTION" == "hint" ]]; then
     mkdir -p "$(dirname "$OUT")"
     [[ -f "$OUT" ]] || echo '{"domains":{}}' > "$OUT"
 
-    # Der Hinweis soll auch dann funktionieren, wenn die Website noch nicht
-    # ausgewertet wurde - dann entsteht hier ein Grundeintrag. "unbekannt"
-    # heisst nur, dass keine Beschreibung vorliegt; die Hinweise wirken
+    # Soll auch dann funktionieren, wenn die Website noch nicht ausgewertet
+    # wurde - dann entsteht hier ein Grundeintrag. "unbekannt" heisst nur,
+    # dass keine Beschreibung vorliegt; Hinweise und Regeln wirken
     # unabhaengig davon.
     if ! jq -e --arg d "$HINT_DOMAIN" '.domains[$d]' "$OUT" >/dev/null 2>&1; then
         TMP_NEW=$(mktemp)
         jq --arg d "$HINT_DOMAIN" \
-           '.domains[$d] = {art: "unbekannt", beschreibung: "", quelle: "", notiz: "fuer Betreiber-Hinweis angelegt", geprueft: "", manuell: false}' \
+           '.domains[$d] = {art: "unbekannt", beschreibung: "", quelle: "", notiz: "fuer Betreiber-Angabe angelegt", geprueft: "", manuell: false}' \
            "$OUT" > "$TMP_NEW" && mv "$TMP_NEW" "$OUT"
         echo -e "${DIM}Grundeintrag fuer $HINT_DOMAIN angelegt${NC}"
     fi
 
     TMP_HINT=$(mktemp)
     if [[ "$TARGET" == *"@"* ]]; then
+        # Aeltere Eintraege sind ein blosser String (= Hinweis). Vor dem
+        # Schreiben in die Objektform heben, sonst ginge der alte Hinweis
+        # beim Setzen einer Regel verloren.
+        NORMALISE='.domains[$d].adressen[$a] |= (if type == "string" then {hinweis: .} elif type == "object" then . else {} end)'
         if [[ -z "$HINT_TEXT" ]]; then
-            jq --arg d "$HINT_DOMAIN" --arg a "$TARGET" \
-               'if .domains[$d].adressen then .domains[$d].adressen |= del(.[$a]) else . end
-                | if (.domains[$d].adressen // {}) == {} then .domains[$d] |= del(.adressen) else . end' \
+            jq --arg d "$HINT_DOMAIN" --arg a "$TARGET" --arg f "$ADDR_FIELD" \
+               "if (.domains[\$d].adressen[\$a] // null) != null then $NORMALISE | .domains[\$d].adressen[\$a] |= del(.[\$f]) else . end
+                | if (.domains[\$d].adressen[\$a] // {}) == {} then .domains[\$d].adressen |= del(.[\$a]) else . end
+                | if (.domains[\$d].adressen // {}) == {} then .domains[\$d] |= del(.adressen) else . end" \
                "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
-            echo -e "${GREEN}[OK]${NC} Hinweis fuer $TARGET geloescht"
+            echo -e "${GREEN}[OK]${NC} $LABEL fuer $TARGET geloescht"
         else
-            jq --arg d "$HINT_DOMAIN" --arg a "$TARGET" --arg t "$HINT_TEXT" \
-               '.domains[$d].adressen[$a] = $t' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
-            echo -e "${GREEN}[OK]${NC} Hinweis fuer $TARGET gesetzt ${DIM}(geht dem Domain-Hinweis vor)${NC}"
+            jq --arg d "$HINT_DOMAIN" --arg a "$TARGET" --arg f "$ADDR_FIELD" --arg t "$HINT_TEXT" \
+               "$NORMALISE | .domains[\$d].adressen[\$a][\$f] = \$t" \
+               "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} $LABEL fuer $TARGET gesetzt ${DIM}(geht der Domain-Angabe vor)${NC}"
         fi
     else
         if [[ -z "$HINT_TEXT" ]]; then
-            jq --arg d "$HINT_DOMAIN" '.domains[$d] |= del(.hinweise)' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
-            echo -e "${GREEN}[OK]${NC} Hinweis fuer $HINT_DOMAIN geloescht"
+            jq --arg d "$HINT_DOMAIN" --arg f "$DOMAIN_FIELD" '.domains[$d] |= del(.[$f])' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} $LABEL fuer $HINT_DOMAIN geloescht"
         else
-            jq --arg d "$HINT_DOMAIN" --arg t "$HINT_TEXT" \
-               '.domains[$d].hinweise = $t' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
-            echo -e "${GREEN}[OK]${NC} Hinweis fuer $HINT_DOMAIN gesetzt"
+            jq --arg d "$HINT_DOMAIN" --arg f "$DOMAIN_FIELD" --arg t "$HINT_TEXT" \
+               '.domains[$d][$f] = $t' "$OUT" > "$TMP_HINT" && mv "$TMP_HINT" "$OUT"
+            echo -e "${GREEN}[OK]${NC} $LABEL fuer $HINT_DOMAIN gesetzt"
         fi
     fi
     chmod 644 "$OUT"
 
-    echo -e "${DIM}Wirkt ab der naechsten Mail. Ein Hinweis kann einsortieren, aber nie allein abweisen.${NC}"
-    echo -e "${DIM}Kontrolle spaeter im Report: Gruppe \"Durch Betreiber-Hinweis beeinflusst\".${NC}"
+    if [[ "$ACTION" == "rejecthint" && -n "$HINT_TEXT" ]]; then
+        echo -e "${YELLOW}Achtung:${NC} Diese Regel weist Post ab, auch in sonst geschuetzten Kategorien."
+        echo -e "${DIM}Ausgenommen bleiben Bestaetigungen selbst eingekaufter Leistungen (eigene Reise, eigene Bestellung).${NC}"
+        echo -e "${DIM}Treffer im Report: Gruppe \"Eigene Reject-Regel hat gegriffen\".${NC}"
+    else
+        echo -e "${DIM}Wirkt ab der naechsten Mail. Ein Hinweis kann einsortieren, aber nie allein abweisen.${NC}"
+        echo -e "${DIM}Kontrolle spaeter im Report: Gruppe \"Durch Betreiber-Hinweis beeinflusst\".${NC}"
+    fi
     exit 0
 fi
 

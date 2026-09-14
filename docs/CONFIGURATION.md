@@ -94,8 +94,8 @@ jq -r 'select(.evidence|index("brand-claim-mismatch"))|[.from,.claimed_brand]|@t
 ## Evidence: strong and weak
 
 A rejection needs structural evidence, but not every kind carries the same
-weight. `strongEvidence()` currently recognizes eleven classes that can
-justify one on their own:
+weight. `strongEvidence()` recognizes these classes as able to justify one on
+their own (minus anything currently on probation, see below):
 
 | Strong evidence class | Rests on |
 |---|---|
@@ -103,6 +103,7 @@ justify one on their own:
 | `url-on-blocklist` | external reputation data (Spamhaus, SURBL, URIBL, ...) |
 | `dangerous-attachment` | an executable attachment |
 | `hijacked-reply-to` | the reply is meant to go to a stranger's freemail account, from a non-freemail sender |
+| `operator-reject-rule` | the operator wrote a reject rule for this recipient and the model confirms the mail matches it. Lifts the category lock; the only config that rejects |
 | `reply-to-unrelated-domain` | same pattern, but the reply mailbox sits at a provider the freemail detection doesn't know. Requires DMARC pass, a non-freemail sender, no list headers, and a Reply-To domain unrelated to the sender's. **On probation** |
 | `fake-thread` | a Re:/AW: subject or a quoted-reply body with no In-Reply-To/References header |
 | `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
@@ -352,6 +353,52 @@ Der wöchentliche Cron läuft ohnehin nur über neue Domains und rührt bestehen
 Einträge nicht an. Ein Handlauf mit `--refresh` ersetzt den Eintrag zwar neu,
 schreibt die von der Website ermittelten Felder aber per `+=` hinein - `hinweise`
 und `adressen` bleiben erhalten.
+
+### Reject-Regel (`abweisen`) - die einzige Konfiguration, die abweist
+
+Ein Hinweis sortiert ein. Wenn eine ganze Gattung Post grundsätzlich
+unerwünscht ist, braucht es mehr - dafür gibt es die Reject-Regel:
+
+```bash
+ai-filter-context.sh --reject-hint example.de \
+  "Wir sind kein Hotel oder Beherbergungsbetrieb. Alle Anfragen, die darauf abzielen, sind abzuweisen."
+
+ai-filter-context.sh --reject-hints                  # anzeigen
+ai-filter-context.sh --reject-hint example.de ""     # löschen
+```
+
+Geht wie der Hinweis auch pro Adresse. Gespeichert als `abweisen` im
+Domain-Eintrag bzw. im Adress-Objekt.
+
+**Wie es wirkt:** Die Regel geht als eigene Zeile ins Prompt. Das Modell
+beantwortet dazu nur eine enge Frage - passt diese Mail auf das beschriebene
+Muster? - und liefert `reject_rule_match`. Trifft das zu **und** liegt die
+Confidence bei mindestens 0.80 **und** ist tatsächlich eine Regel hinterlegt,
+zählt das als Beleg `operator-reject-rule`, hebt die Kategorie-Sperre auf und
+löst über den normalen Evidenz-Pfad die Abweisung aus. Im Log steht dann
+`reject_path: "operator-rule"`.
+
+**Warum die Kategorie-Sperre fallen muss:** Genau daran scheiterte der
+bisherige Weg. Die Zimmeranfragen vom 04.09. wurden als `personal` eingestuft
+- geschützte Kategorie, nie abweisbar. Eine Regel, die diesen Schutz nicht
+aufheben darf, löst das Problem nicht. Dass hier eine Konfigurationszeile über
+die Kategorie bestimmt, ist die bewusste Eskalation dieses Features; sie
+greift ausschließlich dort, wo jemand selbst eine Regel geschrieben hat.
+
+**Warum das vertretbar ist**, obwohl ein Modellurteil im Spiel ist: Die Frage
+ist eng - *„zielt diese Mail darauf ab, bei uns zu übernachten?"* ist
+Leseverständnis, nicht die schwankende Gesamteinschätzung „ist das Spam". Ohne
+hinterlegte Regel wird ein gemeldetes `true` außerdem verworfen, ein
+halluzinierter Treffer kann also nichts auslösen.
+
+**Fest verdrahtete Ausnahme:** Bestätigungen selbst eingekaufter Leistungen
+(eigene Hotelbuchung, Rechnung zur eigenen Bestellung, Lieferavis) erfüllen
+**nie** eine Regel - auch wenn die Regel das nicht ausdrücklich ausnimmt. Das
+steht so im Prompt, damit „Zimmerbuchungen sind bei uns Betrug" nicht die
+Bestätigung der eigenen Dienstreise mitnimmt.
+
+**Kontrolle:** Report-Gruppe „Eigene Reject-Regel hat gegriffen" listet jeden
+Treffer. Solange eine Regel neu ist, gehört da hineingeschaut.
 
 ### Warum das keine Struktur-Evidenz ist
 

@@ -682,29 +682,89 @@ function businessHintsFor($address) {
         return '';
     }
 
-    $parts  = [];
-    $domain = trim((string)($entry['hinweise'] ?? ''));
-    if ($domain !== '') {
-        $parts[] = 'fuer die Domain: ' . $domain;
+    return combineContextLevels(
+        trim((string)($entry['hinweise'] ?? '')),
+        businessAddressEntry($entry, $address)['hinweis']
+    );
+}
+
+// ---------------------------------------------------------------------
+//  Die Betreiber-Regel, die abweisen darf.
+//
+//  Anders als "hinweise" ist das kein Wissen, sondern eine Anweisung:
+//  "Wir sind kein Hotel. Alle Anfragen, die darauf abzielen, sind
+//  abzuweisen." Der Betreiber entscheidet damit bewusst, eine ganze
+//  Gattung Post zu verwerfen - das ist die einzige Stelle im System, an
+//  der eine Konfigurationszeile das darf.
+//
+//  Vertretbar ist das, weil die Frage, die das Modell hier beantwortet,
+//  eng ist: Zielt diese Mail darauf ab, bei uns zu uebernachten? Das ist
+//  Leseverstaendnis, nicht die schwankende Gesamteinschaetzung "ist das
+//  Spam" - und genau diese Enge ist der Unterschied zu einem allgemeinen
+//  "hohe Prioritaet"-Prompt, gegen den es gute Gruende gibt.
+//
+//  Zwei Sicherungen, die der Betreiber nicht formulieren muss: Eine
+//  bestaetigte eigene Buchung matcht nie (steht im Prompt), und ohne
+//  hinterlegte Regel wird ein gemeldeter Treffer ignoriert - siehe
+//  analyzeWithAI().
+// ---------------------------------------------------------------------
+function businessRejectRuleFor($address) {
+    $entry = businessContextEntry($address);
+    if (empty($entry)) {
+        return '';
     }
 
-    $mailbox = mb_strtolower(trim(extractEmailAddress($address)));
-    if ($mailbox !== '' && !empty($entry['adressen']) && is_array($entry['adressen'])) {
-        foreach ($entry['adressen'] as $key => $text) {
-            if (mb_strtolower(trim((string)$key)) !== $mailbox) {
-                continue;
-            }
-            $text = trim((string)$text);
-            if ($text !== '') {
-                $parts[] = 'fuer diese Adresse (geht der Domain-Angabe vor): ' . $text;
-            }
-            break;
-        }
+    return combineContextLevels(
+        trim((string)($entry['abweisen'] ?? '')),
+        businessAddressEntry($entry, $address)['abweisen']
+    );
+}
+
+// Domain- und Adressebene nebeneinander, die Adresse als vorrangig
+// gekennzeichnet. Aufloesen muss das Modell: Prosa laesst sich nicht
+// verrechnen, und "keine Rechnungen" global gegen "hier schon" bei
+// buchhaltung@ ist genau der Fall, fuer den es die zweite Ebene gibt.
+function combineContextLevels($domainText, $addressText) {
+    $parts = [];
+    if ($domainText !== '') {
+        $parts[] = 'fuer die Domain: ' . $domainText;
+    }
+    if ($addressText !== '') {
+        $parts[] = 'fuer diese Adresse (geht der Domain-Angabe vor): ' . $addressText;
     }
 
     // Ein einzelner Satz kostet nichts, eine ganze Hausordnung verdraengt
     // den Mailtext aus dem Prompt.
     return mb_substr(implode(' | ', $parts), 0, 1000);
+}
+
+// Der Eintrag einer einzelnen Adresse. Kurzform erlaubt: Ein blosser
+// String ist ein Hinweis - so sehen die Eintraege aus, die vor der
+// Reject-Regel angelegt wurden.
+function businessAddressEntry(array $entry, $address) {
+    $leer    = ['hinweis' => '', 'abweisen' => ''];
+    $mailbox = mb_strtolower(trim(extractEmailAddress($address)));
+    if ($mailbox === '' || empty($entry['adressen']) || !is_array($entry['adressen'])) {
+        return $leer;
+    }
+
+    foreach ($entry['adressen'] as $key => $value) {
+        if (mb_strtolower(trim((string)$key)) !== $mailbox) {
+            continue;
+        }
+        if (is_string($value)) {
+            return ['hinweis' => trim($value), 'abweisen' => ''];
+        }
+        if (is_array($value)) {
+            return [
+                'hinweis'  => trim((string)($value['hinweis'] ?? '')),
+                'abweisen' => trim((string)($value['abweisen'] ?? '')),
+            ];
+        }
+        break;
+    }
+
+    return $leer;
 }
 
 // ---------------------------------------------------------------------
@@ -1596,6 +1656,31 @@ die Bestaetigung einer Reise, die der Empfaenger selbst gebucht hat.
 
 Hat der Hinweis dein Urteil getragen, schreibe das in "reasoning".
 
+BETREIBER-REGEL (ABWEISUNG) - Feld "reject_rule_match":
+Die Zeile "Betreiber-Regel (Abweisung)" enthaelt eine Anweisung des
+Betreibers, welche Art von Post er grundsaetzlich nicht will - zum Beispiel
+"Wir sind kein Hotel oder Beherbergungsbetrieb, alle Anfragen die darauf
+abzielen sind abzuweisen". Steht dort "(keine)", setze "reject_rule_match"
+immer auf false und ueberspringe diesen Abschnitt.
+
+Deine Aufgabe ist hier eng: Beantworte NUR, ob diese konkrete Mail das
+beschriebene Muster erfuellt. Es geht nicht darum, ob du die Mail fuer Spam
+haeltst - das beurteilst du getrennt ueber Kategorie und Score. Passt die
+Mail auf die Regel, setze "reject_rule_match": true, sonst false.
+
+Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
+- Im Zweifel false. Nur setzen, wenn die Mail erkennbar das beschriebene
+  Muster erfuellt.
+- Eine Leistung, die der EMPFAENGER selbst eingekauft hat, erfuellt NIE eine
+  Regel: die Bestaetigung einer eigenen Hotelbuchung, eine Rechnung fuer eine
+  eigene Bestellung, ein Lieferavis. Eine Regel gegen Zimmeranfragen meint
+  Fremde, die BEIM EMPFAENGER buchen wollen - nicht die Reise eines
+  Mitarbeiters. Das gilt auch dann, wenn die Regel das nicht ausdruecklich
+  ausnimmt.
+- Steht in der Regel eine Adressebene ("geht der Domain-Angabe vor"), gilt
+  diese fuer dieses Postfach.
+Bei true: nenne in "reasoning" kurz, woran du das Muster erkannt hast.
+
 ABSENDER-BEHAUPTUNG - "claimed_brand":
 Als welches Unternehmen oder welche Organisation gibt sich diese Mail aus?
 Trage den Namen so ein, wie er behauptet wird ("N26", "Sparkasse",
@@ -1609,7 +1694,7 @@ Diese Angabe wird maschinell gegen die tatsaechliche Absenderdomain geprueft.
 Rate nicht - im Zweifel leer lassen.
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
-{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "claimed_brand": "", "reject_rule_match": true|false, "red_flags": ["..."], "reasoning": "kurze Begruendung"}
 
 Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
 "reasoning" hoechstens 150 Zeichen - laengere Antworten werden abgeschnitten.
@@ -1642,6 +1727,11 @@ PROMPT;
         businessHintsFor($mail['to'] ?? '')
     );
     $hasOperatorHint = ($operatorHint !== '');
+    $rejectRule = str_ireplace(
+        ['===MAIL-ANFANG===', '===MAIL-ENDE==='],
+        '[markierung entfernt]',
+        businessRejectRuleFor($mail['to'] ?? '')
+    );
 
     // Wie etabliert ist die Absenderdomain? Fehlt die Datenbank oder ist
     // weder sie noch ihre Hauptdomain gelistet, steht "nicht gelistet" da -
@@ -1655,6 +1745,7 @@ PROMPT;
         "Subject: %s\n"         .
         "Empfaenger-Kontext: %s\n" .
         "Betreiber-Hinweis: %s\n" .
+        "Betreiber-Regel (Abweisung): %s\n" .
         "Absender-Domain-Rang: %s\n" .
         "Rspamd-Score: %.1f\n"  .
         "SPF/DKIM/DMARC: %s / %s / %s\n" .
@@ -1671,6 +1762,7 @@ PROMPT;
         safePromptValue($mail['subject']),
         safePromptValue($businessContext !== '' ? $businessContext : '(unbekannt)'),
         safePromptValue($operatorHint !== '' ? $operatorHint : '(keiner)'),
+        safePromptValue($rejectRule !== '' ? $rejectRule : '(keine)'),
         safePromptValue($rankLine),
         $mail['rspamd_score'],
         safePromptValue($mail['auth']['spf']),
@@ -1895,6 +1987,19 @@ PROMPT;
     $confidence = floatval($analysis['confidence'] ?? 0.5);
     $evidence   = collectStructuralEvidence($mail, $localContext, $analysis);
 
+    // Hat die Mail die Regel des Betreibers erfuellt?
+    //
+    // Die Rueckfrage an die eigene Konfiguration ist die entscheidende
+    // Sicherung: Ohne hinterlegte Regel wird ein gemeldeter Treffer
+    // verworfen. Sonst koennte ein halluziniertes "true" Post abweisen, fuer
+    // die nie jemand eine Regel geschrieben hat.
+    $ruleMatched = $rejectRule !== ''
+        && filter_var($analysis['reject_rule_match'] ?? false, FILTER_VALIDATE_BOOLEAN)
+        && $confidence >= 0.80;
+    if ($ruleMatched) {
+        $evidence[] = 'operator-reject-rule';
+    }
+
     // Ein Reject verlangt die Zustimmung einer zweiten, unabhaengigen Quelle.
     // Die KI allein reicht nicht: sie kann sich irren, und ein Reject ist die
     // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
@@ -1909,7 +2014,17 @@ PROMPT;
     // einordnet. Am 25.08. wurde "AW: Handyvertrag ..." von
     // "4g-vodafone.de" trotz brand-impersonation + url-on-blocklist als
     // "personal" durchgewunken, weil die Kategorie allein schuetzte.
-    $categoryOverride = in_array('brand-impersonation', $strong, true) && count($strong) >= 2;
+    //
+    // Die Betreiber-Regel durchbricht die Kategorie ebenfalls, und zwar
+    // allein: Genau daran scheiterte der bisherige Weg. Die Zimmeranfragen
+    // vom 04.09. wurden als "personal" eingestuft - geschuetzte Kategorie,
+    // nie abweisbar. Eine Regel, die diesen Schutz nicht aufheben darf,
+    // loest das Problem also gar nicht. Dass hier eine Konfigurationszeile
+    // ueber die Kategorie-Sperre bestimmt, ist die bewusste Eskalation
+    // dieses Features - sie greift nur, wo der Betreiber selbst eine Regel
+    // geschrieben hat.
+    $categoryOverride = (in_array('brand-impersonation', $strong, true) && count($strong) >= 2)
+        || $ruleMatched;
 
     $noTrustSignals = empty($localContext['matched_profile'])
         && $verifiedBrand === ''
@@ -2015,7 +2130,9 @@ PROMPT;
         'probation'       => array_values(array_intersect($evidence, probationEvidence())),
         'reject_eligible' => $mayReject,
         // Auf welchem Weg durfte diese Mail bis an die Schwelle?
-        'reject_path'     => $rejectEligible ? 'evidence' : ($confidentReject ? 'ai-confident' : ''),
+        'reject_path'     => $rejectEligible
+            ? ($ruleMatched ? 'operator-rule' : 'evidence')
+            : ($confidentReject ? 'ai-confident' : ''),
         'model_score'     => round($modelScore, 2),
         'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
         'verified_brand'  => $verifiedBrand,
@@ -2656,6 +2773,11 @@ function strongEvidence(array $evidence) {
         'dangerous-attachment',  // ausfuehrbarer Anhang
         'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
         'reply-to-unrelated-domain', // dasselbe, nur ausserhalb der Freemail-Liste
+        // Kein Modellbefund, sondern die Entscheidung des Betreibers: Er hat
+        // fuer diesen Empfaenger eine Regel geschrieben, und das Modell hat
+        // nur die enge Frage beantwortet, ob diese Mail darauf passt. Bewusst
+        // NICHT auf Bewaehrung - eine Regel, die nicht abweist, waere keine.
+        'operator-reject-rule',
         'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform

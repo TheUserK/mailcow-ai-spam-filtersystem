@@ -283,6 +283,13 @@ BODY=$(
     #    duerfen (noch) nicht abweisen, und jeder Treffer gehoert einzeln
     #    beurteilt. Stimmt er, kann die Klasse scharf geschaltet werden -
     #    in probationEvidence() eine Zeile loeschen.
+    # 0a. Die eigene Reject-Regel. Steht ganz oben, weil sie als einzige
+    #     Konfigurationsangabe Post wirklich verwirft - jeder Treffer
+    #     gehoert angesehen, solange die Regel neu ist.
+    render_group "Eigene Reject-Regel hat gegriffen" \
+        "$(printf 'Abgewiesen aufgrund einer selbst formulierten Regel - passt das Urteil zur Regel?')" \
+        '.reject_path == "operator-rule"' && FOUND=1
+
     # 0b. Was der eigene Betreiber-Hinweis eingesammelt hat.
     #
     # Freitext laesst sich nicht per Fixture absichern - deshalb wird er
