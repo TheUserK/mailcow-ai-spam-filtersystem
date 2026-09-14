@@ -794,7 +794,7 @@ docker compose exec rspamd-mailcow rspamc counters | grep -iE 'blocked|_fail'
 | Setting | Default | Description |
 |---|---|---|
 | `checker_url` | `http://ai-checker:8080/ai-mail-checker.php` | Where Rspamd sends the mail context |
-| `skip_score_above` | `14.0` | Skip the AI call if Rspamd's score is already this high (mail is decisive spam already) |
+| `skip_score_above` | `15.0` | Skip the AI call if Rspamd already rejects on its own score. Keep this **at** the reject threshold, never below - see below |
 | `skip_score_below` | `-10.0` | Skip the AI call if Rspamd's score is already this low |
 | `http_timeout` | `30.0` | HTTP timeout for the checker call |
 | `log_only_mode` | `false` | Still calls the checker and logs the result, but never applies the score |
@@ -815,11 +815,19 @@ Lua whitelist only for sources you fully trust and want to save API calls on.
 ## Performance / cost tuning
 
 ### Reduce API Calls
-Tighten the score range in `ai-filter-settings.lua`:
+Tighten the score range in `ai-filter-settings.lua` - but only at the **lower**
+end:
 ```lua
-skip_score_above = 12.0,  -- was 14.0
 skip_score_below = -5.0,  -- was -10.0
 ```
+`skip_score_above` is the one value **not** to lower. Anything below the reject
+threshold opens a dead band in which the AI is skipped as "already decided"
+while nothing actually rejects, and the mail is delivered with a spam header.
+That band swallows exactly the most suspicious mail: the closer to the
+threshold, the less scrutiny. It cost us two cases - 14.70 on 11.09. and 14.85
+on 13.09., the latter from a domain listed on Spamhaus DBL *and* SURBL, which
+the AI call would very likely have turned into a rejection via
+`url-on-blocklist`. If you raise the reject threshold, raise this with it.
 Or add more entries to `trusted_sender_profiles.json` so more of your regular
 mail (order confirmations, shipping notices, ...) gets a local auto-pass.
 

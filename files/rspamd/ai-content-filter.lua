@@ -24,7 +24,7 @@ local ucl = require "ucl"
 -- Darum jetzt: Vorgaben immer definieren, Datei darueberlegen.
 local defaults = {
   checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
-  skip_score_above = 14.0,
+  skip_score_above = 15.0,
   skip_score_below = -10.0,
   http_timeout = 22.0,   -- muss unter Rspamds task_timeout (25s) bleiben
   log_only_mode = false,
@@ -141,7 +141,22 @@ rspamd_config:register_symbol({
   callback = function(task)
     local score = task:get_metric_score('default')[1]
 
-    -- Skip if score is already decisive
+    -- Skip if the outcome is already decided without us.
+    --
+    -- "Decided" heisst: Rspamd weist ohnehin selbst ab. Deshalb gehoert
+    -- skip_score_above auf die Reject-Schwelle und keinen Punkt darunter.
+    -- Stand hier 14.0 bei einer Schwelle von 15.0, entstand dazwischen ein
+    -- toter Bereich: Die KI wurde als "schon entschieden" uebersprungen,
+    -- abgewiesen wurde aber nichts - die Mail ging mit Spam-Kopfzeile durch.
+    -- Getroffen hat das ausgerechnet die verdaechtigste Post, je naeher an
+    -- der Schwelle, desto weniger Pruefung. Am 13.09. kam so eine
+    -- Kaltakquise-Mail bei 14.85 durch, deren Absenderdomain auf zwei
+    -- Blocklisten stand (DBL_SPAM + ABUSE_SURBL) - mit KI-Aufruf haette der
+    -- Beleg "url-on-blocklist" sehr wahrscheinlich zur Ablehnung gefuehrt.
+    -- Am 11.09. dasselbe bei 14.70.
+    --
+    -- Kosten: ein paar zusaetzliche Aufrufe fuer das schmale Band zwischen
+    -- den alten 14.0 und der Schwelle.
     if score >= cfg.skip_score_above or score < cfg.skip_score_below then
       return false
     end

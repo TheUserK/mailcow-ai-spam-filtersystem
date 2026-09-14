@@ -352,6 +352,24 @@ else
     # durch die Vorlage ersetzt und damit die Timeout-Kette zerrissen.
     # Fehlende Schluessel ergaenzt das Lua-Skript zur Laufzeit selbst.
     echo -e "${GREEN}[OK]${NC} Existing ai-filter-settings.lua preserved"
+
+    # Eine Ausnahme von "nie anfassen": skip_score_above stand per Vorgabe auf
+    # 14.0, die Reject-Schwelle liegt bei 15.0. Dazwischen lag ein toter
+    # Bereich - die KI wurde als "schon entschieden" uebersprungen, abgewiesen
+    # wurde aber nichts, und die Mail ging mit Spam-Kopfzeile durch. Das ist
+    # ein Fehler und keine Geschmacksfrage, deshalb wird er beim Upgrade
+    # korrigiert. Angefasst wird ausschliesslich die alte Vorgabe; ein selbst
+    # gewaehlter Wert bleibt stehen und wird nur gemeldet.
+    SETTINGS_FILE="data/conf/rspamd/lua/ai-filter-settings.lua"
+    CURRENT_SKIP=$(sed -n 's/^[[:space:]]*skip_score_above[[:space:]]*=[[:space:]]*\([0-9.]*\).*/\1/p' "$SETTINGS_FILE" | head -1)
+    if [[ "$CURRENT_SKIP" == "14.0" || "$CURRENT_SKIP" == "14" ]]; then
+        sed -i 's/^\([[:space:]]*skip_score_above[[:space:]]*=[[:space:]]*\)14\(\.0\)\?,/\115.0,/' "$SETTINGS_FILE"
+        echo -e "${GREEN}[OK]${NC} skip_score_above 14.0 -> 15.0 (closed the gap below the reject threshold)"
+    elif [[ -n "$CURRENT_SKIP" ]] && awk "BEGIN{exit !($CURRENT_SKIP < 15)}" 2>/dev/null; then
+        echo -e "${YELLOW}[!]${NC} skip_score_above is $CURRENT_SKIP - below the reject threshold (15.0)"
+        echo "    Mail scoring between the two is skipped by the AI and not rejected either."
+        echo "    Raise it to 15.0 in $SETTINGS_FILE unless this is deliberate."
+    fi
 fi
 
 # === ABSENDER-HISTORIE ===

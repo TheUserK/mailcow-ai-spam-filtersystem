@@ -6,8 +6,12 @@ ai_filter_settings = {
   -- URL of the AI checker service
   checker_url = 'http://ai-checker:8080/ai-mail-checker.php',
 
-  -- Skip AI check if Rspamd score is already above/below these values
-  skip_score_above = 14.0,
+  -- Skip AI check if Rspamd score is already above/below these values.
+  -- skip_score_above gehoert auf die Reject-Schwelle (15.0), nicht darunter:
+  -- Alles darunter waere ein toter Bereich, in dem die KI uebersprungen wird,
+  -- ohne dass Rspamd tatsaechlich abweist - die Mail ginge dann ungeprueft
+  -- mit Spam-Kopfzeile durch.
+  skip_score_above = 15.0,
   skip_score_below = -10.0,
 
   -- HTTP timeout for AI check (seconds)
