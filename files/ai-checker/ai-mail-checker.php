@@ -2258,7 +2258,22 @@ PROMPT;
         // tatsaechlichen Endwert ohnehin auf policy['max_total'] (>=
         // JUNK_FLOOR fuer jede angreifbare Kategorie) - die eigentliche
         // Sicherheitsgrenze liegt dort, nicht hier.
-        $needed = JUNK_FLOOR - $mail['rspamd_score'];
+        //
+        // AUFRUNDEN, nicht einfach rechnen. respondSuccess() und
+        // clampToTotalCeiling() runden den zurueckgegebenen Wert auf zwei
+        // Stellen - nach unten geht dabei bis zu einem halben Cent
+        // verloren, und genau darauf zielt diese Untergrenze ja punktgenau.
+        //
+        // Am 16.09. kam eine Kaltakquise-Mail mit Rspamd-Score 0.147622
+        // durch: gebraucht wurden 7.852378 Punkte, gerundet zurueckgegeben
+        // 7.85, Summe bei Rspamd 7.997622. Die Junk-Schwelle des Betreibers
+        // liegt bei exakt 8 - die Mail verfehlte sie um 0.0024 Punkte und
+        // landete im Posteingang. Im Log stand "total_score: 8", weil auch
+        // dort auf zwei Stellen gerundet wird: Der Fehler war unsichtbar.
+        //
+        // Eine Untergrenze, die ihr eigenes Ziel um Rundungsreste verfehlt,
+        // ist keine. Aufgerundet sind es 7.86 und damit 8.0076 - drueber.
+        $needed = ceil((JUNK_FLOOR - $mail['rspamd_score']) * 100 - 1e-9) / 100;
         $score = max($score, $needed);
     }
 
