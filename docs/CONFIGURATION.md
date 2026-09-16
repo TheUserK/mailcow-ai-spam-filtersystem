@@ -113,6 +113,20 @@ their own (minus anything currently on probation, see below):
 | `brand-linked-not-sender` | the mail links a real brand's domain, but the sender is unrelated to it |
 | `brand-claim-vs-known-domain` | the model's claimed brand matches a domain in the generated Majestic-Million brand list, and the sender doesn't |
 
+Everything not in that table is **weak**: it feeds the score and the prompt,
+but cannot carry a rejection on its own. `url-shortener` is one of them, and
+since 16.09. it covers more than the classic shorteners:
+
+- `search.app` and `share.google` as sender domains
+- `google.*/share.google?q=...` matched on the **full URL**, because the domain
+  of such a link is plain `google.com` - no domain list can ever catch it
+
+That was the one thing every mail of a hotel-impersonation campaign had in
+common while its pretexts kept changing (room bookings, then guest complaints
+with an alleged video). Deliberately narrow: `google.com/url?` is *not*
+matched, it appears in masses of harmless forwarded mail. The flag also blocks
+the trusted-sender auto-pass, same as a dangerous attachment does.
+
 New evidence classes are added on **probation**: `probationEvidence()` lists
 classes that still count toward the score and the contradiction report but
 cannot carry a rejection by themselves until proven in production. The four

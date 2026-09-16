@@ -1118,7 +1118,7 @@ function brandLinkDomains($brand) {
 function structuralSignals(array $mail, $verifiedBrand = '') {
     return [
         'dangerous_attachments'  => findDangerousAttachments($mail['attachments']),
-        'shortener_domains'      => findShortenerDomains($mail['url_domains']),
+        'shortener_domains'      => findShortenerDomains($mail['url_domains'], $mail['urls'] ?? []),
         'free_hosting_links'     => findFreeHostingLinks($mail['url_domains'], $mail['from_domain']),
         'cloud_storage_only'     => allUrlsAreCloudStorage($mail['url_domains']),
         'hijacked_reply_to'      => hijackedReplyTo($mail),
@@ -4047,16 +4047,42 @@ function findDangerousAttachments(array $attachments) {
     return array_values(array_unique($hits));
 }
 
-function findShortenerDomains(array $domains) {
+// ---------------------------------------------------------------------
+//  Dienste, die das eigentliche Ziel einer URL verbergen.
+//
+//  Seit Mitte September laeuft eine Kampagne, die den Empfaenger als Hotel
+//  anschreibt - mal als Zimmerbuchung, mal als Gastbeschwerde mit
+//  angeblichem Video. Absender sind gekaperte echte Konten, die Texte
+//  wechseln staendig. Das einzige, was alle Varianten teilen, ist die Art
+//  des Links: Googles Link-Weitergabe. Damit erbt das Ziel Googles
+//  Reputation, und keine Blockliste sieht es.
+//
+//  "goo.gl" stand hier schon, ist aber eingestellt - verschickt wird heute
+//  ueber search.app und share.google.
+// ---------------------------------------------------------------------
+function findShortenerDomains(array $domains, array $urls = []) {
     $shorteners = [
         'bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'shorturl.at',
         'goo.gl', 'ow.ly', 'buff.ly', 'is.gd', 'tiny.cc',
+        'search.app', 'share.google',
     ];
 
     $hits = [];
     foreach (normalizeDomainList($domains) as $domain) {
         if (domainMatchesAny($domain, $shorteners)) {
             $hits[] = $domain;
+        }
+    }
+
+    // share.google steht im PFAD, nicht im Host: Die Domain einer solchen
+    // URL ist schlicht "google.com". Eine Domainliste kann das nie fassen -
+    // deshalb hier zusaetzlich die vollstaendige URL ansehen. Bewusst nur
+    // dieses eine Muster und nicht jeder google.com-Link: "/url?" etwa
+    // steckt massenhaft in voellig harmloser weitergeleiteter Post.
+    foreach ($urls as $url) {
+        if (preg_match('~^https?://(?:www\.)?google\.[a-z]{2,3}(?:\.[a-z]{2,3})?/share\.google~i', (string)$url)) {
+            $hits[] = 'share.google';
+            break;
         }
     }
 

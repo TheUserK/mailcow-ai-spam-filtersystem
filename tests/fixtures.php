@@ -545,6 +545,21 @@ function runFixtures() {
         'leere_adresse'   => businessRejectRuleFor(''),
     ];
 
+    // Google-Link-Weitergabe. Der zweite Fall ist der wichtige: Bei
+    // "google.com/share.google?q=..." ist die Domain schlicht "google.com",
+    // eine Domainliste greift also nie - genau so kam die Gastbeschwerden-
+    // Masche am 15.09. durch. Die letzten beiden muessen still bleiben,
+    // sonst faengt der Beleg jede harmlose Google-Verlinkung ein.
+    $out['_link_weitergabe'] = [
+        'search_app'      => findShortenerDomains(['search.app'], ['https://search.app/xyz']),
+        'share_google'    => findShortenerDomains(['google.com'], ['https://www.google.com/share.google?q=79DTqZVeI10RgYg8t']),
+        'share_google_de' => findShortenerDomains(['google.de'], ['https://google.de/share.google?q=abc']),
+        'klassisch'       => findShortenerDomains(['bit.ly'], []),
+        'google_normal'   => findShortenerDomains(['google.com'], ['https://www.google.com/maps/place/Hotel']),
+        'google_url_weiterleitung' => findShortenerDomains(['google.com'], ['https://www.google.com/url?q=https://example.org']),
+        'ohne_links'      => findShortenerDomains([], []),
+    ];
+
     // Wie das Modell einen Regel-Treffer meldet. Der Fall "text" stammt aus
     // einer echten Antwort vom 14.09.: Das Modell hatte die Masche erkannt,
     // schrieb die Antwort aber in den Begruendungstext statt ins Feld - und
