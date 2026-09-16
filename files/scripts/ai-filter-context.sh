@@ -361,7 +361,7 @@ pick_links() {
             else next
             print p "\t" $0
         }' \
-    | sort -k1,1n | cut -f2- | head -3
+    | sort -k1,1n | cut -f2- | head -3 || true
 }
 
 # --- Klassifizieren ---------------------------------------------------
@@ -444,7 +444,10 @@ collect_text() {
         fi
     done < <(pick_links "$TMP/page.html" "$base" "$domain")
 
-    PAGE_TEXT=$(cut -c1-4000 "$TMP/text.txt" | head -c 4000)
+    # "|| true" ist Pflicht: head steigt nach 4000 Zeichen aus, cut bekommt
+    # SIGPIPE (141), und unter "set -euo pipefail" wuerde das Skript hier
+    # abbrechen - dieselbe Falle wie in ai-filter-test.sh, nur seltener.
+    PAGE_TEXT=$(cut -c1-4000 "$TMP/text.txt" | head -c 4000 || true)
     return 0
 }
 

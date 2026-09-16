@@ -23,8 +23,22 @@ else echo -e "${RED}Docker Compose not found${NC}"; exit 1; fi
 echo "=== AI Filter Test ==="
 echo ""
 
+# Erst einsammeln, dann pruefen - NICHT "... | grep -q".
+#
+# Bei einer Pipe unter "set -o pipefail" beendet sich "grep -q" beim ersten
+# Treffer und schliesst die Pipe. Schreibt der Erzeuger da noch, bekommt er
+# SIGPIPE und endet mit 141, und pipefail macht daraus das Ergebnis der
+# ganzen Pipe - die Bedingung ist also falsch, obwohl der Treffer da war.
+#
+# Genau daran scheiterte Punkt 2 bei jedem ERSTEN Aufruf auf zwei Servern:
+# "php -m" listet rund 60 Module, "pdo_mysql" steht mittendrin. Beim ersten
+# Lauf ist "docker compose exec" langsam genug, dass grep aussteigt, waehrend
+# php noch schreibt -> gemeldet wurde "missing". Beim zweiten Lauf ist alles
+# warm, php ist vor grep fertig -> "OK". Ein reines Rennen, ohne jeden Bezug
+# zum tatsaechlichen Zustand des Containers.
 echo -n "1. Health endpoint: "
-if $COMPOSE_CMD exec -T ai-checker php -r 'echo file_get_contents("http://localhost:8080/health");' 2>/dev/null | grep -q OK; then
+HEALTH=$($COMPOSE_CMD exec -T ai-checker php -r 'echo file_get_contents("http://localhost:8080/health");' 2>/dev/null)
+if [[ "$HEALTH" == *OK* ]]; then
     echo -e "${GREEN}OK${NC}"
 else
     echo -e "${RED}no response${NC}"
@@ -32,11 +46,16 @@ else
     exit 1
 fi
 
+# Direkt fragen statt die Modulliste zu durchsuchen: eine Zeile Ausgabe,
+# eindeutige Antwort.
 echo -n "2. pdo_mysql present: "
-if $COMPOSE_CMD exec -T ai-checker php -m 2>/dev/null | grep -q pdo_mysql; then
+PDO=$($COMPOSE_CMD exec -T ai-checker php -r 'echo extension_loaded("pdo_mysql") ? "yes" : "no";' 2>/dev/null)
+if [[ "$PDO" == "yes" ]]; then
     echo -e "${GREEN}OK${NC}"
-else
+elif [[ "$PDO" == "no" ]]; then
     echo -e "${RED}missing${NC} - internal-mail detection will not work"
+else
+    echo -e "${YELLOW}could not be determined${NC} - container did not answer"
 fi
 
 echo "3. Analysis round-trip:"
