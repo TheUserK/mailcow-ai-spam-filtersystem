@@ -168,6 +168,20 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 `TZ`) and restart the container. Check `errors.log` for
 "Failed to fetch local domains" if it's set but still failing.
 
+The same domain list also decides `partOfRealConversation()`, and without it
+that function protects every mail carrying any `In-Reply-To` header - which
+switches off both reject paths *and* the junk floor at once. Since 16.09. the
+last successfully read list is cached to
+`data/logs/ai-checker/local_domains.json` and reused on a DB failure, so an
+outage no longer silently disarms the filter. `errors.log` then says "Using
+cached local domains". If both the DB and the cache are gone, that protective
+fallback is back in force - worth knowing before concluding that nothing is
+being rejected any more:
+
+```bash
+ai-filter-log.sh -e -n 2000 | grep -iE "local domains"
+```
+
 ## False Positives
 
 **Legitimate emails being flagged?**

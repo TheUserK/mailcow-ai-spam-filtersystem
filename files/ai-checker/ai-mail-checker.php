@@ -104,6 +104,8 @@ define('MAX_CALLS_PER_MONTH', AVG_COST_PER_CALL_EUR > 0
     ? (int)(MONTHLY_BUDGET_EUR / AVG_COST_PER_CALL_EUR)
     : PHP_INT_MAX);
 define('BUDGET_FILE', '/var/log/ai-checker/monthly_budget.json');
+// Letzte erfolgreich gelesene Domainliste - siehe getLocalDomains().
+define('LOCAL_DOMAINS_CACHE', '/var/log/ai-checker/local_domains.json');
 
 // Betreff und Body-Auszug in stats.log schreiben? Das sind Inhaltsdaten von
 // Absendern, die dem nie zugestimmt haben - daher standardmaessig AUS.
@@ -433,6 +435,7 @@ function prepareMailContext(array $data) {
             'precedence' => cleanTextValue($headers['precedence'] ?? $data['precedence'] ?? ''),
             'authentication_results' => cleanTextValue($headers['authentication_results'] ?? $data['authentication_results'] ?? ''),
             'to_header' => cleanTextValue($headers['to_header'] ?? $data['to_header'] ?? ''),
+            'cc_header' => cleanTextValue($headers['cc_header'] ?? $data['cc_header'] ?? ''),
         ],
         'auth' => [
             'spf' => normalizeTriState($auth['spf'] ?? 'unknown'),
@@ -1146,6 +1149,7 @@ function structuralSignals(array $mail, $verifiedBrand = '') {
         'reply_to_freemail_swap' => freemailReplyToSwap($mail),
         'no_disclosed_recipient' => noDisclosedRecipient($mail),
         'fake_thread'            => fakeThreadClaim($mail),
+        'foreign_thread_ref'     => foreignThreadReference($mail),
         'role_name_source'       => institutionalRoleSource($mail),
         'role_name_on_freemail'  => institutionalRoleSource($mail) !== '',
         'fabricated_ticket'      => fabricatedTicketClaim($mail),
@@ -1257,6 +1261,9 @@ function analyzeLocally(array $mail, $requestId) {
     }
     if ($struct['fake_thread']) {
         $riskFlags[] = 'fake-thread';
+    }
+    if (!empty($struct['foreign_thread_ref'])) {
+        $riskFlags[] = 'thread-ref-not-ours';
     }
     if ($struct['role_name_on_freemail']) {
         $riskFlags[] = 'role-name-on-freemail:' . $struct['role_name_source'];
@@ -1452,6 +1459,15 @@ Zu den Absender-Flags:
   KEIN In-Reply-To/References existiert - es gibt also keinen echten
   Vorgaenger. Typisch fuer Kaltakquise und Phishing, das Vertrauen ueber
   einen erfundenen Gespraechsverlauf erschleicht. Starkes Warnsignal.
+- "thread-ref-not-ours": Die Mail traegt zwar einen In-Reply-To- oder
+  References-Header, der zeigt aber auf keine Nachricht aus diesem Haus.
+  Der Vorgaenger existiert also - nur hatte er mit dem Empfaenger nie zu
+  tun. Typisch fuer Kaltakquise, die auf ihre EIGENE vorherige Mail
+  antwortet, um einen Austausch vorzutaeuschen. Ein "Re:" im Betreff
+  bedeutet hier also gerade NICHT, dass eine Beziehung besteht. Es gibt
+  einen harmlosen Fall: wer in einen fremden Thread hineingezogen wird und
+  antwortet, hat legitim eine fremde Message-ID im Header - dann passen
+  aber Anrede, Inhalt und Empfaengerkreis dazu.
 - "free-hosting-link:DOMAIN": Die Mail verlinkt eine kostenlose Blog- oder
   Baukasten-Plattform (Blogspot, Glitch, 000webhost, ...), obwohl sie
   selbst nicht von dort kommt. Sehr starkes Warnsignal, gerade wenn die
@@ -2075,6 +2091,21 @@ PROMPT;
         $score = max($score, 0.0);
     }
 
+    // Kein Ham-Bonus fuer eine Mail, die einen Vorgaenger behauptet, den es
+    // bei uns nicht gibt. Am 15.09. kam ein nacktes "Re:" ohne Inhalt von
+    // einem Freemail-Erstkontakt: Das Modell stufte es als "personal" ein
+    // und zog 0.72 Punkte AB - obwohl Rspamd allein schon bei 7.98 stand
+    // und "high-rspamd-score" in den eigenen red_flags des Modells stand.
+    //
+    // Derselbe Mechanismus wie beim nackten Link oben: Der Rabatt faellt
+    // weg, ein Aufschlag entsteht nicht, und die Ablehnung bleibt davon
+    // unberuehrt. Deshalb darf hier auch der Bewaehrungsfall mitzaehlen -
+    // er entscheidet nichts, er nimmt nur ein Geschenk zurueck.
+    $struct = $localContext['struct'] ?? [];
+    if (!empty($struct['fake_thread']) || !empty($struct['foreign_thread_ref'])) {
+        $score = max($score, 0.0);
+    }
+
     // --- Wie hart darf diese Mail behandelt werden? ---
     $policy     = categoryPolicy($category);
     $confidence = floatval($analysis['confidence'] ?? 0.5);
@@ -2189,7 +2220,26 @@ PROMPT;
     // Junk-Untergrenze: siehe JUNK_FLOOR. Greift auch ohne Strukturbeleg -
     // eingeordnet wird auf Modellurteil hin, verworfen nie. Laufende
     // Konversationen und bekannte Absender bleiben aussen vor.
-    $junkFloorApplies = $policy['may_reject']
+    // "marketing" darf nie abgewiesen werden (may_reject = false) und war
+    // damit bisher auch vom Junk-Floor ausgenommen. Am 15.09. blieb eine
+    // Kaltakquise-Mail deshalb bei 5.63 im Posteingang: Das Modell hatte
+    // sie mit 90 % Sicherheit als Werbung erkannt, die Kategorie allein
+    // hat sie durchgelassen.
+    //
+    // Entscheidend ist der Abmeldeweg. Ein Newsletter mit
+    // List-Unsubscribe ist bestellbar und abbestellbar - der gehoert dem
+    // Empfaenger, nicht uns, und bleibt aussen vor (seit 16.09. sortiert
+    // der Prompt genau solche Post bewusst als "marketing" ein, damit sie
+    // NICHT im Junk landet). Ungefragte Massenwerbung ohne jeden
+    // Abmeldeweg hat diesen Schutz nicht.
+    //
+    // Abweisbar wird dadurch nichts: may_reject bleibt false, es geht
+    // ausschliesslich um den Ordner.
+    $unsolicitedBulk = $category === 'marketing'
+        && empty($mail['signals']['has_list_unsubscribe'])
+        && empty($mail['headers']['list_id']);
+
+    $junkFloorApplies = ($policy['may_reject'] || $unsolicitedBulk)
         && $confidence >= 0.80
         && empty($localContext['matched_profile'])
         && $verifiedBrand === ''
@@ -2365,6 +2415,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     if ($struct['fake_thread']) {
         $evidence[] = 'fake-thread';
+    }
+    if (!empty($struct['foreign_thread_ref'])) {
+        $evidence[] = 'fake-thread-foreign-ref';
     }
     if ($struct['role_name_on_freemail']) {
         $evidence[] = 'role-name-on-freemail';
@@ -2591,7 +2644,53 @@ function noDisclosedRecipient(array $mail) {
         return true;
     }
     // "undisclosed-recipients:;", "Undisclosed Recipients : ;", "recipients:;"
-    return (bool)preg_match('/^["\']?[a-z][a-z \-]*recipients?["\']?\s*:\s*;?\s*$/i', $to);
+    if (preg_match('/^["\']?[a-z][a-z \-]*recipients?["\']?\s*:\s*;?\s*$/i', $to)) {
+        return true;
+    }
+
+    // Dritte Form, seit 16.09.: Der Absender adressiert SICH SELBST, die
+    // echten Empfaenger stehen im BCC. Am 15.09. zeigten beide Mails, die
+    // der Mailclient des Empfaengers von sich aus als Spam markiert hatte,
+    // genau diesen Kopf - unsere Pruefung sah einen befuellten To-Header
+    // und schwieg. Die Absicht ist dieselbe wie bei der Leerformel: Die
+    // Empfaengerliste soll nicht sichtbar werden.
+    //
+    // Nur wenn die EIGENE Adresse des Empfaengers weder in To noch in Cc
+    // auftaucht - sonst faengt das jede Mail ein, bei der jemand sich
+    // selbst in Kopie setzt.
+    $addresses = extractAddresses($to . ',' . (string)($mail['headers']['cc_header'] ?? ''));
+    if (empty($addresses)) {
+        return false;
+    }
+
+    $recipient = strtolower(trim((string)($mail['to'] ?? '')));
+    foreach ($addresses as $addr) {
+        if ($recipient !== '' && $addr === $recipient) {
+            return false;   // der Empfaenger steht sichtbar drin
+        }
+    }
+
+    $sender = strtolower(trim((string)($mail['from_email'] ?? '')));
+    if ($sender === '') {
+        return false;
+    }
+    foreach ($addresses as $addr) {
+        if ($addr !== $sender) {
+            return false;   // noch jemand anderes sichtbar adressiert
+        }
+    }
+    return true;
+}
+
+// Alle Mailadressen aus einem Adressheader, kleingeschrieben.
+function extractAddresses($header) {
+    $found = [];
+    if (preg_match_all('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', (string)$header, $m)) {
+        foreach ($m[0] as $addr) {
+            $found[] = strtolower($addr);
+        }
+    }
+    return array_values(array_unique($found));
 }
 
 // ---------------------------------------------------------------------
@@ -2827,6 +2926,37 @@ function freemailReplyToSwap(array $mail) {
 }
 
 // ---------------------------------------------------------------------
+//  Derselbe erfundene Thread, nur eine Stufe subtiler: Die Mail TRAEGT
+//  einen In-Reply-To- oder References-Header - er zeigt aber auf keine
+//  Message-ID von uns.
+//
+//  fakeThreadClaim() steigt bei einem vorhandenen Header sofort aus, und
+//  genau das nutzt diese Masche aus. Am 15.09. kamen sechs Kaltakquise-
+//  Mails aus Outlook-Postfaechern, alle mit "Re:" im Betreff, die meisten
+//  mit einem selbst gesetzten In-Reply-To auf ihre EIGENE vorherige Mail.
+//  Technisch existiert der Vorgaenger also - er hat nur nie etwas mit uns
+//  zu tun gehabt. Drei davon trugen "fake-thread" in den red_flags des
+//  Modells, waehrend unser eigener Befund bei allen dreien false war.
+//
+//  Bewusst als EIGENER Beleg und nicht als Erweiterung von
+//  fakeThreadClaim(): Der enge Fall (gar kein Header) ist seit dem 30.08.
+//  scharf und hat sich bewaehrt. Dieser hier ist schwaecher begruendet -
+//  wer in einen fremden Thread hineingezogen wird und antwortet, hat
+//  legitim eine fremde Message-ID im Header. Deshalb startet er auf
+//  Bewaehrung und wirkt vorerst ueber den Prompt, nicht ueber die
+//  Ablehnung.
+// ---------------------------------------------------------------------
+function foreignThreadReference(array $mail) {
+    if ($mail['in_reply_to'] === '' && $mail['references'] === '') {
+        return false;   // das ist der Fall von fakeThreadClaim()
+    }
+    if (partOfRealConversation($mail)) {
+        return false;   // der Bezug ist nachweisbar unserer
+    }
+    return threadClaimInSubjectOrBody($mail);
+}
+
+// ---------------------------------------------------------------------
 //  Behauptet die Mail, Teil eines laufenden Austauschs zu sein ("Re:",
 //  "AW:" im Betreff, ein zitiertes "... wrote:" / "... schrieb" im Text),
 //  obwohl In-Reply-To UND References beide leer sind? Dann gibt es
@@ -2840,7 +2970,16 @@ function fakeThreadClaim(array $mail) {
     if ($mail['in_reply_to'] !== '' || $mail['references'] !== '') {
         return false;
     }
+    return threadClaimInSubjectOrBody($mail);
+}
 
+// ---------------------------------------------------------------------
+//  Behauptet Betreff oder Text einen Vorgaenger? Reine Mustererkennung,
+//  ohne jede Aussage darueber, ob es den Vorgaenger gibt - das
+//  entscheiden die beiden Aufrufer (fakeThreadClaim /
+//  foreignThreadReference) an ihren Headern.
+// ---------------------------------------------------------------------
+function threadClaimInSubjectOrBody(array $mail) {
     // Der Doppelpunkt ist optional: "Re- Neu gestalten" (27.08., Webdesign-
     // Kaltakquise aus einem Outlook-Postfach) ersetzt ihn durch einen
     // Bindestrich, vermutlich genau gegen solche Pruefungen. Beim Binde-
@@ -2910,6 +3049,7 @@ function strongEvidence(array $evidence) {
         // NICHT auf Bewaehrung - eine Regel, die nicht abweist, waere keine.
         'operator-reject-rule',
         'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
+        'fake-thread-foreign-ref', // Thread-Header vorhanden, zeigt aber auf nichts von uns
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
         'rspamd-concurs',        // Rspamd kommt unabhaengig zum selben Schluss
@@ -2957,6 +3097,12 @@ function probationEvidence() {
         // den einen Fall, der die Klasse ausgeloest hat. Erst im Report
         // beobachten, dann scharf schalten.
         'sender-on-blocklist',
+        // Seit 16.09. Wer in einen fremden Thread hineingezogen wird und
+        // antwortet, hat legitim eine fremde Message-ID im Header. Der
+        // enge Fall (gar kein Header) ist davon unberuehrt und bleibt
+        // scharf. Vorerst wirkt dieser hier ueber den Prompt und den
+        // Score, nicht ueber die Ablehnung.
+        'fake-thread-foreign-ref',
     ];
 }
 
@@ -3166,9 +3312,28 @@ function getLocalDomains() {
         $domains = $pdo->query('SELECT domain FROM domain WHERE active = 1')->fetchAll(PDO::FETCH_COLUMN);
         $domains = normalizeDomainList($domains);
         $lastFetch = time();
+        // Letzte gute Liste wegschreiben. Faellt die Datenbank aus, ist
+        // sonst die Antwort von partOfRealConversation() "ohne Liste
+        // lieber schuetzen" - und das schaltet fuer JEDE Mail mit einem
+        // In-Reply-To-Header beide Reject-Pfade und den Junk-Floor ab.
+        // Ein DB-Aussetzer wuerde den Filter also stumm entwaffnen, ohne
+        // dass irgendwo etwas anderes auffaellt als eine Zeile in
+        // errors.log.
+        if (!empty($domains)) {
+            @file_put_contents(LOCAL_DOMAINS_CACHE, json_encode($domains));
+        }
     } catch (Exception $e) {
         logError('system', 'Failed to fetch local domains: ' . $e->getMessage());
         $domains = [];
+
+        $cached = @file_get_contents(LOCAL_DOMAINS_CACHE);
+        if ($cached !== false) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded) && !empty($decoded)) {
+                $domains = normalizeDomainList($decoded);
+                logError('system', 'Using cached local domains', ['count' => count($domains)]);
+            }
+        }
     }
 
     return $domains;

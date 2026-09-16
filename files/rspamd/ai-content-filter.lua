@@ -352,6 +352,9 @@ rspamd_config:register_symbol({
     -- Empfaenger im To-Header. Die Auswertung (leer, oder RFC-5322-Leerformel
     -- "Undisclosed recipients:;") passiert im PHP-Checker.
     local to_header = header_str(task, 'To')
+    -- Cc gehoert dazu: Steht der Absender allein im To, die echten
+    -- Empfaenger aber sichtbar im Cc, ist die Liste nicht verborgen.
+    local cc_header = header_str(task, 'Cc')
     local precedence = header_str(task, 'Precedence')
     local authentication_results = header_str(task, 'Authentication-Results')
 
@@ -431,6 +434,7 @@ rspamd_config:register_symbol({
         precedence = precedence,
         authentication_results = authentication_results,
         to_header = to_header,
+        cc_header = cc_header,
       },
       auth = {
         spf = spf,

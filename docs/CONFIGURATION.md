@@ -107,6 +107,7 @@ their own (minus anything currently on probation, see below):
 | `operator-reject-rule` | the operator wrote a reject rule for this recipient and the model confirms the mail matches it. Lifts the category lock; the only config that rejects |
 | `reply-to-unrelated-domain` | same pattern, but the reply mailbox sits at a provider the freemail detection doesn't know. Requires DMARC pass, a non-freemail sender, no list headers, and a Reply-To domain unrelated to the sender's. **On probation** |
 | `fake-thread` | a Re:/AW: subject or a quoted-reply body with no In-Reply-To/References header |
+| `fake-thread-foreign-ref` | the same claim one step subtler: the header *is* there, but it points at no Message-ID of ours. Cold outreach replying to its own earlier mail. **On probation** |
 | `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
 | `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
 | `rspamd-concurs` | Rspamd's own score is already at or above `RSPAMD_CONCUR_SCORE` (10) - a fully independent second source agreeing |
@@ -137,9 +138,13 @@ went live on 30.08. after running without a false positive. Currently on
 probation: `reply-to-unrelated-domain` (since 11.09.) - there are legitimate
 reasons for an off-domain reply route (ticket systems on a vendor domain,
 external consultants, deliberately redirected replies), and one real hit is
-not a basis for an irreversible rejection - and `sender-on-blocklist` (since
+not a basis for an irreversible rejection - `sender-on-blocklist` (since
 16.09.), for the same reason: address-exact lists are reliable, but only one
-case has been seen so far, which is not a data basis. Watch the report group "Beleg auf
+case has been seen so far, which is not a data basis - and
+`fake-thread-foreign-ref` (since 16.09.), because anyone pulled into a
+third party's thread legitimately carries a foreign Message-ID in the header.
+The narrow `fake-thread` case (no header at all) is untouched and stays
+armed. Watch the report group "Beleg auf
 Bewaehrung hat gefeuert" and arm it by deleting the line once it has proven
 itself. Re-adding a name to `probationEvidence()` puts it back on probation -
 a one-line change either way.
@@ -183,6 +188,15 @@ model, but they cannot carry a rejection alone: `brand-claim-mismatch`,
 `url-shortener`, `cloud-storage-only-links`, `reply-to-freemail-swap`,
 `undisclosed-recipient` (no visible recipient in the `To:` header - common in
 legitimate BCC mailouts too, so deliberately never strong on its own).
+
+`undisclosed-recipient` knows three shapes: an empty `To:`, RFC 5322's
+`undisclosed-recipients:;` group formula, and - since 16.09. - a `To:` that
+holds **only the sender's own address**, with the real recipients in BCC. On
+15.09. both mails that the recipient's own mail client had flagged as spam
+carried exactly that header, while our check saw a populated `To:` and stayed
+silent. The third shape only counts when the recipient's own address appears
+in neither `To:` nor `Cc:` - otherwise it would catch every mail where someone
+copies themselves.
 
 That split comes from production. `brand-claim-mismatch` fired three times and
 was wrong all three: a cruise line (`Scenic Eclipse` from `mail.scenic.eu`), a
@@ -246,6 +260,17 @@ below the junk line by Rspamd credit for clean infrastructure (SPF/DKIM,
 List-Unsubscribe, an aged domain). Unlike the reject paths this needs **no**
 structural evidence - a wrong junk classification just means recoverable mail
 in the spam folder, not a lost mail, so the model's word alone is enough here.
+
+Since 16.09. the junk floor also covers `marketing` when the mail carries
+**no** `List-Unsubscribe` and no `List-Id` - unsolicited bulk advertising with
+no way out. On 15.09. a cold-outreach mail stayed in the inbox at 5.63 because
+`marketing` has `may_reject = false` and was therefore exempt from the floor
+as well, even though the model had identified it as advertising at 90%
+confidence. A newsletter with a working unsubscribe address is explicitly
+excluded: it belongs to the recipient, not to us, and since 16.09. the prompt
+deliberately sorts exactly that kind of mail into `marketing` so it does *not*
+end up in junk. Nothing becomes rejectable by this - `may_reject` stays
+`false`, this is only about the folder.
 
 **Authenticated list mail closes the AI-confident path**
 (`authenticatedListMail()`, since 16.09.). When a mail carries a
@@ -689,7 +714,7 @@ keeps your choice.
 | `MONTHLY_BUDGET_EUR` | `50` | Monthly budget in EUR |
 | `AVG_COST_PER_CALL_EUR` | `0.00034` | Estimated cost per API call, used to derive the monthly call limit. Depends on the model, so a provider profile overrides it; `0` disables the limit |
 | `MAX_SPAM_POINTS` | `4.0` | Max score the AI can add for `legitimate`/`transactional`/`personal` (`newsletter`/`marketing` get `MAX_SPAM_POINTS + 1.0`; the attackable categories use `MAX_PHISHING_POINTS` instead, see below) |
-| `MAX_HAM_POINTS` | `3.0` | Max score the AI can *subtract* for confident ham |
+| `MAX_HAM_POINTS` | `3.0` | Max score the AI can *subtract* for confident ham. Forfeited (clipped to 0) when the mail is nothing but a link from a freemail first contact, when it carries prompt injection, or - since 16.09. - when it claims a thread that does not exist here (`fake-thread` or `fake-thread-foreign-ref`). On 15.09. a bare "Re:" with no content was categorised `personal` and got 0.72 points *deducted*, while Rspamd alone already stood at 7.98. The discount falls away; no surcharge is added and nothing becomes rejectable |
 | `MAX_PHISHING_POINTS` | `10.0` | Max score for `phishing`/`fraud`/`spam`/`pharma`/`clickbait` - deliberately kept **below** Rspamd's reject threshold (15) so the AI's own contribution can never reject a mail by itself |
 | `REJECT_THRESHOLD` | `15.0` | Rspamd's own reject action threshold, mirrored here so the checker can reason about it |
 | `MAX_TOTAL_DEFAULT` | `12.0` | Total-score ceiling for `newsletter`/`marketing` and, absent a reject path, `clickbait`/`spam`/`pharma`/`phishing`/`fraud` |

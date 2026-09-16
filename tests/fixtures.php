@@ -111,6 +111,59 @@ function fixtures() {
         'headers' => ['list_unsubscribe' => '<https://news.haendler-beispiel.de/abmelden>'],
     ]);
 
+    // 15.09.: "Re:" mit selbst gesetztem In-Reply-To auf die EIGENE
+    // vorherige Mail. fakeThreadClaim() muss hier still bleiben (Header
+    // vorhanden), foreignThreadReference() muss greifen. Genau diese
+    // Unterscheidung fehlte - drei Mails trugen "fake-thread" in den
+    // red_flags des Modells, waehrend unser Befund false war.
+    $cases['fremder-thread-bezug'] = array_replace_recursive($base, [
+        'from' => 'seo-kontakt@outlook.com', 'from_email' => 'seo-kontakt@outlook.com',
+        'from_display_name' => 'SEO Team',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Re: S-E-O Proposal !!',
+        'body' => 'Just following up on my earlier mail. Shall we schedule a call?',
+        'rspamd_score' => 4.54,
+        'in_reply_to' => '<eigene-vorgaengermail-1@outlook.com>',
+        'signals' => ['freemail_from' => true],
+    ]);
+
+    // Gegenprobe: Antwort auf eine Message-ID aus einer unserer Domains.
+    // Muss still bleiben, sonst faengt der Beleg jede echte Antwort ein.
+    $cases['echter-thread-bezug'] = array_replace_recursive($base, [
+        'from' => 'kontakt@partner-beispiel.de', 'from_email' => 'kontakt@partner-beispiel.de',
+        'from_display_name' => 'Partner Beispiel',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Re: Angebot vom Dienstag',
+        'body' => 'Am Dienstag schrieb: ... - hier unsere Rueckmeldung dazu.',
+        'rspamd_score' => 0.4,
+        'in_reply_to' => '<abc123@moving-pictures.de>',
+    ]);
+
+    // Absender adressiert sich selbst, echte Empfaenger im BCC. Bis 16.09.
+    // sah unsere Pruefung nur einen befuellten To-Header und schwieg.
+    $cases['absender-im-to'] = array_replace_recursive($base, [
+        'from' => 'seo-kontakt@outlook.com', 'from_email' => 'seo-kontakt@outlook.com',
+        'from_display_name' => 'SEO Team',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Re: Reply info',
+        'body' => 'Quick question about your website ranking.',
+        'rspamd_score' => 3.11,
+        'headers' => ['to_header' => '"SEO Team" <seo-kontakt@outlook.com>'],
+        'signals' => ['freemail_from' => true],
+    ]);
+
+    // Gegenprobe dazu: Absender steht zwar im To, der Empfaenger aber auch.
+    // Das ist "sich selbst in Kopie setzen" und voellig normal.
+    $cases['absender-und-empfaenger-im-to'] = array_replace_recursive($base, [
+        'from' => 'kontakt@partner-beispiel.de', 'from_email' => 'kontakt@partner-beispiel.de',
+        'from_display_name' => 'Partner Beispiel',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Protokoll von heute',
+        'body' => 'Anbei wie besprochen das Protokoll.',
+        'rspamd_score' => 0.2,
+        'headers' => ['to_header' => 'kontakt@partner-beispiel.de, info@moving-pictures.de'],
+    ]);
+
     $cases['blutzucker-spam'] = array_replace_recursive($base, [
         'from' => 'support@arrow.onetwotee.shop', 'from_email' => 'support@arrow.onetwotee.shop',
         'from_display_name' => 'Gesundheit',
