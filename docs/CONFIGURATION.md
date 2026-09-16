@@ -101,6 +101,7 @@ their own (minus anything currently on probation, see below):
 |---|---|
 | `brand-impersonation` | the hand-curated brand list, with the brand's real domains |
 | `url-on-blocklist` | external reputation data (Spamhaus, SURBL, URIBL, ...) |
+| `sender-on-blocklist` | the same kind of source, but address-exact: the **sender address itself** is listed (MSBL EBL). Works where domain reputation says nothing - `outlook.com` tells you nothing, the address does. **On probation** |
 | `dangerous-attachment` | an executable attachment |
 | `hijacked-reply-to` | the reply is meant to go to a stranger's freemail account, from a non-freemail sender |
 | `operator-reject-rule` | the operator wrote a reject rule for this recipient and the model confirms the mail matches it. Lifts the category lock; the only config that rejects |
@@ -136,7 +137,9 @@ went live on 30.08. after running without a false positive. Currently on
 probation: `reply-to-unrelated-domain` (since 11.09.) - there are legitimate
 reasons for an off-domain reply route (ticket systems on a vendor domain,
 external consultants, deliberately redirected replies), and one real hit is
-not a basis for an irreversible rejection. Watch the report group "Beleg auf
+not a basis for an irreversible rejection - and `sender-on-blocklist` (since
+16.09.), for the same reason: address-exact lists are reliable, but only one
+case has been seen so far, which is not a data basis. Watch the report group "Beleg auf
 Bewaehrung hat gefeuert" and arm it by deleting the line once it has proven
 itself. Re-adding a name to `probationEvidence()` puts it back on probation -
 a one-line change either way.
@@ -196,6 +199,17 @@ require: no matched trusted-sender profile, no verified-brand sender, and
 `!partOfRealConversation($mail)` - the mail is not a reply to something we
 actually sent, or to a Message-ID whose domain is one of ours.
 
+Rspamd's `KNOWN_SENDER` symbol used to count as such a conversation too, and
+stopped doing so on 16.09. On 15.09. cold outreach arrived from a freemail
+address that Rspamd had listed as a known spam source (`MSBL_EBL`, 7.50),
+scoring 12.98 with undisclosed recipients and 90% model confidence. Every
+condition for a rejection held except this one. The same symbol had also
+handed the address a `-1.00` discount on Rspamd's score, so a blocklisted
+sender was favoured twice over for being "known". `KNOWN_SENDER` only keeps
+books on **freemail** senders - exactly where the address is disposable - so
+"seen before" is not a statement of trust. It remains a trust flag in the
+prompt; it just no longer closes the reject paths.
+
 **The evidence path** (`$rejectEligible`). The category must allow rejection
 at all (`policy['may_reject']`, i.e. one of `clickbait`/`spam`/`pharma`/
 `phishing`/`fraud` - or a protected category broken open by the override
@@ -232,6 +246,20 @@ below the junk line by Rspamd credit for clean infrastructure (SPF/DKIM,
 List-Unsubscribe, an aged domain). Unlike the reject paths this needs **no**
 structural evidence - a wrong junk classification just means recoverable mail
 in the spam folder, not a lost mail, so the model's word alone is enough here.
+
+**Authenticated list mail closes the AI-confident path**
+(`authenticatedListMail()`, since 16.09.). When a mail carries a
+`List-Unsubscribe` header, `auth_strength` is `strong`, and `evidence` is
+completely empty, `$confidentReject` cannot fire. On 15.09. a retailer's
+newsletter - working unsubscribe address, DKIM/DMARC clean, links only to its
+own domain and its ESP - sat on the `ai-confident` path at 0.96 confidence and
+a model score of 8.06. The only reason it was not rejected is that Rspamd
+scored it `-4.31`; at a Rspamd score of roughly `+5.5` the same mail would
+have been thrown away. A sender who ships a working unsubscribe address and is
+certified by DKIM/DMARC is reachable and identifiable, which is never the case
+for an irreversible rejection on a model verdict alone. Sorting is untouched -
+the junk floor still applies, and the evidence path can still reject the mail
+if some structural class does fire.
 
 `reject_path` in `stats.log`/`errors.log` records which path fired:
 `evidence`, `ai-confident`, or empty if the mail never qualified at all.
@@ -743,6 +771,25 @@ grep -E "Reject allowed|Would reject" data/logs/ai-checker/errors.log | jq -r \
 
 `stats.log` carries `evidence` and `reject_eligible` per mail for the same
 purpose.
+
+### `struct_flags` vs. `red_flags`
+
+They look alike and mean opposite things, which cost two analyses on 15.09.:
+
+- **`red_flags`** is what the **model** wrote. It is free text - the model may
+  use a name from the prompt's vocabulary, or invent one.
+- **`struct_flags`** (since 16.09.) is what **our own code** found -
+  `structuralSignals()`, the same data that feeds `evidence`.
+
+On 15.09. three mails carried `fake-thread` in `red_flags` while
+`fakeThreadClaim()` returned false for all three: the model had seen the
+"Re:" in the subject, our code had seen a real `In-Reply-To` header. Same
+name, opposite meaning. A finding only carries weight when it is in
+`struct_flags`/`evidence`.
+
+`real_conversation` (since 16.09.) records the `partOfRealConversation()`
+verdict. That single gate decides `rejectEligible`, `confidentReject` **and**
+the junk floor at once, and it was previously invisible after the fact.
 
 ## Trusted sender profiles
 

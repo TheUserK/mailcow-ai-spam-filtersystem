@@ -53,6 +53,64 @@ function fixtures() {
         'headers' => ['list_unsubscribe' => '<https://manage.kmail-lists.com/u>'],
     ]);
 
+    // 15.09.: Kaltakquise aus einem Freemail-Postfach, dessen Adresse bei
+    // MSBL adressgenau gelistet war (7.50). Rspamd bei 12.98, undisclosed
+    // recipients, dazu ein selbst gesetzter In-Reply-To-Header und
+    // KNOWN_SENDER - und genau KNOWN_SENDER hat die Ablehnung verhindert.
+    // Erwartung: "echter_thread" false (das Symbol zaehlt nicht mehr mit),
+    // "sender-on-blocklist" in der Evidenz, aber NICHT in "strong", weil
+    // die Klasse auf Bewaehrung startet. Getragen wird die Ablehnung hier
+    // von "rspamd-concurs".
+    $cases['blockliste-kaltakquise'] = array_replace_recursive($base, [
+        'from' => 'agentur-kontakt@outlook.com', 'from_email' => 'agentur-kontakt@outlook.com',
+        'from_display_name' => 'Web Services',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Re: Proposal and Pricing',
+        'body' => 'Following up on my previous mail about your website. Interested?',
+        'rspamd_score' => 12.98,
+        'in_reply_to' => '<selbst-gesetzt-123@outlook.com>',
+        'headers' => ['to_header' => ''],
+        'signals' => [
+            'sender_blocklisted' => true,
+            'known_sender' => true,
+            'freemail_from' => true,
+        ],
+    ]);
+
+    // Gegenprobe zum Fall darueber: derselbe Absender, aber ohne
+    // Blocklisten-Treffer und ohne KNOWN_SENDER. Muss still bleiben, sonst
+    // faengt der neue Beleg jede Freemail-Mail ein.
+    $cases['freemail-ohne-blockliste'] = array_replace_recursive($base, [
+        'from' => 'agentur-kontakt@outlook.com', 'from_email' => 'agentur-kontakt@outlook.com',
+        'from_display_name' => 'Web Services',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Angebot Webdesign',
+        'body' => 'Guten Tag, wir gestalten Webseiten. Melden Sie sich gern.',
+        'rspamd_score' => 3.2,
+        'signals' => ['freemail_from' => true],
+    ]);
+
+    // 15.09.: Haendler-Newsletter, sauber authentifiziert, mit
+    // Abmeldeadresse, Links nur auf die eigene Domain und den
+    // Versanddienstleister. Stand trotzdem auf dem ai-confident-Pfad.
+    // Erwartung: Evidenz leer - damit greift authenticatedListMail().
+    $cases['haendler-newsletter'] = array_replace_recursive($base, [
+        'from' => 'angebote@news.haendler-beispiel.de', 'from_email' => 'angebote@news.haendler-beispiel.de',
+        'from_display_name' => 'Haendler Beispiel',
+        'to' => 'empfang@karrerlabs.de',
+        'subject' => 'Herbst-Aktion: bis zu 75% guenstiger',
+        'body' => 'Unsere Herbstangebote sind da. Jetzt im Shop stoebern.',
+        'rspamd_score' => -4.31,
+        'urls' => ['https://news.haendler-beispiel.de/kampagne', 'https://c.versanddienst-beispiel.net/x'],
+        'url_domains' => ['news.haendler-beispiel.de', 'c.versanddienst-beispiel.net'],
+        'signals' => [
+            'forged_sender' => true,
+            'from_neq_envfrom' => true,
+            'has_list_unsubscribe' => true,
+        ],
+        'headers' => ['list_unsubscribe' => '<https://news.haendler-beispiel.de/abmelden>'],
+    ]);
+
     $cases['blutzucker-spam'] = array_replace_recursive($base, [
         'from' => 'support@arrow.onetwotee.shop', 'from_email' => 'support@arrow.onetwotee.shop',
         'from_display_name' => 'Gesundheit',
@@ -502,6 +560,13 @@ function runFixtures() {
             // Entscheidet mit ueber die Ablehnung: ein nachweisbarer
             // Austausch schuetzt, ein selbst geschriebener Header nicht.
             'echter_thread'  => partOfRealConversation($mail),
+            // Unsere eigenen Strukturbefunde. Stehen seit 16.09. getrennt
+            // von den red_flags des Modells im Log - hier sind sie der
+            // Regressionsschutz dafuer.
+            'struct_flags'   => structFlagList($local['struct'] ?? []),
+            // Sperrt den ai-confident-Pfad: echte Liste, starke Auth,
+            // kein Strukturbeleg.
+            'listen_schutz'  => authenticatedListMail($mail, $local, $ev),
             'scoreFromAi'    => $scores,
         ];
     }

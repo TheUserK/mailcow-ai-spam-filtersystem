@@ -314,6 +314,8 @@ logStats($requestId, [
     'list_headers' => !empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id']),
     'matched_profile' => $localResult['matched_profile'] ?? '',
     'url_domains' => $mail['url_domains'],
+    'struct_flags' => $result['struct_flags'] ?? [],
+    'real_conversation' => !empty($result['real_conversation']),
 ]);
 
 respondSuccess(
@@ -456,6 +458,10 @@ function prepareMailContext(array $data) {
             'url_suspect' => !empty($signals['url_suspect']),
             'url_fresh_domain' => !empty($signals['url_fresh_domain']),
             'url_phishing' => !empty($signals['url_phishing']),
+            // Die Absenderadresse selbst steht auf einer Blockliste
+            // (MSBL EBL). Adressgenau, deshalb auch bei Freemail
+            // aussagekraeftig - siehe sender_blocklist_symbols im Lua-Modul.
+            'sender_blocklisted' => !empty($signals['sender_blocklisted']),
         ],
         'content_stats' => [
             'body_length' => intval($contentStats['body_length'] ?? mb_strlen($body)),
@@ -498,16 +504,30 @@ function prepareMailContext(array $data) {
 //
 //  Nachpruefbar ist nur, was WIR wissen: Rspamds replies-Modul merkt
 //  sich die Message-IDs unserer eigenen ausgehenden Post. Nur wenn die
-//  Mail darauf antwortet, ist der Austausch belegt. Ergaenzend zaehlt
-//  ein Absender, mit dem hier schon korrespondiert wurde.
+//  Mail darauf antwortet, ist der Austausch belegt.
 //
 //  Ein In-Reply-To auf eine unserer eigenen Domains wird ebenfalls
 //  akzeptiert - das kann ein Angreifer zwar raten, aber er muesste die
 //  Message-ID einer echten Mail von uns kennen.
+//
+//  KNOWN_SENDER zaehlt hier bewusst NICHT mehr mit (bis 16.09. tat es
+//  das). Am 15.09. kam Kaltakquise von einer outlook.com-Adresse, die
+//  Rspamd mit MSBL_EBL(7.50) als bekannten Spamversender gelistet hatte:
+//  Rspamd bei 12.98, das Modell zu 90 % sicher, dazu undisclosed
+//  recipients. Jede Bedingung fuer die Ablehnung war erfuellt - ausser
+//  dieser. Dieselbe Adresse bekam durch KNOWN_SENDER(-1.00) zusaetzlich
+//  einen Rabatt auf den Rspamd-Score. Eine blockgelistete Adresse war
+//  damit doppelt beguenstigt, weil sie "bekannt" war.
+//
+//  Das Symbol fuehrt laut Kommentar im Lua-Modul ausdruecklich nur ueber
+//  FREEMAIL-Absender Buch - also genau dort, wo die Absenderadresse
+//  beliebig und wegwerfbar ist. "Schon mal dagewesen" ist deshalb keine
+//  Vertrauensaussage. Als Hinweis an das Modell bleibt es erhalten
+//  (Trust-Flag in analyzeLocally), nur aus der Ablehnlogik ist es raus -
+//  genau so, wie ai-content-filter.lua es immer beschrieben hat.
 // ---------------------------------------------------------------------
 function partOfRealConversation(array $mail) {
-    if (!empty($mail['signals']['reply_to_our_mail'])
-        || !empty($mail['signals']['known_sender'])) {
+    if (!empty($mail['signals']['reply_to_our_mail'])) {
         return true;
     }
 
@@ -1131,7 +1151,42 @@ function structuralSignals(array $mail, $verifiedBrand = '') {
         'fabricated_ticket'      => fabricatedTicketClaim($mail),
         'bare_link_stranger'     => bareLinkFromStranger($mail),
         'url_on_blocklist'       => blocklistHitCounts($mail, $verifiedBrand),
+        'sender_on_blocklist'    => !empty($mail['signals']['sender_blocklisted']),
     ];
+}
+
+// ---------------------------------------------------------------------
+//  Welche Strukturbefunde haben tatsaechlich gefeuert? Nur die Namen,
+//  fuers Log.
+//
+//  Der Grund fuer diese Funktion: Im Log stand bisher nur "red_flags",
+//  und das sind die Flags, die das MODELL schreibt - nicht unsere. Am
+//  15.09. hat das zwei Analysen in die Irre gefuehrt: Drei Mails trugen
+//  "fake-thread" in den red_flags, waehrend fakeThreadClaim() bei allen
+//  dreien false lieferte. Die Befunde sehen gleich aus, heissen gleich
+//  und bedeuten Gegenteiliges - das MODELL hatte das "Re:" gesehen, unser
+//  Code hatte den echten In-Reply-To-Header gesehen.
+//
+//  Seitdem steht beides getrennt im Log.
+// ---------------------------------------------------------------------
+function authenticatedListMail(array $mail, array $localContext, array $evidence) {
+    return !empty($mail['signals']['has_list_unsubscribe'])
+        && ($localContext['auth_strength'] ?? '') === 'strong'
+        && empty($evidence);
+}
+
+function structFlagList(array $struct) {
+    $flags = [];
+    foreach ($struct as $name => $value) {
+        // Hilfsfeld, steht schon als role_name_on_freemail drin.
+        if ($name === 'role_name_source') {
+            continue;
+        }
+        if (!empty($value)) {
+            $flags[] = str_replace('_', '-', $name);
+        }
+    }
+    return $flags;
 }
 
 function analyzeLocally(array $mail, $requestId) {
@@ -1228,6 +1283,14 @@ function analyzeLocally(array $mail, $requestId) {
     // Kombination kann keine Blocklist allein sehen, die KI aber schon.
     if ($struct['url_on_blocklist']) {
         $riskFlags[] = 'url-on-blocklist';
+    }
+
+    // Nicht die verlinkte Domain, sondern die Absenderadresse selbst.
+    // Gehoert getrennt benannt: "url-on-blocklist" entwertet der Prompt
+    // ausdruecklich, wenn die Mail eine Warnung UEBER einen Link ist -
+    // fuer die eigene Absenderadresse gibt es diese Erklaerung nicht.
+    if (!empty($struct['sender_on_blocklist'])) {
+        $riskFlags[] = 'sender-on-blocklist';
     }
 
     if (!empty($mail['signals']['url_fresh_domain'])) {
@@ -1521,7 +1584,30 @@ authentifiziert - dann sind diese drei Flags Infrastruktur-Rauschen, kein
 Faelschungsbeweis. Erst zusammen mit "auth:suspicious" werden sie
 aussagekraeftig.
 
+Abonniert oder nicht? Das kannst du einer Mail NICHT ansehen, und du sollst
+es auch nicht raten. Traegt eine Mail einen "List-Unsubscribe"-Header
+(Trust-Flag "newsletter-headers-present"), steht "auth:strong" oder
+"auth:medium" dabei und zeigen die Links nur auf die Absenderdomain selbst
+oder auf ihren Versanddienstleister, dann ist die Kategorie "marketing" -
+nicht "spam". "spam" setzt mehr voraus als geschaeftliche Werbung: gefaelschte
+Absender, fremde Marken, irrefuehrende Links, verschleierte Ziele.
+Am 15.09. liefen zwei echte Haendler-Newsletter (ein Elektronikversand, ein
+Apple-Wiederverkaeufer) als "spam" mit 0.90 und 0.96 Sicherheit durch, obwohl
+beide sauber authentifiziert waren, eine funktionierende Abmeldeadresse
+mitschickten und ausschliesslich auf die eigene Domain verlinkten. Beide
+wurden deshalb aussortiert, obwohl der Empfaenger sie bezogen hatte.
+Umgekehrt gilt das genauso: Fehlt der Abmelde-Header bei einer
+Werbe-Massenmail, ist das ein Hinweis in die andere Richtung.
+"cold-marketing" oder "unsolicited-commercial" sind fuer sich allein KEINE
+Begruendung fuer "spam" - fuer ungefragte Werbung gibt es die Kategorie
+"marketing".
+
 Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
+- "sender-on-blocklist": die ABSENDERADRESSE selbst steht auf einer Liste
+  bekannter Spamversender. Das betrifft nicht einen Link, sondern den
+  Absender - eine harmlose Erklaerung wie "die Mail warnt vor dieser Adresse"
+  gibt es dafuer praktisch nie. Sehr verlaesslich, auch bei Freemail-Adressen,
+  wo die Domain allein nichts aussagt.
 - "url-on-blocklist": eine verlinkte Domain steht auf
   einer Malware-/Phishing-Blockliste. Sehr verlaesslich — als "phishing" oder
   "spam" einstufen, ausser die Mail ist offensichtlich eine Warnung DARUEBER.
@@ -2032,9 +2118,32 @@ PROMPT;
     $categoryOverride = (in_array('brand-impersonation', $strong, true) && count($strong) >= 2)
         || $ruleMatched;
 
+    // Einmal berechnen statt zweimal - und so steht das Ergebnis auch fuer
+    // das Log zur Verfuegung. Am 15.09. liess sich genau diese Frage
+    // ("war die Mail als laufende Konversation eingestuft?") im Nachhinein
+    // nicht mehr beantworten, obwohl sie ueber drei Sperren entschied.
+    $realConversation = partOfRealConversation($mail);
+
     $noTrustSignals = empty($localContext['matched_profile'])
         && $verifiedBrand === ''
-        && !partOfRealConversation($mail);
+        && !$realConversation;
+
+    // Echte Liste, sauber authentifiziert, kein einziger Strukturbeleg.
+    //
+    // Am 15.09. war ein Haendler-Newsletter (List-Unsubscribe, auth:strong,
+    // Links nur auf die eigene Domain und den Versanddienstleister) ueber
+    // den ai-confident-Pfad abweisbar: Sicherheit 0.96, model_score 8.06,
+    // evidence leer. Dass er nicht abgewiesen wurde, lag allein daran, dass
+    // Rspamd ihn mit -4.31 bewertete - bei einem Rspamd-Score ab etwa +5.5
+    // waere dieselbe Mail verworfen worden.
+    //
+    // Wer eine funktionierende Abmeldeadresse mitschickt und per DKIM/DMARC
+    // beglaubigt ist, ist erreichbar und identifizierbar. Das ist nie der
+    // Fall fuer eine unwiderrufliche Ablehnung allein auf ein Modellurteil
+    // hin. Einsortieren bleibt unberuehrt - der Junk-Floor unten greift
+    // weiter, und ueber Strukturbelege (rejectEligible) ist die Mail nach
+    // wie vor abweisbar, falls doch einer zutrifft.
+    $authenticatedList = authenticatedListMail($mail, $localContext, $evidence);
 
     $rejectEligible = ($policy['may_reject'] || $categoryOverride)
         && $confidence >= 0.80
@@ -2058,7 +2167,8 @@ PROMPT;
         && $confidence >= AI_CONFIDENT_CONFIDENCE
         && $modelScore >= AI_CONFIDENT_SCORE
         && $noTrustSignals
-        && !$hasOperatorHint;
+        && !$hasOperatorHint
+        && !$authenticatedList;
 
     $mayReject = $rejectEligible || $confidentReject;
 
@@ -2083,7 +2193,7 @@ PROMPT;
         && $confidence >= 0.80
         && empty($localContext['matched_profile'])
         && $verifiedBrand === ''
-        && !partOfRealConversation($mail);
+        && !$realConversation;
 
     if ($junkFloorApplies) {
         // KEIN min(..., policy['points']) hier - anders als beim
@@ -2146,6 +2256,12 @@ PROMPT;
         // Damit im Report sichtbar wird, was ein Betreibersatz tatsaechlich
         // einsammelt - der Ersatz fuer die Testbarkeit, die Freitext nicht hat.
         'business_hint'   => $hasOperatorHint,
+        // Unsere eigenen Strukturbefunde, getrennt von den red_flags des
+        // Modells - siehe structFlagList().
+        'struct_flags'    => structFlagList($localContext['struct'] ?? []),
+        // Diese eine Sperre entscheidet ueber rejectEligible,
+        // confidentReject UND den Junk-Floor. Sie gehoert ins Log.
+        'real_conversation' => $realConversation,
         // Leer = kein Treffer, "field" = sauber im JSON, "text" = nur im
         // Begruendungstext. Ohne diese Unterscheidung liess sich am 14.09.
         // nicht sagen, ob das Modell verneint oder nur schlampig geantwortet
@@ -2225,6 +2341,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     if ($struct['url_on_blocklist']) {
         $evidence[] = 'url-on-blocklist';
+    }
+    if (!empty($struct['sender_on_blocklist'])) {
+        $evidence[] = 'sender-on-blocklist';
     }
     if (!empty($struct['dangerous_attachments'])) {
         $evidence[] = 'dangerous-attachment';
@@ -2781,6 +2900,7 @@ function strongEvidence(array $evidence) {
     static $strong = [
         'brand-impersonation',   // Markenliste mit hinterlegten Echt-Domains
         'url-on-blocklist',      // externe Reputationsdaten
+        'sender-on-blocklist',   // dieselbe Quelle, nur adressgenau statt per Link
         'dangerous-attachment',  // ausfuehrbarer Anhang
         'hijacked-reply-to',     // Antwort soll auf ein fremdes Freemail-Postfach
         'reply-to-unrelated-domain', // dasselbe, nur ausserhalb der Freemail-Liste
@@ -2832,6 +2952,11 @@ function probationEvidence() {
         // keine Datengrundlage fuer eine unwiderrufliche Ablehnung.
         // Erst im Report beobachten.
         'reply-to-unrelated-domain',
+        // Seit 16.09. Adressgenaue Blocklisten sind verlaesslich, aber wir
+        // haben noch keinen einzigen Treffer an echter Post gesehen - nur
+        // den einen Fall, der die Klasse ausgeloest hat. Erst im Report
+        // beobachten, dann scharf schalten.
+        'sender-on-blocklist',
     ];
 }
 
@@ -3719,6 +3844,11 @@ function logStats($requestId, $data) {
         // laesst sich nicht per Fixture absichern - sichtbar machen, was er
         // einsammelt, ist der Ersatz dafuer (Report-Gruppe).
         'business_hint' => !empty($data['business_hint']),
+        // Was UNSER Code gefunden hat. "red_flags" daneben ist, was das
+        // Modell geschrieben hat. Die beiden sahen zu lange gleich aus.
+        'struct_flags' => normalizeStringList($data['struct_flags'] ?? []),
+        // Sperre fuer Reject-Pfade und Junk-Floor zugleich.
+        'real_conversation' => !empty($data['real_conversation']),
     ];
 
     // Betreff: siehe LOG_SUBJECT, standardmaessig an.

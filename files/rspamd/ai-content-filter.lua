@@ -127,6 +127,21 @@ local phishing_symbols = {
   'PHISHING', 'PHISHED_OPENPHISH', 'PHISHED_PHISHTANK', 'HACKED_WP_PHISHING',
 }
 
+-- Die ABSENDERADRESSE selbst steht auf einer Blockliste bekannter
+-- Spamversender. Am 15.09. kam Kaltakquise von einer outlook.com-Adresse,
+-- die bei MSBL mit 7.50 gelistet war - adressgenau, mit Treffer sowohl auf
+-- from_mime als auch auf from_smtp. Wir haben bis dahin ausschliesslich
+-- URL-Blocklisten ausgewertet, also genau die Quelle ignoriert, die bei
+-- Freemail als einzige etwas aussagt: Die Domain ist outlook.com, daraus
+-- folgt nichts, aus der Adresse sehr wohl.
+--
+-- Bewusst NUR adressgenaue Listen. Keine IP-RBLs: Bei Gmail, Outlook und
+-- jedem grossen Versanddienstleister teilen sich Millionen Absender
+-- dieselben IPs, ein Treffer dort sagt ueber diese eine Mail nichts.
+local sender_blocklist_symbols = {
+  'MSBL_EBL', 'RBL_MSBL_EBL',
+}
+
 local function header_str(task, name)
   local h = task:get_header(name)
   if h then
@@ -387,6 +402,9 @@ rspamd_config:register_symbol({
     local url_fresh       = any_symbol(task, fresh_domain_symbols)
     local url_phishing    = any_symbol(task, phishing_symbols)
 
+    -- Adressgenaue Absender-Blockliste (siehe sender_blocklist_symbols).
+    local sender_blocklisted = any_symbol(task, sender_blocklist_symbols)
+
     local request_data = {
       from = header_str(task, 'From') ~= '' and header_str(task, 'From') or from_email,
       to = to_addr,
@@ -431,6 +449,7 @@ rspamd_config:register_symbol({
         url_suspect = url_suspect,
         url_fresh_domain = url_fresh,
         url_phishing = url_phishing,
+        sender_blocklisted = sender_blocklisted,
         known_sender = known_sender,
         unknown_sender = unknown_sender,
         reply_to_our_mail = is_reply_to_us,
