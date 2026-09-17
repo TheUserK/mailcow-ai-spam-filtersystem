@@ -540,10 +540,46 @@ betreibt.
 **Kontrolle:** Report-Gruppe „Eigene Reject-Regel hat gegriffen" listet jeden
 Treffer. Solange eine Regel neu ist, gehört da hineingeschaut.
 
-**Wo die Antwort gelesen wird.** Das Feld `reject_rule_match` ist der reguläre
-Weg, aber das Modell hält sich nicht immer daran: Am 14.09. erkannte es eine
+**Warum keine Regel je gegriffen hat (bis 17.09.).** Das Antwortschema in
+`responseSchema()` geht mit `strict: true` und `additionalProperties: false`
+an den Anbieter - das Modell darf also **nur** Felder liefern, die dort
+stehen. `reject_rule_match` stand nicht darin. Der Prompt verlangte ein Feld,
+das der Anbieter dem Modell zugleich verbot.
+
+Das erklärt den ganzen Verlauf: Am 14.09. erkannte das Modell eine
 Zimmerbuchungs-Masche korrekt und schrieb `reject_rule_match true` in den
-Begründungstext statt ins Feld - der Treffer ging verloren, die Mail kam durch.
+Begründungstext - nicht aus Schlamperei, sondern weil das der einzige Weg
+war, der ihm blieb. Die damalige Diagnose („das Modell hält sich nicht an das
+Schema") war falsch, und der daraufhin gebaute Freitext-Fallback kurierte ein
+Symptom. `reject_path: "operator-rule"` war bis dahin in keinem Log zu
+finden, weil er nicht erreichbar war.
+
+Seit 17.09. stehen `reject_rule_match` und `reject_rule_confidence` in
+`properties` **und** in `required` (bei `strict` ist beides Pflicht). Die
+Fixture-Gruppe `_antwort_schema` prüft das echte Schema, nicht eine
+Nachbildung - genau daran ist der Fehler wochenlang vorbeigelaufen, weil die
+Tests nur `ruleMatchSignal()` mit von Hand gebauten Arrays fütterten.
+
+**Eigene Confidence für die Regelfrage.** Bis 17.09. entschied die globale
+`confidence` über den Regel-Treffer. „Zu 95 % sicher, dass das persönliche
+Post ist" galt damit als „zu 95 % sicher, dass die Regel greift" - zwei
+unabhängige Urteile an einer Zahl. `reject_rule_confidence` ist jetzt ein
+eigenes Feld; fehlt es (Anbieter ohne Structured Outputs), gilt wie bisher
+die globale.
+
+**Die Regel schlägt Profil- und Markenvertrauen.** Der Prompt sagt dem Modell,
+Echtheit schütze nicht vor einer Regel - der Code hielt sich nicht daran: ein
+Trusted-Sender-Profil oder eine per DMARC beglaubigte Marke verhinderten die
+Ablehnung, und ein Profil-Treffer ließ die Mail sogar vor dem KI-Aufruf
+durch, sodass die Regel nie gestellt wurde. Beides sagt aber nur „der Absender
+ist echt", und genau das bestreitet eine Regel gar nicht. Seit 17.09. gilt
+für den Regelpfad nur noch eine Sperre: die Antwort auf **unsere eigene**
+Post. Und liegt für einen Empfänger eine Regel vor, gibt es für ihn keinen
+Auto-Pass mehr - der gesparte API-Call ist eine nie gestellte Regelfrage
+wert.
+
+**Wo die Antwort gelesen wird.** Das Feld ist der reguläre Weg; der
+Freitext-Fallback bleibt als Netz für Anbieter ohne Structured Outputs.
 In derselben Antwort waren auch `red_flags` und `claimed_brand` leer; bei
 niedrigem `reasoning_effort` füllt das Modell zuverlässig `category`,
 `confidence` und `reasoning`, alles andere nach Tagesform.
