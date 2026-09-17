@@ -48,6 +48,11 @@ A protected category can be broken open by the evidence path only when
 signal (the **category override** - a single brand-list match alone still
 protects `legitimate`/`transactional`/`personal`).
 
+A lone `foreign-domain` mismatch from a strongly authenticated sender whose
+domain ranks in the Majestic Top 100,000 is still scored into junk, but cannot
+cause irreversible rejection without another strong signal. This guard does
+not apply to typosquats and gives no newsletter or Ham allowance.
+
 Either way, no trusted-sender match and no reply to an existing thread (a
 forgeable `In-Reply-To` header is not enough by itself - see
 `partOfRealConversation()`) are required. A single wrong verdict therefore
@@ -132,7 +137,7 @@ Incoming Email
 - Turns Rspamd's URL-reputation symbols into risk flags. A blocklist hit also blocks the trusted-sender auto-pass, since even a genuine sender can link a compromised subdomain
 - Computes all structural evidence once (`structuralSignals()`/`collectStructuralEvidence()`) - fake threads, hijacked reply-to, fabricated tickets, role claims on freemail, free-hosting links, and more - shared between the AI prompt's risk flags and the reject-eligibility check, so the two can never drift apart
 - Adds the recipient's own business context to the prompt (`businessContextFor()`, from `business_context.json`) so the model can tell whether the mail even makes sense for this recipient - it catches mail addressing you as the provider of a service you don't offer, and deliberately not confirmations for services you bought elsewhere. See [CONFIGURATION.md](CONFIGURATION.md#recipient-context-business_contextjson)
-- Adds the sender domain's web-reputation rank to the prompt (`domainRank()`, from `domain_ranks.sqlite` - the full Majestic Million, looked up via SQLite rather than loaded into memory, see [CONFIGURATION.md](CONFIGURATION.md#sender-domain-reputation-domain_rankssqlite)) so the model can weigh how established a sender is as a number, not a fixed list membership
+- Adds the sender domain's web-reputation rank to the prompt (`domainRank()`, from `domain_ranks.sqlite` - the full Majestic Million, looked up via SQLite rather than loaded into memory, see [CONFIGURATION.md](CONFIGURATION.md#sender-domain-reputation-domain_rankssqlite)) so the model can weigh how established a sender is as a number. The exact From-domain rank also powers the narrow lone-`foreign-domain` reject guard; it never grants Ham or newsletter status
 - Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
 - Applies the reject-eligibility conjunction, the category override, the junk floor and the two reject paths (see [Design Principle](#design-principle-v3) above)
 - Manages budget tracking

@@ -199,6 +199,15 @@ define('CONTEXT_LEVEL_MAX', 1000);
 // fuer ziemlich sicheren Muell haelt.
 define('RSPAMD_CONCUR_SCORE', 10.0);
 
+// Eine sehr etablierte, sauber authentifizierte Domain kann trotzdem ein
+// gekapertes Konto sein - ihr Rang ist deshalb kein Ham-Pass. Wenn aber die
+// einzige Reject-Evidenz ein Markenabgleich vom Typ "foreign-domain" ist,
+// ist ein fehlender Mutter-/Tochter-/Versanddomain-Eintrag wahrscheinlicher
+// als bei einer frisch angelegten Domain. Bis zu diesem globalen Rang bleibt
+// die Mail dann im Junk, wird aber ohne zweiten starken Beleg nicht am SMTP
+// abgewiesen. Typosquats und alle anderen Evidenz-Kombinationen bleiben scharf.
+define('ESTABLISHED_DOMAIN_REJECT_GUARD_RANK', 100000);
+
 // Muss VOR dem Router stehen, nicht erst bei den Helferfunktionen weiter
 // unten in der Datei: define() laeuft nur, wenn die Zeile tatsaechlich
 // ausgefuehrt wird - anders als Funktionsdefinitionen wird es NICHT
@@ -316,6 +325,9 @@ logStats($requestId, [
     'model_score' => $result['model_score'] ?? null,
     'claimed_brand' => $result['claimed_brand'] ?? '',
     'verified_brand' => $result['verified_brand'] ?? '',
+    'impersonation_kind' => $result['impersonation_kind'] ?? '',
+    'sender_global_rank' => $result['sender_global_rank'] ?? null,
+    'rank_reject_guard' => !empty($result['rank_reject_guard']),
     'prompt_injection' => $result['prompt_injection'] ?? [],
     'confidence' => $result['confidence'] ?? 0,
     'ai_score_raw' => $result['ai_score_raw'] ?? null,
@@ -831,10 +843,12 @@ function businessAddressEntry(array $entry, $address) {
 //
 //  Anders als die Markenliste (getImpersonationBrands()/knownBrandDomains())
 //  ist das kein Ja/Nein "das ist eine bekannte Marke", sondern eine Zahl,
-//  die das Modell selbst gewichten kann - genau deshalb keine feste
-//  Schwelle im Code. Tchibo, Zooplus & Co. sind in Deutschland etablierte
-//  Firmen, liegen aber weit ausserhalb jeder sinnvollen "Top-N"-Schwelle,
-//  weil Majestic weltweit misst.
+//  die das Modell selbst gewichtet. Die einzige feste Schwelle im Code ist
+//  eine enge Reject-Bremse fuer einen alleinstehenden foreign-domain-Befund;
+//  sie vergibt weder Ham-Punkte noch Newsletter-Vertrauen. Tchibo, Zooplus
+//  & Co. sind in Deutschland etablierte Firmen, liegen aber weit ausserhalb
+//  jeder sinnvollen allgemeinen "Top-N"-Freigabe, weil Majestic weltweit
+//  misst.
 //
 //  Verbindung wird einmal pro Worker-Prozess aufgebaut und wiederverwendet
 //  (statisch), nicht die Daten selbst - die bleiben in SQLite, nicht im
@@ -874,6 +888,23 @@ function domainRank($domain) {
     }
 
     return $row ?: null;
+}
+
+// Numerischer Rang fuer Entscheidungen im Code. Bewusst KEIN Fallback auf
+// die Hauptdomain: foo.wordpress.com darf den Rang von wordpress.com im
+// Prompt als Kontext sehen, aber keinen harten Reject-Schutz erben - die
+// Subdomain koennte einem beliebigen Plattformkunden gehoeren.
+function senderGlobalRank($fromDomain) {
+    $domain = normalizeHost($fromDomain);
+    if ($domain === '') {
+        return null;
+    }
+
+    $rank = domainRank($domain);
+    if ($rank) {
+        return intval($rank['global_rank']);
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------
@@ -951,6 +982,13 @@ function claimedBrandIsKnownDomain(array $mail, array $analysis) {
     if ($from === '') {
         return false;
     }
+    if (domainMayClaimBrand(
+        $from,
+        $analysis['claimed_brand'] ?? '',
+        evaluateAuthStrength($mail)
+    )) {
+        return false;
+    }
     $fromToken = brandToken(organisationalLabels($from)[0] ?? '');
 
     foreach (significantBrandWords($analysis['claimed_brand'] ?? '') as $word) {
@@ -1012,6 +1050,13 @@ function brandLinkedNotSender(array $mail, array $analysis) {
 
     $fromToken = brandToken(implode('', organisationalLabels(normalizeHost($mail['from_domain']))));
     if ($fromToken === '') {
+        return false;
+    }
+    if (domainMayClaimBrand(
+        $mail['from_domain'],
+        $analysis['claimed_brand'] ?? '',
+        evaluateAuthStrength($mail)
+    )) {
         return false;
     }
 
@@ -1398,8 +1443,15 @@ function analyzeLocally(array $mail, $requestId) {
     // obwohl die Domain nicht passt? (Typosquat oder fremde Domain)
     $impersonation = detectBrandImpersonation($mail);
     $impersonationScore = 0.0;
+    $impersonationKind = '';
+    $senderGlobalRank = null;
     if ($impersonation !== null) {
         $impersonationScore = $impersonation['score'];
+        $impersonationKind = $impersonation['kind'];
+        // Nur fuer einen tatsaechlichen Marken-Konflikt noetig. Lokale
+        // Auto-Passes und Mails ausserhalb des AI-Budgets sollen nicht fuer
+        // jede Nachricht einen zusaetzlichen SQLite-Lookup bezahlen.
+        $senderGlobalRank = senderGlobalRank($mail['from_domain']);
         $riskFlags[] = 'brand-impersonation:' . $impersonation['brand']
             . ':' . $impersonation['kind'];
     }
@@ -1412,6 +1464,8 @@ function analyzeLocally(array $mail, $requestId) {
         'auth_strength' => $authStrength,
         'verified_brand' => $verifiedBrand,
         'impersonation_score' => $impersonationScore,
+        'impersonation_kind' => $impersonationKind,
+        'sender_global_rank' => $senderGlobalRank,
         'struct' => $struct,
         'risk_flags' => array_values(array_unique($riskFlags)),
         'trust_flags' => array_values(array_unique($trustFlags)),
@@ -2331,6 +2385,7 @@ PROMPT;
     // einzige Entscheidung hier, die sich nicht zuruecknehmen laesst.
     $strong = strongEvidence($evidence);
     $verifiedBrand = $localContext['verified_brand'] ?? '';
+    $rankRejectGuard = establishedDomainRejectGuard($localContext, $strong);
 
     // Geschuetzte Kategorien (legitimate/transactional/personal) duerfen
     // nur durchbrochen werden, wenn ZWEI voneinander unabhaengige starke
@@ -2397,7 +2452,8 @@ PROMPT;
     $rejectEligible = ($policy['may_reject'] || $categoryOverride)
         && ($ruleMatched || $confidence >= 0.80)
         && !empty($strong)
-        && $ruleTrustGate;
+        && $ruleTrustGate
+        && !$rankRejectGuard;
 
     // Zweiter Pfad: kein Strukturbeleg, aber ein sehr sicheres Modellurteil.
     //
@@ -2417,7 +2473,11 @@ PROMPT;
         && $modelScore >= AI_CONFIDENT_SCORE
         && $noTrustSignals
         && !$hasOperatorHint
-        && !$authenticatedList;
+        && !$authenticatedList
+        // Sonst wuerde dieselbe vom lokalen Marken-Flag gelenkte
+        // Modellentscheidung durch die Hintertuer des zweiten Pfads doch
+        // wieder rejecten, sobald Rspamd genug Punkte beisteuert.
+        && !$rankRejectGuard;
 
     $mayReject = $rejectEligible || $confidentReject;
 
@@ -2550,6 +2610,9 @@ PROMPT;
         'model_score'     => round($modelScore, 2),
         'claimed_brand'   => trim((string)($analysis['claimed_brand'] ?? '')),
         'verified_brand'  => $verifiedBrand,
+        'impersonation_kind' => $localContext['impersonation_kind'] ?? '',
+        'sender_global_rank' => $localContext['sender_global_rank'] ?? null,
+        'rank_reject_guard' => $rankRejectGuard,
         'prompt_injection' => $injection,
         // Damit im Report sichtbar wird, was ein Betreibersatz tatsaechlich
         // einsammelt - der Ersatz fuer die Testbarkeit, die Freitext nicht hat.
@@ -2741,12 +2804,15 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if ($struct['fabricated_ticket']) {
         $evidence[] = 'fabricated-ticket';
     }
-    if (brandLinkedNotSender($mail, $analysis)) {
-        $evidence[] = 'brand-linked-not-sender';
-    } elseif (claimedBrandIsKnownDomain($mail, $analysis)) {
-        // Nur wenn der direkte Beleg nicht schon greift - sonst stuende
-        // derselbe Sachverhalt zweimal da.
-        $evidence[] = 'brand-claim-vs-known-domain';
+    $handCuratedBrandHit = floatval($localContext['impersonation_score'] ?? 0) > 0;
+    if (!$handCuratedBrandHit) {
+        if (brandLinkedNotSender($mail, $analysis)) {
+            $evidence[] = 'brand-linked-not-sender';
+        } elseif (claimedBrandIsKnownDomain($mail, $analysis)) {
+            // Nur wenn der direkte Beleg nicht schon greift - sonst stuende
+            // derselbe Sachverhalt zweimal da.
+            $evidence[] = 'brand-claim-vs-known-domain';
+        }
     }
     if (!empty($struct['free_hosting_links'])) {
         $evidence[] = 'free-hosting-link';
@@ -2762,8 +2828,7 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
     // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
-    if (floatval($localContext['impersonation_score'] ?? 0) <= 0
-        && claimedBrandMismatch($mail, $analysis)) {
+    if (!$handCuratedBrandHit && claimedBrandMismatch($mail, $analysis)) {
         $evidence[] = 'brand-claim-mismatch';
     }
 
@@ -3398,6 +3463,29 @@ function strongEvidence(array $evidence) {
     ));
 }
 
+// Bremst nur den irreversiblen Reject bei genau der Konfliktlage, die eine
+// unvollstaendige Markenfamilie erzeugt: bekannte, per DMARC beglaubigte
+// Firma; "foreign-domain" ist der einzige starke Beleg. Der hohe Rang macht
+// die Mail nicht legitim und gibt keinen Score-Rabatt - sie bleibt im Junk.
+// Sobald Rspamd oder ein zweiter Strukturbeleg zustimmt, greift die Bremse
+// nicht. Ein Typosquat ist ebenfalls ausdruecklich nicht geschuetzt.
+function establishedDomainRejectGuard(array $localContext, array $strongEvidence) {
+    if (($localContext['impersonation_kind'] ?? '') !== 'foreign-domain') {
+        return false;
+    }
+    if (($localContext['auth_strength'] ?? '') !== 'strong') {
+        return false;
+    }
+
+    $rank = $localContext['sender_global_rank'] ?? null;
+    if (!is_numeric($rank) || intval($rank) > ESTABLISHED_DOMAIN_REJECT_GUARD_RANK) {
+        return false;
+    }
+
+    return count($strongEvidence) === 1
+        && in_array('brand-impersonation', $strongEvidence, true);
+}
+
 // ---------------------------------------------------------------------
 //  Belege auf Bewaehrung.
 //
@@ -3950,6 +4038,63 @@ function getImpersonationBrands() {
     ];
 }
 
+// Domains, die eine Marke legitim im Absendernamen fuehren duerfen, ohne
+// deshalb den weitergehenden verified-brand-Schutz zu bekommen.
+//
+// Diese Trennung ist absichtlich: Telefónica fuehrt o2 als eigene Kernmarke
+// und versendet Sicherheitscodes auch von telefonica.com. Wuerde die Domain
+// direkt in getImpersonationBrands() stehen, waere jede stark authentifizierte
+// Mail von telefonica.com als o2 verifiziert - auch echte, aber unerwuenschte
+// Werbung. Hier wird nur die falsche Markenfaelschungs-Evidenz verhindert.
+function getBrandClaimAliases() {
+    return [
+        'o2' => ['telefonica.com'],
+    ];
+}
+
+// Gilt die konkrete Markenbehauptung fuer diese Absenderdomain als erlaubt?
+// Wird von allen drei Impersonation-Pfaden benutzt, damit eine bekannte
+// Konzernbeziehung nicht im ersten Test entlastet und im naechsten doch wieder
+// als vermeintlich unabhaengiger Beleg gezaehlt wird.
+function domainMayClaimBrand($domain, $claim, $authStrength = 'unknown') {
+    $domain = normalizeHost($domain);
+    $claimToken = brandToken($claim);
+    if ($domain === '' || $claimToken === '') {
+        return false;
+    }
+
+    // Primaere Markendomains verhalten sich wie bisher. Ein gespooftes From
+    // wird separat ueber die Auth-Signale erkannt; der Markenname und seine
+    // eigene Domain widersprechen sich jedenfalls nicht.
+    foreach (getImpersonationBrands() as $brand => $realDomains) {
+        $known = brandToken($brand);
+        if ($known === '' || mb_strpos($claimToken, $known) === false) {
+            continue;
+        }
+        if (domainMatchesAny($domain, $realDomains)) {
+            return true;
+        }
+    }
+
+    // Mutter-/Tochter-/Konzernbeziehungen sind weiter gefasst und gelten
+    // deshalb nur, wenn die From-Domain wirklich stark authentifiziert ist.
+    // So darf echtes telefonica.com o2 behaupten, ein bloss gespooftes From
+    // behaelt dagegen den harten Markenbeleg.
+    if ($authStrength !== 'strong') {
+        return false;
+    }
+    foreach (getBrandClaimAliases() as $brand => $realDomains) {
+        $known = brandToken($brand);
+        if ($known === '' || mb_strpos($claimToken, $known) === false) {
+            continue;
+        }
+        if (domainMatchesAny($domain, $realDomains)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------
 //  Der listenlose Gegenpart zu detectBrandImpersonation(). Eine Liste
 //  kann nie jede Bank, jedes Fintech und jede Regionalkasse kennen - die
@@ -4003,19 +4148,14 @@ function claimedBrandMismatch(array $mail, array $analysis) {
     }
 
     // Bekannte, legitime Abweichung? Amazon versendet aus amazonses.com,
-    // Microsoft aus outlook.com. Dafuer - und nur noch dafuer - dient die
-    // Markenliste hier.
-    foreach (getImpersonationBrands() as $brand => $realDomains) {
-        $known = brandToken($brand);
-        if ($known === '' || mb_strpos($token, $known) === false) {
-            continue;
-        }
-        foreach ($realDomains as $rd) {
-            $rd = normalizeHost($rd);
-            if ($domain === $rd || endsWith($domain, '.' . $rd)) {
-                return false;
-            }
-        }
+    // Telefónica darf o2 behaupten. Die gemeinsame Funktion verhindert,
+    // dass die drei Markenpfade dieselbe Beziehung unterschiedlich werten.
+    if (domainMayClaimBrand(
+        $domain,
+        $analysis['claimed_brand'] ?? '',
+        evaluateAuthStrength($mail)
+    )) {
+        return false;
     }
 
     // Frueher endete die Pruefung hier mit "nur wenn die Auth schwach ist".
@@ -4163,12 +4303,11 @@ function detectBrandImpersonation(array $mail) {
             continue;
         }
 
-        // Gehoert die Absender-Domain wirklich zur Marke? -> alles gut, echte Mail
-        foreach ($realDomains as $rd) {
-            $rd = normalizeHost($rd);
-            if ($fromDomain === $rd || endsWith($fromDomain, '.' . $rd)) {
-                return null;
-            }
+        // Gehoert die Absender-Domain wirklich zur Marke? Primaere Domains
+        // gelten wie bisher; weiter gefasste Konzern-Aliase nur bei starker
+        // Authentifizierung.
+        if (domainMayClaimBrand($fromDomain, $brand, evaluateAuthStrength($mail))) {
+            return null;
         }
 
         // Marke behauptet, Domain passt NICHT. Wie nah dran ist der Fake?
@@ -4333,6 +4472,14 @@ function logStats($requestId, $data) {
         // wird ueber den Evidenzpfad nicht abgewiesen (eine Betreiber-Regel
         // erreicht ihn seit 17.09. trotzdem) - das will man im Log sehen.
         'verified_brand' => mb_substr((string)($data['verified_brand'] ?? ''), 0, 40),
+        // Ein hoher Rang ist kein Ham-Pass. Bei einem alleinstehenden
+        // foreign-domain-Markenbefund kann er aber den irreversiblen Reject
+        // bremsen; diese drei Felder machen genau diese Ausnahme sichtbar.
+        'impersonation_kind' => (string)($data['impersonation_kind'] ?? ''),
+        'sender_global_rank' => isset($data['sender_global_rank'])
+            ? intval($data['sender_global_rank'])
+            : null,
+        'rank_reject_guard' => !empty($data['rank_reject_guard']),
         // Direkt geloggt statt aus red_flags-Text erraten: der Report
         // brauchte einmal genau das und hatte es sich schlecht genaehert.
         'auth_strength' => (string)($data['auth_strength'] ?? 'unknown'),

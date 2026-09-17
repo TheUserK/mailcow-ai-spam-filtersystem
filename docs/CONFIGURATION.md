@@ -79,8 +79,10 @@ path catches those cases anyway. Only an *unlisted* brand with a lookalike
 domain slips through both, and there the AI still scores it - it just is not
 rejected automatically.
 
-The two never stack: if the list already matched, the generic path stays quiet,
-so one fact cannot pose as two independent pieces of evidence.
+The three paths never stack: if the hand-curated list already matched, the
+generated and list-free paths stay quiet; if the generated path matched, the
+list-free path stays quiet. One brand/domain contradiction therefore cannot
+pose as two independent pieces of evidence.
 
 `claimed_brand` is written to `stats.log`, and a hit shows up as evidence
 `brand-claim-mismatch`:
@@ -99,7 +101,7 @@ their own (minus anything currently on probation, see below):
 
 | Strong evidence class | Rests on |
 |---|---|
-| `brand-impersonation` | the hand-curated brand list, with the brand's real domains |
+| `brand-impersonation` | the hand-curated brand list, with the brand's real domains. A lone `foreign-domain` hit from a strongly authenticated Top-100,000 sender is still junked but needs a second strong signal before SMTP rejection; typosquats stay fully sharp |
 | `url-on-blocklist` | external reputation data (Spamhaus, SURBL, URIBL, ...) |
 | `sender-on-blocklist` | the same kind of source, but address-exact: the **sender address itself** is listed (MSBL EBL). Works where domain reputation says nothing - `outlook.com` tells you nothing, the address does. **On probation** |
 | `dangerous-attachment` | an executable attachment |
@@ -732,13 +734,14 @@ of a two-letter ccTLD is treated as a suffix and one more label is taken.
 Where that heuristic misses, the lookup simply finds nothing - the failure
 mode is the old "not listed", never unearned trust.
 
-This is prompt context only, feeding the model's own category/confidence
-judgement - not a new `strongEvidence()` class and not a code-level score
-cap. A good rank doesn't exempt a domain from anything else the filter
-checks: an established domain stays established even when its mailbox is
-hijacked, so `hijacked-reply-to`, a business-context role conflict, or any
-other structural evidence still applies exactly as before, regardless of
-rank.
+For category, confidence and scoring this remains prompt context only: rank
+is not a `strongEvidence()` class, gives no negative points and creates no
+score cap. Its one code-level use is the narrow lone-`foreign-domain` reject
+guard described above, using only an exact From-domain rank. A good rank
+doesn't exempt a domain from anything else the filter checks: an established
+domain stays established even when its mailbox is hijacked, so
+`hijacked-reply-to`, a business-context role conflict, or any other structural
+evidence still applies exactly as before.
 
 ## Provider profile (provider.conf)
 
@@ -834,6 +837,7 @@ keeps your choice.
 | `REJECT_FLOOR` | `16.0` | Floor applied once the evidence path fires - guarantees the total clears `REJECT_THRESHOLD` rather than relying on the usual probability/confidence curve, which tops out around two thirds of the budget |
 | `JUNK_FLOOR` | `8.0` | Floor applied whenever a rejectable category is confidently assigned (>= 0.80) with no trust signal, independent of any reject path - stops Rspamd credit for clean infrastructure (SPF/DKIM, an aged domain) from diluting a confident spam verdict back below the junk line. Must be **at or above** your Rspamd `add_header` threshold (`data/conf/rspamd/local.d/actions.conf`), otherwise it guarantees nothing. The points needed are rounded **up** to two decimals: the returned score is rounded to two decimals on the way out, and a floor that aims exactly at its own target misses it by the rounding remainder - on 16.09. a mail landed on 7.9976 against a threshold of 8 and stayed in the inbox, while the log showed `total_score: 8` because that is rounded too |
 | `RSPAMD_CONCUR_SCORE` | `10.0` | Rspamd's own score at or above this counts as the `rspamd-concurs` strong-evidence class |
+| `ESTABLISHED_DOMAIN_REJECT_GUARD_RANK` | `100000` | A strongly authenticated sender with a global Majestic rank of 100,000 or better (numerically `<= 100000`) is not SMTP-rejected on a lone `foreign-domain` brand mismatch. This is not a Ham/marketing allowance: junk scoring stays unchanged, and a second strong signal or typosquat disables the guard |
 | `AI_CONFIDENT_REJECT` | `true` | Enables the second reject path (see above) - the model very confident and scoring high on its own, no structural evidence needed |
 | `AI_CONFIDENT_CONFIDENCE` | `0.90` | Minimum model confidence for the AI-confident path |
 | `AI_CONFIDENT_SCORE` | `7.0` | Minimum un-capped model score for the AI-confident path |
@@ -975,6 +979,23 @@ address (never the body - mentioning a brand in the text is normal) for a
 claimed brand whose domain doesn't match:
 - **Typosquat** (edit distance <= 2, e.g. `booking.co` vs `booking.com`) adds a large fixed score and blocks the AI from rescuing the mail into ham
 - **Foreign domain** (brand named, domain unrelated) adds a smaller fixed score and is passed to the AI as a strong phishing signal
+
+Known parent/subsidiary relationships used only to authorize a brand claim
+are kept separate from `verified-brand`. For example, `telefonica.com` may
+legitimately claim o2 **when the sender is strongly authenticated**, but does
+not receive o2's general trust protection; authentic but unwanted Telefónica
+marketing remains scoreable as such. A spoofed, unauthenticated
+`telefonica.com` From-address receives no alias exception.
+
+There is also a narrow reject guard for omissions in this necessarily
+incomplete relationship data. If `foreign-domain` is the **only** strong
+evidence, the sender is strongly authenticated, and its exact From-domain
+ranks within the Majestic Top 100,000, the mail keeps its phishing score and
+junk floor but is not irreversibly rejected. A second strong signal
+(`url-on-blocklist`, dangerous attachment, `rspamd-concurs`, etc.) removes the
+guard. Parent-domain fallback is deliberately not accepted here, so an
+attacker-controlled subdomain cannot inherit a hosting platform's rank.
+Typosquats never receive the guard.
 
 This is the *list* path from [Brand impersonation: three paths](#brand-impersonation-three-paths)
 above - see there for the generated Majestic-Million list, the federated-brand

@@ -1,4 +1,5 @@
 # Testliste, wird von tests/run-fixtures.sh benutzt
+o2	o2online.de
 hetzner	hetzner.com
 paypal	paypal.com
 floraprima	floraprima.de

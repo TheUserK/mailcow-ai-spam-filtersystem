@@ -305,6 +305,14 @@ BODY=$(
         "$(printf 'Diese Belege weisen noch nicht ab. Stimmt das Urteil, koennen sie scharf geschaltet werden.')" \
         '((.probation // []) | length) > 0' && FOUND=1
 
+    # 0c. Hoher Rang hat einen alleinstehenden foreign-domain-Reject
+    #     gebremst. Genau diese Faelle zeigen entweder eine noch fehlende
+    #     Markenbeziehung oder eine echte Markenfaelschung aus einer
+    #     kompromittierten etablierten Domain und gehoeren deshalb angesehen.
+    render_group "Domain-Rang hat Marken-Fehlalarm gebremst" \
+        "$(printf 'Stark authentifizierte Top-Domain, aber fremde Marke; ohne zweiten Beleg nur Junk statt SMTP-Reject.')" \
+        '(.rank_reject_guard // false) == true' && FOUND=1
+
     # 7. Betrug erkannt, aber kein Beleg - also zugestellt.
     #
     # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist

@@ -51,7 +51,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **Brand-impersonation detection, two mechanisms** - A short hand-curated list of real domains per brand catches typosquats and foreign-domain claims; a separately generated list of several thousand brand names (from the Majestic Million, see below) catches the model's own claimed-brand text against a domain that has nothing to do with it. Federated brand names (Sparkasse, Volksbank, Sparda - hundreds of independently run banks sharing one name) are deliberately excluded from the single-domain check, which is structurally wrong for that shape.
 - **Fishy-TLD scoring and greylisting** - A small, operator-editable score bump for sender domains on frequently-abused top-level domains (`.shop`, `.top`, `.icu`, ...), and greylisting for anything Rspamd already finds middling - both cheap, both never block on their own.
 - **The filter knows what you actually do** - Each of your own domains is classified once from its own website, and that one-line description goes into every prompt. It catches a class of fraud nothing else sees: mail that addresses you as the *provider* of a service you do not offer - a room booking at a software company, sent from a hijacked but perfectly authenticated account. Confirmations for services you bought elsewhere (hotel, flight, invoice) are explicitly excluded - every company books hotels.
-- **Sender-domain reputation, as a number, not a yes/no list** - Every sender domain's global web-link ranking (Majestic Million, the full list) goes into the prompt so the model can weigh it itself, instead of a fixed "known brand" list with an arbitrary cutoff. A domain established enough to rank in the top few hundred thousand worldwide is hard to fake quickly - that holds regardless of how promotional a legitimate retailer's subject line sounds.
+- **Sender-domain reputation, primarily as a number** - Every sender domain's global web-link ranking (Majestic Million, the full list) goes into the prompt so the model can weigh it itself. A domain established enough to rank in the top few hundred thousand worldwide is hard to fake quickly - that holds regardless of how promotional a legitimate retailer's subject line sounds. The only hard cutoff is a reject-safety guard: a strongly authenticated Top-100,000 sender with a lone `foreign-domain` brand mismatch is still junked, but needs a second strong signal before irreversible SMTP rejection. It is not a Ham or newsletter allowance.
 - **Internal-mail detection** - Mail between two local Mailcow domains skips analysis entirely (queries the Mailcow DB for active domains).
 - **Low False Positives** - "When in doubt, it's legitimate" is the guiding rule of both the local checks and the AI prompt. A fixture corpus (`tests/`) built from real false positives and real catches guards against regressions on every change.
 - **Untouched by mailcow updates** - Installed into `plugins.d/`, which mailcow's update never writes to, so there is no loader line that can go missing
@@ -307,12 +307,14 @@ national. Raising the cutoff enough to include them pulls in far more noise
 than value long before it reaches domains that are only prominent within one
 country.
 
-`ai-filter-rank.sh` sidesteps the cutoff problem entirely: it stores the
-*rank itself*, for the full Majestic Million (all ~1 million domains,
+`ai-filter-rank.sh` sidesteps the cutoff problem for ordinary scoring: it
+stores the *rank itself*, for the full Majestic Million (all ~1 million domains,
 CC BY 3.0 - same source and licensing as the brand list, generated locally,
 not shipped), and lets the model weigh the number - "global rank 23,080,
 .de-rank 572" carries very different weight than "not listed", without the
-code drawing an arbitrary line.
+code drawing an arbitrary Ham/marketing line. The one cutoff is the narrow
+irreversible-reject guard described above; it changes neither category nor
+score.
 
 A million rows is too many for a PHP array without a real memory cost - the
 checker runs 4 request workers in parallel, each with its own process

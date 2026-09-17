@@ -601,6 +601,163 @@ function fixtures() {
         'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
     ]);
 
+    // Echter Fehlalarm vom 17.09.: Telefónica versendet einen o2-Business-
+    // Sicherheitscode von der Konzern-Domain. Die Domain darf die Marke o2
+    // behaupten, soll aber NICHT den weitergehenden verified-brand-Schutz
+    // erhalten - sonst bekäme auch unerwuenschte Telefónica-Werbung einen
+    // Vertrauensbonus.
+    $cases['telefonica-o2-sicherheitscode'] = array_replace_recursive($base, [
+        'claimed_brand' => 'o2',
+        'from' => 'no-reply-o2@telefonica.com', 'from_email' => 'no-reply-o2@telefonica.com',
+        'from_display_name' => 'o2 Business',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Ihr Sicherheitscode fuer o2 Business Easy Access',
+        'body' => 'Ihr einmaliger Sicherheitscode lautet 123456.',
+        'rspamd_score' => 3.078598,
+        '_expect' => [
+            'impersonation' => 0.0,
+            'impersonation_kind' => '',
+            'verified_brand' => '',
+            'sender_global_rank' => null,
+            'rank_reject_guard' => false,
+            'evidence' => [],
+            'strong' => [],
+        ],
+    ]);
+
+    // Gegenprobe zur Konzernbeziehung: dieselbe From-Domain ohne bestandene
+    // Authentifizierung ist nur behauptet. Dann bleibt o2/telefonica.com ein
+    // harter Markenbeleg und der hohe Rang darf ihn nicht bremsen.
+    $cases['telefonica-o2-gespooft'] = array_replace_recursive($base, [
+        'claimed_brand' => 'o2',
+        'from' => 'no-reply-o2@telefonica.com', 'from_email' => 'no-reply-o2@telefonica.com',
+        'from_display_name' => 'o2 Business',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte bestaetigen Sie Ihre Daten.',
+        'rspamd_score' => 3.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+        '_expect' => [
+            'impersonation' => 7.0,
+            'impersonation_kind' => 'foreign-domain',
+            'verified_brand' => '',
+            'sender_global_rank' => 7967,
+            'rank_reject_guard' => false,
+            'evidence' => ['brand-impersonation'],
+            'strong' => ['brand-impersonation'],
+        ],
+    ]);
+
+    // Eine andere hochrangige, stark authentifizierte Firmendomain behauptet
+    // PayPal. Das bleibt Phishing/Junk; der alleinstehende foreign-domain-
+    // Befund darf die Mail aber nicht unwiderruflich abweisen.
+    $cases['rang-bremst-einzelnen-markenbeleg'] = array_replace_recursive($base, [
+        'claimed_brand' => 'PayPal',
+        'from' => 'security@sage.com', 'from_email' => 'security@sage.com',
+        'from_display_name' => 'PayPal Security',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte pruefen Sie Ihr Konto.',
+        'rspamd_score' => 3.0,
+        '_expect' => [
+            'impersonation' => 7.0,
+            'impersonation_kind' => 'foreign-domain',
+            'verified_brand' => '',
+            'sender_global_rank' => 3225,
+            'rank_reject_guard' => true,
+            'evidence' => ['brand-impersonation'],
+            'strong' => ['brand-impersonation'],
+        ],
+    ]);
+
+    // Gegenprobe: mit einem zweiten starken Strukturbeleg bleibt derselbe
+    // Absender voll abweisbar. Der Rang darf Phishing nicht freikaufen.
+    $cases['rang-schuetzt-nicht-bei-zweitem-beleg'] = array_replace_recursive($base, [
+        'claimed_brand' => 'PayPal',
+        'from' => 'security@sage.com', 'from_email' => 'security@sage.com',
+        'from_display_name' => 'PayPal Security',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Dringende Kontopruefung',
+        'body' => 'Oeffnen Sie den Anhang.',
+        'rspamd_score' => 3.0,
+        'attachments' => [['name' => 'Kontopruefung.pdf.exe', 'size' => 12000]],
+        '_expect' => [
+            'impersonation' => 7.0,
+            'impersonation_kind' => 'foreign-domain',
+            'verified_brand' => '',
+            'sender_global_rank' => 3225,
+            'rank_reject_guard' => false,
+            'evidence' => ['brand-impersonation', 'dangerous-attachment'],
+            'strong' => ['brand-impersonation', 'dangerous-attachment'],
+        ],
+    ]);
+
+    // Eine nicht selbst gelistete Subdomain darf den Rang ihrer Hauptdomain
+    // nur im Prompt sehen, nicht fuer die harte Reject-Bremse erben. Das
+    // verhindert einen Freibrief fuer Kunden-Subdomains grosser Plattformen.
+    $cases['elternrang-ist-kein-reject-schutz'] = array_replace_recursive($base, [
+        'claimed_brand' => 'PayPal',
+        'from' => 'security@credit.sage.com', 'from_email' => 'security@credit.sage.com',
+        'from_display_name' => 'PayPal Security',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte pruefen Sie Ihr Konto.',
+        'rspamd_score' => 3.0,
+        '_expect' => [
+            'impersonation' => 7.0,
+            'impersonation_kind' => 'foreign-domain',
+            'verified_brand' => '',
+            'sender_global_rank' => null,
+            'rank_reject_guard' => false,
+            'evidence' => ['brand-impersonation'],
+            'strong' => ['brand-impersonation'],
+        ],
+    ]);
+
+    // Hoher Rang ohne starke Authentifizierung ist kein Schutz: Ein
+    // gefaelschtes From auf eine bekannte Domain darf die Bremse nicht nutzen.
+    $cases['rang-ohne-starke-auth-schuetzt-nicht'] = array_replace_recursive($base, [
+        'claimed_brand' => 'PayPal',
+        'from' => 'security@sage.com', 'from_email' => 'security@sage.com',
+        'from_display_name' => 'PayPal Security',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte pruefen Sie Ihr Konto.',
+        'rspamd_score' => 3.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+        '_expect' => [
+            'impersonation' => 7.0,
+            'impersonation_kind' => 'foreign-domain',
+            'verified_brand' => '',
+            'sender_global_rank' => 3225,
+            'rank_reject_guard' => false,
+            'evidence' => ['brand-impersonation'],
+            'strong' => ['brand-impersonation'],
+        ],
+    ]);
+
+    // Selbst ein hypothetisch hoch gerankter Typosquat bleibt scharf. Die
+    // Bremse gilt ausschliesslich fuer fehlende Markenbeziehungen vom Typ
+    // foreign-domain.
+    $cases['rang-schuetzt-keinen-typosquat'] = array_replace_recursive($base, [
+        'claimed_brand' => 'PayPal',
+        'from' => 'service@paypa1.com', 'from_email' => 'service@paypa1.com',
+        'from_display_name' => 'PayPal',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte bestaetigen Sie Ihre Daten.',
+        'rspamd_score' => 3.0,
+        '_expect' => [
+            'impersonation' => 6.0,
+            'impersonation_kind' => 'typosquat',
+            'verified_brand' => '',
+            'sender_global_rank' => 9000,
+            'rank_reject_guard' => false,
+            'evidence' => ['brand-impersonation'],
+            'strong' => ['brand-impersonation'],
+        ],
+    ]);
+
     return $cases;
 }
 
@@ -610,6 +767,29 @@ function runFixtures() {
         $mail  = prepareMailContext($data);
         $local = analyzeLocally($mail, 'test');
         $ev    = collectStructuralEvidence($mail, $local, ['claimed_brand' => $data['claimed_brand'] ?? '']);
+        $strong = strongEvidence($ev);
+        $rankRejectGuard = establishedDomainRejectGuard($local, $strong);
+
+        $actual = [
+            'impersonation' => floatval($local['impersonation_score'] ?? 0),
+            'impersonation_kind' => $local['impersonation_kind'] ?? '',
+            'verified_brand' => $local['verified_brand'] ?? '',
+            'sender_global_rank' => $local['sender_global_rank'] ?? null,
+            'rank_reject_guard' => $rankRejectGuard,
+            'evidence' => $ev,
+            'strong' => $strong,
+        ];
+        foreach (($data['_expect'] ?? []) as $field => $expected) {
+            if (!array_key_exists($field, $actual) || $actual[$field] !== $expected) {
+                throw new RuntimeException(sprintf(
+                    '%s: %s erwartet %s, erhalten %s',
+                    $name,
+                    $field,
+                    json_encode($expected),
+                    json_encode($actual[$field] ?? null)
+                ));
+            }
+        }
 
         $scores = [];
         foreach ([['spam', 0.85, 0.90], ['phishing', 0.95, 0.92], ['marketing', 0.20, 0.80],
@@ -621,11 +801,14 @@ function runFixtures() {
             'auth_strength'  => $local['auth_strength'] ?? '',
             'verified_brand' => $local['verified_brand'] ?? '',
             'impersonation'  => $local['impersonation_score'] ?? 0,
+            'impersonation_kind' => $local['impersonation_kind'] ?? '',
+            'sender_global_rank' => $local['sender_global_rank'] ?? null,
+            'rank_reject_guard' => $rankRejectGuard,
             'handled'        => !empty($local['handled']),
             'risk_flags'     => $local['risk_flags'] ?? [],
             'trust_flags'    => $local['trust_flags'] ?? [],
             'evidence'       => $ev,
-            'strong'         => strongEvidence($ev),
+            'strong'         => $strong,
             // Entscheidet mit ueber die Ablehnung: ein nachweisbarer
             // Austausch schuetzt, ein selbst geschriebener Header nicht.
             'echter_thread'  => partOfRealConversation($mail),
@@ -863,6 +1046,7 @@ function runFixtures() {
     // kein erfundener Wert) - siehe domainRank().
     $out['_domain_rang'] = [
         'bekannt'    => domainRank('tchibo.de'),
+        'telefonica' => domainRank('telefonica.com'),
         'unbekannt'  => domainRank('nie-gesehene-domain-xyz.de'),
         'leer'       => domainRank(''),
     ];
