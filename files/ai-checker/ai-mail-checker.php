@@ -1445,7 +1445,13 @@ Als legitim einstufen:
 - normale Geschaefts- und Privatmails
 - erwartete Newsletter mit List-Unsubscribe
 - Transaktionsmails (Bestellung, Rechnung, Versand) von stimmigen Absendern
-- ein niedriger oder negativer Rspamd-Score ist ein Vertrauenssignal
+- ein niedriger oder negativer Rspamd-Score heisst: Rspamd hat technisch
+  nichts auszusetzen (Authentifizierung, Reputation, Alter der Domain). Das
+  ist ein Hinweis auf einen ECHTEN Absender - aber keiner darauf, dass die
+  Mail erwuenscht ist. Professionelle Versandinfrastruktur beweist nur, dass
+  jemand versenden KANN. Kaltakquise und ungefragte Werbung haben regelmaessig
+  negative Scores; beurteile die dann nach Inhalt und Beziehung, nicht nach
+  der Zahl.
 
 Zu den Absender-Flags:
 - "reply-to-our-own-mail": Die Mail ist eine Antwort auf Post, die WIR
@@ -1525,9 +1531,11 @@ Zu den Absender-Flags:
   faengt so an. Nur zusammen mit anderen Signalen relevant. Fehlt das Flag,
   heisst das NICHT "bekannt": ueber Firmendomains wird gar nicht Buch
   gefuehrt.
-- "undisclosed-recipient": Kein sichtbarer Einzelempfaenger im To-Header
-  (leer oder die Formel "Undisclosed recipients:;") - die Mail ging an eine
-  verborgene Liste. Kommt bei legitimen Rundmails vor (Vereine, Kunden-
+- "undisclosed-recipient": Kein sichtbarer Einzelempfaenger im To-Header -
+  er ist leer, traegt die Formel "Undisclosed recipients:;", oder es steht
+  ausschliesslich die ADRESSE DES ABSENDERS SELBST darin, waehrend die
+  echten Empfaenger im BCC liegen. Die Mail ging also an eine verborgene
+  Liste. Kommt bei legitimen Rundmails vor (Vereine, Kunden-
   ankuendigungen, oft bewusst aus Datenschutzgruenden), ist bei echter
   persoenlich gerichteter Post aber ungewoehnlich. Werte es deutlicher als
   ein reines first-contact-Flag: in Kombination mit einem weiteren Signal
@@ -1600,23 +1608,24 @@ authentifiziert - dann sind diese drei Flags Infrastruktur-Rauschen, kein
 Faelschungsbeweis. Erst zusammen mit "auth:suspicious" werden sie
 aussagekraeftig.
 
-Abonniert oder nicht? Das kannst du einer Mail NICHT ansehen, und du sollst
-es auch nicht raten. Traegt eine Mail einen "List-Unsubscribe"-Header
-(Trust-Flag "newsletter-headers-present"), steht "auth:strong" oder
-"auth:medium" dabei und zeigen die Links nur auf die Absenderdomain selbst
-oder auf ihren Versanddienstleister, dann ist die Kategorie "marketing" -
-nicht "spam". "spam" setzt mehr voraus als geschaeftliche Werbung: gefaelschte
-Absender, fremde Marken, irrefuehrende Links, verschleierte Ziele.
-Am 15.09. liefen zwei echte Haendler-Newsletter (ein Elektronikversand, ein
-Apple-Wiederverkaeufer) als "spam" mit 0.90 und 0.96 Sicherheit durch, obwohl
-beide sauber authentifiziert waren, eine funktionierende Abmeldeadresse
-mitschickten und ausschliesslich auf die eigene Domain verlinkten. Beide
-wurden deshalb aussortiert, obwohl der Empfaenger sie bezogen hatte.
-Umgekehrt gilt das genauso: Fehlt der Abmelde-Header bei einer
-Werbe-Massenmail, ist das ein Hinweis in die andere Richtung.
-"cold-marketing" oder "unsolicited-commercial" sind fuer sich allein KEINE
-Begruendung fuer "spam" - fuer ungefragte Werbung gibt es die Kategorie
-"marketing".
+Abonniert oder nicht? Das kannst du einer Mail NICHT ansehen. Ein FEHLENDER
+Abo-Nachweis ist deshalb allein kein Grund fuer "spam" - sonst faellt jede
+Haendlerpost durch, die nicht zufaellig "Sie erhalten diese Mail, weil ..."
+im Fuss stehen hat. Werbung eines etablierten Anbieters, bei dem der
+Empfaenger erkennbar Kunde sein KANN (Versandhandel, Fachhaendler,
+Dienstleister mit Ladengeschaeft - guter Domain-Rang, eigene Marke, eigene
+Links, funktionierende Abmeldeadresse), ist "marketing", nicht "spam".
+Am 15.09. liefen zwei solche Haendler-Newsletter mit 0.90 und 0.96 Sicherheit
+als "spam" durch, obwohl sie sauber authentifiziert waren, eine
+funktionierende Abmeldeadresse mitschickten und ausschliesslich auf die
+eigene Domain verlinkten. Der Empfaenger hatte sie bezogen.
+
+Das gilt AUSDRUECKLICH NICHT fuer Kaltakquise - siehe den eigenen Abschnitt
+weiter unten. Dort entscheidet nicht der Abmeldelink, sondern die Beziehung:
+Ein Haendler, bei dem man einkauft, verkauft dem Empfaenger ein PRODUKT; ein
+Kaltakquise-Anbieter bietet ihm eine Dienstleistung FUER sein Geschaeft an,
+ohne dass je eine Beziehung bestand. Die zweite Sorte bleibt "spam", auch mit
+perfektem List-Unsubscribe und sauberer Authentifizierung.
 
 Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
 - "sender-on-blocklist": die ABSENDERADRESSE selbst steht auf einer Liste
@@ -1736,10 +1745,10 @@ Rolle voraus, die der Empfaenger laut Kontext nicht hat, ist es ein
 Rollenbruch - auch in Bewerbungsform, auch als Lieferantenanfrage, auch als
 Rechnung. Die Pruefrage: Wuerde der Absender diese Mail WORTGLEICH so
 schreiben, wenn er wuesste, was der Empfaenger tatsaechlich tut?
-- "Bewerbung als Kellner in Ihrem Haus fuer die Wintersaison, moeglichst mit
-  Personalzimmer" an einen Betrieb ohne Gastgewerbe -> Rollenbruch. Die
-  Stelle, um die es geht, gibt es dort nicht.
-- "Initiativbewerbung, ich suche eine Stelle im Medienbereich" an denselben
+- "Bewerbung als Filialleiter fuer eine Ihrer Niederlassungen" an einen
+  Betrieb, der laut Kontext keine Filialen hat -> Rollenbruch. Die Stelle,
+  um die es geht, gibt es dort nicht.
+- "Initiativbewerbung, ich suche eine Stelle in Ihrem Bereich" an denselben
   Betrieb -> kein Rollenbruch. Die Mail setzt nichts voraus.
 Derselbe Unterschied gilt fuer jede der Gattungen oben: Eine Rechnung ueber
 eine Leistung, die der Empfaenger nie bezogen haben kann, ist ein
@@ -1767,17 +1776,18 @@ Der Hinweis hebt die uebrigen Regeln NICHT auf. Insbesondere bleibt bestehen:
 Post ueber eine Leistung, die der Empfaenger SELBST eingekauft hat
 (Buchungsbestaetigung, Rechnung fuer eine eigene Bestellung, Lieferavis,
 Kontoauszug), ist normal - auch wenn ein Hinweis thematisch dagegen zu
-sprechen scheint. Ein Hinweis wie "Zimmerbuchungen sind bei uns immer
-Betrug" meint die Masche, bei der FREMDE beim Empfaenger buchen wollen, nicht
-die Bestaetigung einer Reise, die der Empfaenger selbst gebucht hat.
+sprechen scheint. Ein Hinweis wie "Paketbenachrichtigungen sind bei uns
+immer gefaelscht" meint die Masche, bei der FREMDE eine Sendung behaupten,
+nicht die Benachrichtigung zu einem Paket, das der Empfaenger selbst
+bestellt hat.
 
 Hat der Hinweis dein Urteil getragen, schreibe das in "reasoning".
 
 BETREIBER-REGEL (ABWEISUNG) - Feld "reject_rule_match":
 Die Zeile "Betreiber-Regel (Abweisung)" enthaelt eine Anweisung des
 Betreibers, welche Art von Post er grundsaetzlich nicht will - zum Beispiel
-"Wir sind kein Hotel oder Beherbergungsbetrieb, alle Anfragen die darauf
-abzielen sind abzuweisen". Steht dort "(keine)", setze "reject_rule_match"
+"Wir sind keine Kfz-Werkstatt und nehmen keine Reparaturauftraege an, alle
+Anfragen die darauf abzielen sind abzuweisen". Steht dort "(keine)", setze "reject_rule_match"
 immer auf false und ueberspringe diesen Abschnitt.
 
 Deine Aufgabe ist hier eng: Beantworte NUR, ob diese konkrete Mail das
@@ -1794,10 +1804,10 @@ Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
   Vorgang (bestellte Ware, gebuchte Reise, angeforderte Unterlagen,
   beauftragte Leistung) erfuellt deshalb NIE eine Regel, auch wenn sie
   thematisch genau darauf passt und die Regel das nicht ausdruecklich
-  ausnimmt. Beispiele: "keine Zimmeranfragen" meint Fremde, die beim
-  Empfaenger buchen wollen, nicht die Bestaetigung einer eigenen Buchung;
-  "keine Paketbenachrichtigungen" meint unbestellte, nicht das selbst
-  bestellte Paket.
+  ausnimmt. Beispiele: "keine Reparaturauftraege" meint Fremde, die beim
+  Empfaenger etwas repariert haben wollen, nicht die Rechnung der Werkstatt,
+  bei der er selbst war; "keine Paketbenachrichtigungen" meint unbestellte,
+  nicht das selbst bestellte Paket.
 - Echtheit schuetzt nicht. Eine Regel fragt nicht, ob die Mail echt,
   hoeflich, individuell oder von Hand geschrieben ist - nur, ob das
   beschriebene Muster zutrifft. Eine ernst gemeinte Mail eines realen

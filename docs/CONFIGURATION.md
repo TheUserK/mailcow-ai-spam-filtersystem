@@ -263,7 +263,10 @@ in the spam folder, not a lost mail, so the model's word alone is enough here.
 
 Since 16.09. the junk floor also covers `marketing` when the mail carries
 **no** `List-Unsubscribe` and no `List-Id` - unsolicited bulk advertising with
-no way out. On 15.09. a cold-outreach mail stayed in the inbox at 5.63 because
+no way out. Note what this does *not* cover: cold outreach sent through a
+professional bulk service has a perfectly working unsubscribe link. That case
+is kept out of `marketing` by the prompt instead - see below - and stays
+`spam`, which the floor covers anyway. On 15.09. a cold-outreach mail stayed in the inbox at 5.63 because
 `marketing` has `may_reject = false` and was therefore exempt from the floor
 as well, even though the model had identified it as advertising at 90%
 confidence. A newsletter with a working unsubscribe address is explicitly
@@ -271,6 +274,23 @@ excluded: it belongs to the recipient, not to us, and since 16.09. the prompt
 deliberately sorts exactly that kind of mail into `marketing` so it does *not*
 end up in junk. Nothing becomes rejectable by this - `may_reject` stays
 `false`, this is only about the folder.
+
+**`marketing` vs. cold outreach - the line that is easy to blur.** On 16.09.
+a prompt paragraph meant to rescue retailer newsletters said that a
+`List-Unsubscribe` header plus strong auth plus links to the sender's own
+domain makes a mail `marketing` rather than `spam`. That contradicted both the
+definition of `marketing` (which requires an existing or plausible business
+relationship) and the cold-outreach section forty lines below (which states
+that a working unsubscribe link only proves the sender is bulk-capable).
+Professional cold outreach satisfies every one of those conditions, so it
+would have been reclassified from `spam` to `marketing` - a category that can
+never be rejected and, with list headers present, is exempt from the junk
+floor as well. The entire batch of cold outreach analysed on 15.09. would have
+landed in the inbox. Corrected on 17.09.: a *missing* proof of subscription is
+no longer a reason for `spam` on its own, but the relationship still decides.
+The usable distinction is what is being sold - a retailer sells the recipient
+a **product** they could plausibly buy; cold outreach offers a **service for
+the recipient's business** with no relationship behind it.
 
 **Authenticated list mail closes the AI-confident path**
 (`authenticatedListMail()`, since 16.09.). When a mail carries a
