@@ -352,7 +352,29 @@ Beide sind thematisch "Hotel". Nur die erste ist ein Rollenbruch. Eine Regel
 jedes Flugticket und jede branchenfremde Rechnung anzünden - also genau die
 Transaktionsmail, hinter der niemand sitzt, der einen Bounce bemerkt. Der
 Systemprompt formuliert die Unterscheidung deshalb ausdrücklich, samt
-Ausnahmen für Bewerbungen, Presse- und Lieferantenanfragen und Behördenpost.
+Ausnahmen für Post, die an jeden Betrieb gehen kann: Bewerbungen, Presse- und
+Lieferantenanfragen, Rechnungen, Behördenpost, Einladungen.
+
+**Diese Ausnahmen gelten seit 17.09. der Gattung, nicht dem Inhalt.** Vorher
+stand dort schlicht „nicht anwenden auf Bewerbungen" - und am 16.09. kam eine
+Bewerbung als Kellner, Wintersaison, möglichst mit Personalzimmer, an eine
+Firma, die kein Gastgewerbe betreibt. Der Empfänger-Kontext lag dem Modell
+wörtlich vor („kein Beherbergungs- oder Gastgewerbe"), der Rollenbruch-Test
+hätte gegriffen - und die Ausnahme hat ihn abgeschaltet. Ergebnis: `personal`,
+Confidence 0.95, Ham-Bonus −2.57, Posteingang. Das Modell hat unsere Anweisung
+korrekt befolgt.
+
+Die Prüffrage lautet jetzt: **Würde der Absender diese Mail wortgleich so
+schreiben, wenn er wüsste, was der Empfänger tatsächlich tut?**
+
+| Bewerbung an eine Filmproduktion | Rollenbruch? |
+|---|---|
+| "Bewerbung als Kellner in Ihrem Haus, Wintersaison, Personalzimmer" | **ja** - die Stelle gibt es dort nicht |
+| "Initiativbewerbung, ich suche eine Stelle im Medienbereich" | **nein** - setzt nichts voraus |
+
+Dasselbe für die übrigen Gattungen: eine Rechnung über eine Leistung, die der
+Empfänger nie bezogen haben kann, ist ein Rollenbruch; eine gewöhnliche
+Rechnung ist keiner.
 
 Ein Rollenbruch allein ist `spam`. Kommt ein Link, ein Anhang oder eine
 Handlungsaufforderung dazu, ist es `phishing`/`fraud` mit hoher Confidence.
@@ -470,6 +492,30 @@ Rechnungen von Unbekannten" nicht die angeforderte Rechnung. Ohne diese
 Klammer würde jede thematisch formulierte Regel beide Richtungen desselben
 Themas erwischen - und damit ausgerechnet Transaktionsmail, hinter der niemand
 sitzt, der einen Bounce bemerkt.
+
+**Regeln als Grundsatz schreiben, nicht als Liste.** Das ist der teuerste
+Fehler bei diesem Feature, und er sieht wie Sorgfalt aus. Zwischen dem 14. und
+16.09. wuchs eine Hotel-Regel von einem Satz auf zwei Aufzählungen - und jede
+neue Mail brachte eine Rolle, die auf keiner Liste stand: erst Gäste, dann
+Agenturen, dann ein Bewerber. Ein Modell liest eine Aufzählung als
+**Definition**, nicht als Beispiele; alles daneben fällt durch. Der Prompt
+weist es seit 17.09. ausdrücklich an, zuerst den allgemeinen Satz zu prüfen
+und Beispiele als Beispiele zu behandeln - verlassen sollte man sich darauf
+nicht. Ein Satz zur Rolle plus ein Satz zur Ausnahme trägt weiter als jede
+Liste:
+
+> Wir sind kein Hotel und kein gastgewerblicher Betrieb. Weise jede Mail ab,
+> deren Absender voraussetzt, dass wir ein solcher Betrieb sind - unabhängig
+> davon, was er will. Ausnahme: Hotels, die unsere Kunden für Foto- und
+> Videoproduktionen sind; die behandeln uns als Dienstleister.
+
+**Echtheit schützt nicht vor einer Regel** (seit 17.09. im Prompt). Eine
+Regel fragt nicht, ob eine Mail echt, höflich oder von Hand geschrieben ist,
+sondern nur, ob das Muster zutrifft. Am 16.09. kam eine ernst gemeinte
+Bewerbung eines realen Menschen mit echtem Lebenslauf - `personal`, Confidence
+0.95, Ham-Bonus −2.57. Unerwünscht war sie aus genau einem Grund: Der Absender
+bewarb sich auf eine Stelle im Gastgewerbe bei einer Firma, die keines
+betreibt.
 
 **Kontrolle:** Report-Gruppe „Eigene Reject-Regel hat gegriffen" listet jeden
 Treffer. Solange eine Regel neu ist, gehört da hineingeschaut.

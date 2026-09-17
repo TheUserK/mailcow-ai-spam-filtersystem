@@ -1726,9 +1726,24 @@ hier", "Daten bestaetigen", "Dokument einsehen", "Formular ausfuellen"), ist
 das zusammen ein sehr starkes Betrugssignal -> "phishing" oder "fraud" mit
 hoher Confidence.
 
-NICHT anwenden auf Post, die sich an jeden Betrieb richten kann: Bewerbungen,
-Presse- und Lieferantenanfragen, Rechnungen, Behoerdenpost, Einladungen. Das
-ist kein Rollenbruch, auch wenn es thematisch nicht zum Betrieb passt.
+Manche Post kann an JEDEN Betrieb gehen: Bewerbungen, Presse- und
+Lieferantenanfragen, Rechnungen, Behoerdenpost, Einladungen. Die GATTUNG
+allein ist kein Rollenbruch, auch wenn sie thematisch nicht zum Betrieb
+passt - eine Initiativbewerbung darf ueberall ankommen.
+
+Entscheidend ist aber der INHALT, nicht die Gattung. Setzt die Mail eine
+Rolle voraus, die der Empfaenger laut Kontext nicht hat, ist es ein
+Rollenbruch - auch in Bewerbungsform, auch als Lieferantenanfrage, auch als
+Rechnung. Die Pruefrage: Wuerde der Absender diese Mail WORTGLEICH so
+schreiben, wenn er wuesste, was der Empfaenger tatsaechlich tut?
+- "Bewerbung als Kellner in Ihrem Haus fuer die Wintersaison, moeglichst mit
+  Personalzimmer" an einen Betrieb ohne Gastgewerbe -> Rollenbruch. Die
+  Stelle, um die es geht, gibt es dort nicht.
+- "Initiativbewerbung, ich suche eine Stelle im Medienbereich" an denselben
+  Betrieb -> kein Rollenbruch. Die Mail setzt nichts voraus.
+Derselbe Unterschied gilt fuer jede der Gattungen oben: Eine Rechnung ueber
+eine Leistung, die der Empfaenger nie bezogen haben kann, ist ein
+Rollenbruch; eine gewoehnliche Rechnung ist keiner.
 
 BETREIBER-HINWEIS:
 Die Zeile "Betreiber-Hinweis" enthaelt, was der Betreiber dieses Mailservers
@@ -1783,6 +1798,16 @@ Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
   Empfaenger buchen wollen, nicht die Bestaetigung einer eigenen Buchung;
   "keine Paketbenachrichtigungen" meint unbestellte, nicht das selbst
   bestellte Paket.
+- Echtheit schuetzt nicht. Eine Regel fragt nicht, ob die Mail echt,
+  hoeflich, individuell oder von Hand geschrieben ist - nur, ob das
+  beschriebene Muster zutrifft. Eine ernst gemeinte Mail eines realen
+  Menschen mit echtem Anliegen erfuellt eine Regel genauso wie eine
+  Massenmail. Umgekehrt macht ein unangenehmer Ton aus einer Mail keinen
+  Treffer.
+- Nennt die Regel Beispiele oder zaehlt Faelle auf, sind das BEISPIELE und
+  keine abschliessende Liste. Pruefe immer zuerst den allgemeinen Satz der
+  Regel. Trifft der zu, ist es ein Treffer - auch wenn der konkrete Fall in
+  keinem der genannten Beispiele vorkommt.
 - Steht in der Regel eine Adressebene ("geht der Domain-Angabe vor"), gilt
   diese fuer dieses Postfach.
 Gib die Antwort als eigenes JSON-Feld "reject_rule_match" aus - ein Satz im
