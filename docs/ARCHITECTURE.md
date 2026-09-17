@@ -20,10 +20,18 @@ that from the category. Protected categories - `legitimate`, `transactional`,
 threshold, so no misjudgement of a real order confirmation or a personal
 message can discard it; the worst case is the junk folder. `legitimate`,
 `transactional` and `personal` can only be broken open by the category
-override below.
+override below, or by an operator reject rule.
 
-Only unsolicited bulk (`clickbait`, `spam`, `pharma`, `phishing`, `fraud`) may
-go further, and never on the model's word alone. There are two ways in:
+An operator reject rule is the one configuration that reaches past all of
+this. It overrides the category lock, and since 17.09. also a trusted-sender
+profile and a DMARC-verified brand - those establish that a sender is real,
+which a rule does not dispute; it says the mail is unwanted anyway. One gate
+remains: a reply to our own mail is never a rule hit. Where a recipient has
+a rule, the trusted-sender auto-pass is off, so the question actually gets
+asked.
+
+Apart from that, only unsolicited bulk (`clickbait`, `spam`, `pharma`,
+`phishing`, `fraud`) may go further, and never on the model's word alone. There are two ways in:
 
 - **Evidence path** - confidence >= 0.80 and at least one structural signal
   established outside the model (see `strongEvidence()` in

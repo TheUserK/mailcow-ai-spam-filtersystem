@@ -149,8 +149,9 @@ Bewaehrung hat gefeuert" and arm it by deleting the line once it has proven
 itself. Re-adding a name to `probationEvidence()` puts it back on probation -
 a one-line change either way.
 
-A mail that is **verifiably from** one of the listed brands is never rejected
-at all, whatever it links to. The brand list already holds each brand's real
+A mail that is **verifiably from** one of the listed brands is not rejected on
+evidence grounds, whatever it links to - an operator reject rule still
+reaches it (see [Reject-Regel](#reject-regel-abweisen---die-einzige-konfiguration-die-abweist)). The brand list already holds each brand's real
 sending domains; if a DMARC-authenticated From matches one, the sender *is*
 that brand and the question of impersonation does not arise.
 

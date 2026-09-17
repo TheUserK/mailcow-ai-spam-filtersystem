@@ -160,6 +160,8 @@ define('MAX_TOTAL_REJECTABLE', 18.0);
 // ist dieses Log die einzige Stelle, an der man sieht, was verworfen wurde.
 define('AI_MAY_REJECT', true);
 
+// Ziel-GESAMTSCORE, sobald die volle Reject-Konjunktion haelt (nicht der
+// eigene Anteil - siehe die Berechnung in analyzeWithAI()).
 // Bodenwert, sobald die volle Reject-Konjunktion haelt. Die uebliche Kurve
 // skaliert mit Wahrscheinlichkeit und Confidence und schoepft selbst bei
 // einem klaren Urteil nur rund zwei Drittel aus - viel zu wenig, um eine
@@ -318,6 +320,14 @@ logStats($requestId, [
     'url_domains' => $mail['url_domains'],
     'struct_flags' => $result['struct_flags'] ?? [],
     'real_conversation' => !empty($result['real_conversation']),
+    // Wurden von logStats() gelesen, aber nie uebergeben - beide Felder
+    // standen deshalb seit ihrer Einfuehrung in JEDER Zeile leer bzw.
+    // false, egal was tatsaechlich passiert war. Genau die zwei Felder,
+    // an denen sich ablesen laesst, ob eine Betreiber-Angabe gegriffen
+    // hat.
+    'reject_rule' => $result['reject_rule'] ?? '',
+    'reject_rule_confidence' => $result['reject_rule_confidence'] ?? null,
+    'business_hint' => !empty($result['business_hint']),
 ]);
 
 respondSuccess(
@@ -1445,7 +1455,12 @@ echte Geschaeftsmail enthaelt so etwas nicht.
 GRUNDREGEL: Im Zweifel ist die Mail legitim.
 Eine verlorene echte Mail ist viel schlimmer als ein durchgerutschter Spam.
 
-Als Spam/Phishing nur bei KLAREN Signalen einstufen:
+Als Spam/Phishing nur bei KLAREN Signalen einstufen. Die folgenden Muster
+sind KEINE abschliessende Liste, und keines davon zaehlt fuer sich allein -
+es zaehlt nur, wenn es UNERWARTET kommt, unplausibel ist oder Absender und
+Ziel nicht zusammenpassen. Rechnungen, Zahlungsaufforderungen,
+Passwort-Resets und Sicherheitswarnungen gibt es massenhaft auch echt; sie
+stehen weiter unten ausdruecklich als legitim:
 - Geldforderungen, Gebuehren, angebliche Erstattungen
 - Passwort-/Login-/Konto-Verifikation, Sicherheitswarnungen
 - gefaelschter Absender (From/Reply-To/Return-Path passen nicht zusammen)
@@ -1534,7 +1549,11 @@ Zu den Absender-Flags:
   und trotzdem sollen Antworten bei DOMAIN landen, die mit dem Absender
   nichts zu tun hat. Eine Organisation, die ihre Post sauber
   authentifiziert, leitet Antworten nicht auf ein fremdes Postfach um.
-  Bewerte das wie "hijacked-reply-to". Der Hinweis auf die Auth-Staerke
+  Ein ernster Hinweis - aber schwaecher als "hijacked-reply-to", weil ein
+  unbekannter Provider auch ein Ticketsystem oder ein externer Berater sein
+  kann. Allein traegt es kein Urteil, zusammen mit einem zweiten Signal
+  (Geldforderung, Kontaktpruefung ohne Anlass, verborgene Empfaenger) sehr
+  wohl. Der Hinweis auf die Auth-Staerke
   weiter unten gilt hier AUSDRUECKLICH NICHT: Bei einem gekaperten Konto
   ist eine einwandfreie Authentifizierung der Normalfall, kein Entlastungs-
   beweis. Ein harmloser oder belangloser Text entlastet ebenfalls nicht -
@@ -1606,16 +1625,24 @@ wird. Signale wie "hijacked-reply-to" oder ein inhaltlicher Rollenbruch zum
 Empfaenger-Kontext gelten also unabhaengig vom Rang weiter.
 
 Die Risk-/Trust-Flags der lokalen Vorpruefung sind im Regelfall Hinweise und
-kein Urteil - du wiegst sie gegen den Inhalt ab. Drei Flags sind davon
-ausgenommen, weil sie auf einer vom Absender nicht beeinflussbaren Quelle
-beruhen; bei ihnen gilt die oben bei ihrer Beschreibung genannte Einstufung,
-nicht diese Relativierung:
-- "brand-impersonation:MARKE" - der Absender gibt sich als bekannte Marke
-  aus, obwohl die Domain nicht dazu passt. Stufe solche Mails als "phishing"
-  ein, ausser es gibt einen klaren, legitimen Grund (erkennbarer Reseller).
-- "hijacked-reply-to" und "reply-to-unrelated-domain:DOMAIN" - siehe dort.
-- "sender-on-blocklist" und "url-on-blocklist" - externe Reputationsdaten.
-Alle uebrigen Flags bleiben Hinweise.
+kein Urteil - du wiegst sie gegen den Inhalt ab. Vier Flags sind davon
+ausgenommen; bei ihnen gilt die oben bei ihrer Beschreibung genannte
+Einstufung, nicht diese Relativierung:
+- "brand-impersonation:MARKE" - geprueft gegen eine gepflegte Markenliste
+  mit den echten Domains der Marke. Stufe solche Mails als "phishing" ein,
+  ausser es gibt einen klaren, legitimen Grund (erkennbarer Reseller).
+- "sender-on-blocklist" und "url-on-blocklist" - externe
+  Reputationsdatenbanken, vom Absender nicht beeinflussbar.
+- "hijacked-reply-to" - beruht zwar auf Kopfzeilen, die der Absender selbst
+  setzt, aber genau deren Kombination (echte, per DMARC beglaubigte
+  Firmendomain plus Antwortweg auf ein fremdes Freemail-Postfach) ergibt
+  bei ehrlicher Post keinen Sinn.
+"reply-to-unrelated-domain:DOMAIN" gehoert NICHT in diese Reihe: Dort ist
+der fremde Antwortweg ein Provider, den wir nicht einordnen koennen, und
+dafuer gibt es legitime Gruende (Ticketsysteme auf einer Anbieterdomain,
+externe Berater, bewusst umgeleitete Antworten). Behandle es als ernsten
+Hinweis, der zusammen mit einem zweiten Signal traegt - nicht als
+eigenstaendigen Beweis. Alle uebrigen Flags bleiben Hinweise.
 
 Zu den Absender-Struktur-Flags "forged-sender-symbol",
 "from-envfrom-mismatch-symbol" und "suspicious-reply-to-symbol": Sie
@@ -1672,7 +1699,10 @@ Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
 KATEGORIE - waehle genau eine. Sie entscheidet, wie hart die Mail
 behandelt werden darf, also waehle sie sorgfaeltig:
 
-Geschuetzt (werden nie abgewiesen, hoechstens einsortiert):
+Geschuetzt (werden im Normalfall nur einsortiert, nicht abgewiesen). Diesen
+Schutz koennen nur zwei Dinge aufheben, beide unten beschrieben: eine
+Betreiber-Regel, die auf die Mail passt, oder eine erwiesene
+Markenfaelschung mit einem zweiten unabhaengigen Beleg:
 - "legitimate": normale erwuenschte Mail
 - "transactional": Bestellung, Rechnung, Versand, Buchung, Zahlung,
   Passwort-Reset, Bestaetigungscode, Vertragsdokument
@@ -1680,9 +1710,13 @@ Geschuetzt (werden nie abgewiesen, hoechstens einsortiert):
   bestehenden persoenlichen oder geschaeftlichen Beziehung. ACHTUNG: "wirkt
   handgeschrieben" genuegt NICHT. Kaltakquise wird gezielt individuell
   formuliert, und eine ernst gemeinte Mail eines realen Menschen kann trotzdem
-  ungefragte Werbung oder ein Rollenbruch sein. Verkauft die Mail etwas, wirbt
-  sie, bewirbt sie sich ungefragt oder setzt sie eine Rolle voraus, die der
-  Empfaenger nicht hat, ist sie NICHT "personal".
+  ungefragte Werbung oder ein Rollenbruch sein. Verkauft die Mail etwas,
+  wirbt sie, oder setzt sie eine Rolle voraus, die der Empfaenger nicht hat,
+  ist sie NICHT "personal".
+  Eine ungefragte BEWERBUNG dagegen schon, solange sie zu dem Betrieb passen
+  kann: Sie ist Post eines Menschen an einen Menschen und verkauft nichts.
+  Erst wenn sie sich auf eine Taetigkeit oder Betriebsform bewirbt, die es
+  dort nicht gibt, faellt sie unter den Rollenbruch.
 - "newsletter": Newsletter, den der Empfaenger erkennbar BESTELLT hat.
   ACHTUNG: Listen-Kopfzeilen, ein sauberer Massenversand-Dienst
   (Brevo/Sendinblue, Mailchimp, ...) und formale Perfektion beweisen NUR
@@ -1739,7 +1773,9 @@ Passwort-Reset AUSGIBT, es aber nicht ist, ist "phishing" - niemals
 
 REIHENFOLGE bei der Wahl - pruefe in dieser Reihenfolge, die erste
 zutreffende gewinnt:
-1. Deutet etwas auf Betrug oder Datenabgriff hin? -> "phishing"/"fraud"
+1. Liegen KLARE, konkrete Signale fuer Betrug oder Datenabgriff vor?
+   -> "phishing"/"fraud". Ein vager Verdacht genuegt hier nicht; dafuer
+   gilt die Grundregel ganz oben.
 2. Ist die Post unerwuenscht (Kaltakquise, Rollenbruch, ungefragte
    Massenwerbung)? -> "spam"/"clickbait"/"pharma"
 3. Erst dann entscheidet die Form: transactional, newsletter, marketing,
@@ -1747,11 +1783,12 @@ zutreffende gewinnt:
 Die Form der Mail ("wirkt persoenlich", "sieht aus wie ein Newsletter") ist
 also das LETZTE Kriterium, nicht das erste.
 
-Im Zweifel die geschuetztere Kategorie waehlen. Ausnahme: Bei "clickbait"
-darfst du dich klar festlegen - der Empfaenger vermisst so eine Mail
-erfahrungsgemaess nicht. Eine redaktionelle Mail mit reisserischem Betreff,
-hinter der eine erkennbare Redaktion oder Marke steht, ist aber kein
-clickbait.
+Im Zweifel die geschuetztere Kategorie waehlen. Auch bei "clickbait": Die
+Kategorie darf abgewiesen werden, also gilt hier dieselbe Vorsicht wie
+ueberall. Sie setzt voraus, dass ein Absender ueberhaupt nicht
+identifizierbar ist - steht hinter der reisserischen Betreffzeile eine
+erkennbare Redaktion, Marke oder ein Impressum, ist es KEIN clickbait,
+sondern hoechstens "marketing" oder "newsletter".
 
 EMPFAENGER-KONTEXT:
 Die Zeile "Empfaenger-Kontext" beschreibt, was der Betrieb tut, an den diese
@@ -1781,11 +1818,12 @@ Verwechselst du diese beiden Faelle, vernichtest du echte Geschaeftspost.
 Ein Rollenbruch allein ist unerwuenschte Post -> "spam".
 
 Nach OBEN geht es nur mit einem Link oder Anhang, der fuer sich schon
-verdaechtig ist, oder mit einer sicherheitsrelevanten Aufforderung ("klicken
-Sie hier", "Daten bestaetigen", "Anmeldung bestaetigen", "Dokument einsehen",
-"Zahlung freigeben") -> "phishing" oder "fraud". Ein gewoehnlicher Anhang,
-eine Signatur mit Firmenlink oder eine Bitte um Rueckmeldung reichen dafuer
-NICHT. Eine fehladressierte, aber ernst gemeinte Bewerbung mit Lebenslauf im
+verdaechtig ist, oder mit einer Aufforderung, die etwas SENSIBLES verlangt:
+Zugangsdaten, Anmeldung, Kontoverifikation, Identitaetsnachweis,
+Zahlungsfreigabe oder Bankdaten. Ein gewoehnlicher Anhang, eine Signatur
+mit Firmenlink, ein "klicken Sie hier" zu einer Produktseite, ein
+"Dokument einsehen" zu einem Prospekt oder eine Bitte um Rueckmeldung
+reichen dafuer NICHT. Eine fehladressierte, aber ernst gemeinte Bewerbung mit Lebenslauf im
 Anhang und der Bitte um Antwort ist "spam", nicht "fraud" - sie ist am
 falschen Ort, aber niemand wird hier betrogen. Dasselbe gilt fuer eine
 Presseanfrage mit PDF oder eine Lieferantenanfrage mit Prospekt.
@@ -1877,6 +1915,14 @@ Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
   diese fuer dieses Postfach.
 Gib die Antwort als eigenes JSON-Feld "reject_rule_match" aus - ein Satz im
 Begruendungstext reicht nicht, das Feld wird maschinell ausgewertet.
+
+Dazu gehoert "reject_rule_confidence": wie sicher du dir bei DIESER Frage
+bist, 0.0 bis 1.0. Nicht deine Sicherheit ueber Spam oder Kategorie - die
+steht in "confidence" und ist eine andere Frage. Du kannst dir sehr sicher
+sein, dass eine Mail persoenliche Post ist, und trotzdem unsicher, ob sie
+auf die Regel passt; dann gehoeren eine hohe "confidence" und eine niedrige
+"reject_rule_confidence" in dieselbe Antwort. Steht keine Regel bereit oder
+ist "reject_rule_match" false, gib 0.0 aus.
 Bei true: nenne in "reasoning" zusaetzlich kurz, woran du das Muster erkannt
 hast.
 
@@ -1893,7 +1939,15 @@ Diese Angabe wird maschinell gegen die tatsaechliche Absenderdomain geprueft.
 Rate nicht - im Zweifel leer lassen.
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
-{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "reject_rule_match": true|false, "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "reject_rule_match": true|false, "reject_rule_confidence": 0.0-1.0, "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+
+"category" und "spam_probability" muessen zueinander passen - sie werden
+getrennt ausgewertet, die Kategorie entscheidet ueber den Schutz, die
+Wahrscheinlichkeit ueber den Punktwert. Eine geschuetzte Kategorie
+(legitimate, transactional, personal, newsletter, marketing) mit einer
+spam_probability ueber 0.5 ist ein Widerspruch, ebenso eine angreifbare
+Kategorie (clickbait, spam, pharma, phishing, fraud) mit einem Wert unter
+0.5. Entscheide dich fuer eine Seite.
 
 Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
 "reasoning" hoechstens 150 Zeichen - laengere Antworten werden abgeschnitten.
@@ -1959,9 +2013,9 @@ PROMPT;
         safePromptValue($mail['from_domain']),
         safePromptValue($mail['from_display_name']),
         safePromptValue($mail['subject']),
-        safePromptValue($businessContext !== '' ? $businessContext : '(unbekannt)'),
-        safePromptValue($operatorHint !== '' ? $operatorHint : '(keiner)'),
-        safePromptValue($rejectRule !== '' ? $rejectRule : '(keine)'),
+        safeOperatorValue($businessContext !== '' ? $businessContext : '(unbekannt)'),
+        safeOperatorValue($operatorHint !== '' ? $operatorHint : '(keiner)'),
+        safeOperatorValue($rejectRule !== '' ? $rejectRule : '(keine)'),
         safePromptValue($rankLine),
         $mail['rspamd_score'],
         safePromptValue($mail['auth']['spf']),
@@ -2298,7 +2352,21 @@ PROMPT;
         : $policy['max_total'];
 
     if ($rejectEligible) {
-        $score = max($score, REJECT_FLOOR);
+        // Auf die SUMME zielen, nicht auf den eigenen Anteil.
+        //
+        // Bis 17.09. stand hier max($score, REJECT_FLOOR) - also 16 Punkte
+        // von uns, unabhaengig davon, wo Rspamd stand. Bei einem negativen
+        // Rspamd-Score reichte das nicht: -4 + 16 = 12, die Schwelle liegt
+        // bei 15. Und genau diese Mails haben negative Scores - eine
+        // sauber authentifizierte Rollenbruch- oder Regelmail von einer
+        // echten Domain ist fuer Rspamd unauffaellig. Der Prompt
+        // verspricht dem Modell, ein Regeltreffer fuehre zur Abweisung;
+        // rechnerisch konnte er wirkungslos bleiben.
+        //
+        // Aufgerundet aus demselben Grund wie beim Junk-Floor: der
+        // Rueckgabewert wird auf zwei Stellen gerundet.
+        $needed = ceil((REJECT_FLOOR - $mail['rspamd_score']) * 100 - 1e-9) / 100;
+        $score = max($score, $needed);
     } elseif ($confidentReject) {
         // Nur so weit anheben, wie fuer die Schwelle noetig - und nie ueber
         // das Kategorie-Budget hinaus. Reicht Rspamds eigener Score nicht,
@@ -4172,6 +4240,9 @@ function logStats($requestId, $data) {
         // Wie der Regel-Treffer gemeldet wurde: "" (keiner), "field" oder
         // "text". Siehe ruleMatchSignal().
         'reject_rule' => (string)($data['reject_rule'] ?? ''),
+        'reject_rule_confidence' => isset($data['reject_rule_confidence'])
+            ? round(floatval($data['reject_rule_confidence']), 2)
+            : null,
         // Lag fuer diesen Empfaenger ein Betreiber-Hinweis vor? Freitext
         // laesst sich nicht per Fixture absichern - sichtbar machen, was er
         // einsammelt, ist der Ersatz dafuer (Report-Gruppe).
@@ -4593,13 +4664,35 @@ function formatListForPrompt(array $items) {
 //  Laenge begrenzt. Der Wert bleibt lesbar, kann aber die Struktur des
 //  Prompts nicht mehr veraendern.
 // ---------------------------------------------------------------------
-function safePromptValue($value) {
+function safePromptValue($value, $maxLen = 300) {
     $value = cleanTextValue($value);
+    // Die Bereichsmarkierungen entwerten: Ein Betreff mit
+    // "===MAIL-ANFANG===" koennte den Datenbereich vorzeitig eroeffnen und
+    // damit Betreiber-Regel und Trust-Flags so aussehen lassen, als
+    // stuenden sie im untrusted Mailtext.
+    $value = str_ireplace(['===MAIL-ANFANG===', '===MAIL-ENDE==='], '[markierung entfernt]', $value);
     $value = preg_replace('/[\r\n\t\x00-\x1F\x7F]+/u', ' ', $value);
     $value = preg_replace('/\s{2,}/u', ' ', (string)$value);
     $value = trim((string)$value);
-    if (mb_strlen($value) > 300) {
-        $value = mb_substr($value, 0, 300) . '...';
+    if (mb_strlen($value) > $maxLen) {
+        $value = mb_substr($value, 0, $maxLen) . '...';
     }
     return $value !== '' ? $value : '(none)';
+}
+
+// ---------------------------------------------------------------------
+//  Betreiberangaben - Empfaenger-Kontext, Hinweis, Reject-Regel.
+//
+//  Dieselbe Neutralisierung, aber mit dem Laengenbudget, das
+//  combineContextLevels() ohnehin schon setzt (1000 Zeichen plus die
+//  beiden Praefixe). Die 300 aus safePromptValue() sind fuer
+//  Absenderfelder gedacht; auf eine Betreiber-Regel angewandt schneiden
+//  sie genau die vorrangige Adressebene ab, die hinten angehaengt wird -
+//  aus "fuer die Domain: ... | fuer diese Adresse (geht der Domain-Angabe
+//  vor): ..." bliebe nur der erste Teil uebrig, und die Ausnahme, die der
+//  Betreiber ausdruecklich fuer dieses Postfach geschrieben hat, waere
+//  weg. Das kehrt Entscheidungen um, statt sie nur zu kuerzen.
+// ---------------------------------------------------------------------
+function safeOperatorValue($value) {
+    return safePromptValue($value, 1100);
 }
