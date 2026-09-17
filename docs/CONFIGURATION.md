@@ -244,6 +244,13 @@ remaining ~5.5+ points for the total to actually cross `REJECT_THRESHOLD`
 mail is not rejected - the AI-confident path still needs Rspamd's agreement,
 just not in the form of one specific structural signal.
 
+The **evidence path** works differently and deliberately so: since 17.09. its
+floor targets the total, not the AI's own share, so it carries a mail over the
+threshold even from a negative Rspamd score. That is the point - a cleanly
+authenticated role break or operator-rule hit from a real domain is
+unremarkable to Rspamd, and the independent second source there is the
+structural evidence itself, not Rspamd's number.
+
 **Category override** (`$categoryOverride`). A protected category
 (`legitimate`/`transactional`/`personal`, `may_reject = false`) can still be
 broken open by the evidence path, but only when `brand-impersonation` is
@@ -866,12 +873,14 @@ files. Every overwritten file is backed up first. Other groups in
 The AI picks exactly one category, and that choice decides the ceiling on
 the **total** score - Rspamd's own points plus the filter's contribution.
 Expressing the limit as a total rather than as a point budget is what makes
-"this category is never rejected" an actual guarantee instead of an estimate.
+the category cap an actual guarantee instead of an estimate. The cap is
+lifted only by `$categoryOverride` (an operator reject rule, or brand
+impersonation plus a second strong signal) and by the AI-confident path.
 
 | Category | Total capped at | May be rejected |
 |---|---|---|
-| `legitimate`, `transactional`, `personal` | `MAX_TOTAL_TRANSACTIONAL` (8) | only via the category override (brand impersonation + a second strong signal), see [Two paths to the reject threshold](#two-paths-to-the-reject-threshold) |
-| `newsletter`, `marketing` | `MAX_TOTAL_DEFAULT` (12) | never |
+| `legitimate`, `transactional`, `personal` | `MAX_TOTAL_TRANSACTIONAL` (8) | only via the category override: an operator reject rule, or brand impersonation plus a second strong signal. See [Two paths to the reject threshold](#two-paths-to-the-reject-threshold) |
+| `newsletter`, `marketing` | `MAX_TOTAL_DEFAULT` (12) | same as above - `$categoryOverride` is not restricted to the other three, so an operator rule reaches these too |
 | `clickbait`, `spam`, `pharma`, `phishing`, `fraud` | `MAX_TOTAL_DEFAULT` (12), or `MAX_TOTAL_REJECTABLE` (18) once a reject path fires | via the evidence path or the AI-confident path |
 
 Nothing reaches the reject threshold on category or model confidence alone -
