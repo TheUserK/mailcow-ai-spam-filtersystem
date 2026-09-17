@@ -291,9 +291,9 @@ definition of `marketing` (which requires an existing or plausible business
 relationship) and the cold-outreach section forty lines below (which states
 that a working unsubscribe link only proves the sender is bulk-capable).
 Professional cold outreach satisfies every one of those conditions, so it
-would have been reclassified from `spam` to `marketing` - a category that can
-never be rejected and, with list headers present, is exempt from the junk
-floor as well. The entire batch of cold outreach analysed on 15.09. would have
+would have been reclassified from `spam` to `marketing` - a category no
+evidence path reaches (only an operator reject rule does) and which, with list
+headers present, is exempt from the junk floor as well. The entire batch of cold outreach analysed on 15.09. would have
 landed in the inbox. Corrected on 17.09.: a *missing* proof of subscription is
 no longer a reason for `spam` on its own, but the relationship still decides.
 The usable distinction is what is being sold - a retailer sells the recipient
@@ -885,9 +885,14 @@ impersonation plus a second strong signal) and by the AI-confident path.
 
 Nothing reaches the reject threshold on category or model confidence alone -
 see [Two paths to the reject threshold](#two-paths-to-the-reject-threshold)
-above for exactly what else has to hold. Either path always needs Rspamd's
-own score to independently agree, in one form or another, so a single wrong
-model verdict cannot discard mail on its own.
+above for exactly what else has to hold. What supplies the independent second
+opinion differs by path: the **AI-confident path** needs Rspamd's own score to
+carry roughly 5.5 of the points, so Rspamd has to agree numerically. The
+**evidence path** does not - its floor targets the total and clears the
+threshold even from a negative Rspamd score, because there the independent
+source is the structural evidence itself (a blocklist hit, an executable
+attachment, an operator rule). Either way a single wrong model verdict cannot
+discard mail on its own.
 
 **`AI_MAY_REJECT` controls whether that actually happens.** Either way every
 qualifying mail is written to `errors.log`: as `Reject allowed` when armed,

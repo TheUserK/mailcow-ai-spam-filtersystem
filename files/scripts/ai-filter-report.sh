@@ -309,8 +309,9 @@ BODY=$(
     #
     # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist
     # sich sicher, dass die Mail Betrug oder Phishing ist, aber es gibt
-    # keinen strukturellen Beleg, und ohne den wird nie abgewiesen. Die
-    # Mail landet also im Postfach der Kollegin. Am 26.08. war das ein
+    # keinen strukturellen Beleg. Der Evidenzpfad ist damit zu, und der
+    # ai-confident-Pfad greift nur bei sehr hohem Modellscore - in aller
+    # Regel landet die Mail also im Postfach der Kollegin. Am 26.08. war das ein
     # "Guest Experience Report" von "Support Service <...@libero.it>" -
     # kein Link, kein Anhang, keine Markendomain, an der etwas zu
     # erkennen gewesen waere. Jede Zeile hier zeigt ein Muster, fuer das
