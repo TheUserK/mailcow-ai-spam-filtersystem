@@ -53,6 +53,21 @@ domain ranks in the Majestic Top 100,000 is still scored into junk, but cannot
 cause irreversible rejection without another strong signal. This guard does
 not apply to typosquats and gives no newsletter or Ham allowance.
 
+A separate **transactional consistency guard** handles the opposite failure
+mode: the same strongly authenticated new-device notice from Alfahosting was
+classified once as `transactional` and once as `spam`, despite identical
+logged technical inputs. For a narrowly recognised invoice/statement or
+account-security subject, the guard requires no list headers, no model red
+flags, no structural or reputation evidence, a claimed identity that matches
+the authenticated sender domain, and only links under the sender's
+registrable domain
+(shared static assets and social footer icons are ignored). Attachments, if
+present, must use the passive PDF/XML/TXT/CSV formats. It then caps only
+the AI-added portion so the AI alone cannot carry the total to the junk
+threshold. Rspamd is never rescued: if its own score is already at the junk
+threshold, the mail remains there. Every activation is stored as
+`transactional_guard` and included in the contradiction report.
+
 Either way, no trusted-sender match and no reply to an existing thread (a
 forgeable `In-Reply-To` header is not enough by itself - see
 `partOfRealConversation()`) are required. A single wrong verdict therefore

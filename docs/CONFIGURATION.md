@@ -302,6 +302,34 @@ The usable distinction is what is being sold - a retailer sells the recipient
 a **product** they could plausibly buy; cold outreach offers a **service for
 the recipient's business** with no relationship behind it.
 
+**Transactional consistency guard** (`transactionalGuardKind()`). A model
+can change its category even at `temperature: 0`. On 19.09. the same
+Alfahosting new-device notice, with the same sender, subject, URL domain,
+authentication and Rspamd score, was first classified `transactional` with
+`-0.96` and then `spam` with `+5.10`. The second result moved the total from
+5.75 to 10.85.
+
+The guard recognises a deliberately small set of billing and account-security
+subjects and requires all of the following: strong authentication, no list
+headers, no model red flags or prompt injection, no structural evidence or
+URL/sender reputation warning, a claimed identity matching the sender domain,
+no explicit cold-outreach wording, and no link outside the sender's
+registrable domain (apart from shared static assets and social
+footer icons). Attachments, if present, are restricted to PDF, XML, TXT and
+CSV; macro documents and unknown formats stay fully scoreable. `fraud`,
+`pharma`, `clickbait` and unknown model categories are
+never protected. A `phishing` verdict is eligible only for an account-security
+code whose claimed brand and authenticated sender have an explicitly known
+brand or group relationship (for example o2 from `telefonica.com`); a generic
+invoice subject can never override phishing. A hit disables the junk floor
+and caps only the positive AI contribution at
+`TRANSACTIONAL_GUARD_MAX_TOTAL` (7.99).
+Rspamd's own value is not lowered; if Rspamd alone is already at 8, the mail
+stays in junk. This is therefore not a sender whitelist and gives ordinary
+newsletters no allowance. The log records `billing` or `account-security` in
+`transactional_guard`, and the daily report lists every activation so an
+over-broad pattern becomes visible.
+
 **Authenticated list mail closes the AI-confident path**
 (`authenticatedListMail()`, since 16.09.). When a mail carries a
 `List-Unsubscribe` header, `auth_strength` is `strong`, and `evidence` is
@@ -320,8 +348,11 @@ if some structural class does fire.
 `evidence`, `ai-confident`, or empty if the mail never qualified at all.
 `reject_eligible` is `$rejectEligible || $confidentReject` - whether the mail
 was *allowed* to try for the threshold, not whether the total actually
-reached it. `ai_score_raw` is the model's score before the category ceiling
-clipped it - useful for seeing how close a mail actually was.
+reached it. `model_score` is the model-derived score before floors and caps.
+`ai_score_raw` is the score immediately before the final category/guard
+ceiling, so it can already contain the reject or junk floor. The distinction
+matters when a negative Rspamd value makes the floor look like an unusually
+large AI verdict.
 
 ## Recipient context (business_context.json)
 
@@ -836,6 +867,7 @@ keeps your choice.
 | `AI_MAY_REJECT` | `true` | `false` runs the same logic in shadow mode: every candidate is still logged as "Would reject", but capped below the threshold instead of actually crossing it |
 | `REJECT_FLOOR` | `16.0` | Floor applied once the evidence path fires - guarantees the total clears `REJECT_THRESHOLD` rather than relying on the usual probability/confidence curve, which tops out around two thirds of the budget |
 | `JUNK_FLOOR` | `8.0` | Floor applied whenever a rejectable category is confidently assigned (>= 0.80) with no trust signal, independent of any reject path - stops Rspamd credit for clean infrastructure (SPF/DKIM, an aged domain) from diluting a confident spam verdict back below the junk line. Must be **at or above** your Rspamd `add_header` threshold (`data/conf/rspamd/local.d/actions.conf`), otherwise it guarantees nothing. The points needed are rounded **up** to two decimals: the returned score is rounded to two decimals on the way out, and a floor that aims exactly at its own target misses it by the rounding remainder - on 16.09. a mail landed on 7.9976 against a threshold of 8 and stayed in the inbox, while the log showed `total_score: 8` because that is rounded too |
+| `TRANSACTIONAL_GUARD_MAX_TOTAL` | `7.99` | Maximum total attributable to Rspamd plus a positive AI contribution when the narrow transactional consistency guard fires. It sits below `JUNK_FLOOR`; Rspamd's own score is never subtracted or whitelisted |
 | `RSPAMD_CONCUR_SCORE` | `10.0` | Rspamd's own score at or above this counts as the `rspamd-concurs` strong-evidence class |
 | `ESTABLISHED_DOMAIN_REJECT_GUARD_RANK` | `100000` | A strongly authenticated sender with a global Majestic rank of 100,000 or better (numerically `<= 100000`) is not SMTP-rejected on a lone `foreign-domain` brand mismatch. This is not a Ham/marketing allowance: junk scoring stays unchanged, and a second strong signal or typosquat disables the guard |
 | `AI_CONFIDENT_REJECT` | `true` | Enables the second reject path (see above) - the model very confident and scoring high on its own, no structural evidence needed |

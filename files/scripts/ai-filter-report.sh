@@ -313,6 +313,13 @@ BODY=$(
         "$(printf 'Stark authentifizierte Top-Domain, aber fremde Marke; ohne zweiten Beleg nur Junk statt SMTP-Reject.')" \
         '(.rank_reject_guard // false) == true' && FOUND=1
 
+    # 0d. Der deterministische Schutz fuer Rechnungen und Konto-Sicherheit.
+    #     Jeder Treffer ist interessant: Entweder hat er einen Modellfehler
+    #     gerettet, oder die Strukturregel ist zu weit und muss enger werden.
+    render_group "Transaktionsschutz hat KI-Wert begrenzt" \
+        "$(printf 'Starke Auth, passende Links, keine Warnsignale; KI allein durfte die Mail nicht in Junk heben.')" \
+        '(.transactional_guard // "") != ""' && FOUND=1
+
     # 7. Betrug erkannt, aber kein Beleg - also zugestellt.
     #
     # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist

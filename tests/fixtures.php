@@ -614,6 +614,12 @@ function fixtures() {
         'subject' => 'Ihr Sicherheitscode fuer o2 Business Easy Access',
         'body' => 'Ihr einmaliger Sicherheitscode lautet 123456.',
         'rspamd_score' => 3.078598,
+        '_analysis' => [
+            'category' => 'phishing',
+            'claimed_brand' => 'o2',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 10.0,
         '_expect' => [
             'impersonation' => 0.0,
             'impersonation_kind' => '',
@@ -622,6 +628,9 @@ function fixtures() {
             'rank_reject_guard' => false,
             'evidence' => [],
             'strong' => [],
+            'transactional_guard' => 'account-security',
+            'guarded_ai_score' => 4.91,
+            'guarded_total' => 7.99,
         ],
     ]);
 
@@ -758,6 +767,239 @@ function fixtures() {
         ],
     ]);
 
+    // 19.09.: dieselbe Alfahosting-Geraeteanmeldung wurde bei technisch
+    // identischen Merkmalen erst korrekt als transactional (-0.96), elf
+    // Minuten spaeter aber als spam (+5.10) bewertet. Der Guard muss den
+    // zweiten Lauf unter Junk halten: 5.748725 + 2.24 = 7.988725.
+    $cases['transaktionsschutz-alfahosting'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Alfahosting',
+        'from' => 'versand@alfahosting.de', 'from_email' => 'versand@alfahosting.de',
+        'from_display_name' => 'Alfahosting',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Alfahosting - Anmeldung von einem neuen Gerät',
+        'body' => 'Eine Anmeldung von einem neuen Gerät wurde erkannt.',
+        'rspamd_score' => 5.748725,
+        'urls' => ['https://alfahosting.de/kundenbereich'],
+        'url_domains' => ['alfahosting.de'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Alfahosting',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'evidence' => [],
+            'transactional_guard' => 'account-security',
+            'guarded_ai_score' => 2.24,
+            'guarded_total' => 7.99,
+        ],
+    ]);
+
+    // Das korrekte Modellurteil braucht keine Bremse und soll den Report
+    // nicht mit normalen Transaktionsmails fuellen.
+    $cases['transaktionsschutz-korrektes-modellurteil'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Alfahosting',
+        'from' => 'versand@alfahosting.de', 'from_email' => 'versand@alfahosting.de',
+        'from_display_name' => 'Alfahosting',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Alfahosting - Anmeldung von einem neuen Gerät',
+        'body' => 'Eine Anmeldung von einem neuen Gerät wurde erkannt.',
+        'rspamd_score' => 5.748725,
+        'urls' => ['https://alfahosting.de/kundenbereich'],
+        'url_domains' => ['alfahosting.de'],
+        '_analysis' => [
+            'category' => 'transactional',
+            'claimed_brand' => 'Alfahosting',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => -0.96,
+        '_expect' => [
+            'evidence' => [],
+            'transactional_guard' => '',
+            'guarded_ai_score' => -0.96,
+            'guarded_total' => 4.79,
+        ],
+    ]);
+
+    // Der Lidl-Fall hatte vom Modell selbst 0 Punkte, wurde aber allein
+    // durch "marketing ohne List-Header" auf 8.01 gehoben. Auch ein blosses
+    // "Abrechnung" ist bei starker Auth und sauberer Struktur transaktional.
+    $cases['transaktionsschutz-lidl-abrechnung'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Lidl Pay',
+        'from' => 'lidl-pay@lidl.de', 'from_email' => 'lidl-pay@lidl.de',
+        'from_display_name' => 'Lidl Pay',
+        'to' => 'andi@karrer.info',
+        'subject' => 'Abrechnung',
+        'body' => 'Ihre Abrechnung steht bereit.',
+        'rspamd_score' => 3.809968,
+        '_analysis' => [
+            'category' => 'marketing',
+            'claimed_brand' => 'Lidl Pay',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 0.0,
+        '_expect' => [
+            'evidence' => [],
+            'transactional_guard' => 'billing',
+            'guarded_ai_score' => 0.0,
+            'guarded_total' => 3.81,
+        ],
+    ]);
+
+    // Der Schutz ist kein Newsletter-Freibrief. Dieselbe Abrechnung mit
+    // List-Unsubscribe bleibt voll scorebar.
+    $cases['transaktionsschutz-keine-listenmail'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Shop',
+        'from' => 'newsletter@beispiel-shop.de', 'from_email' => 'newsletter@beispiel-shop.de',
+        'from_display_name' => 'Beispiel Shop',
+        'to' => 'andi@karrer.info',
+        'subject' => 'Ihre monatliche Abrechnung und neue Angebote',
+        'body' => 'Ihre Abrechnung. Entdecken Sie ausserdem unsere neuen Angebote.',
+        'rspamd_score' => -3.0,
+        'signals' => ['has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://beispiel-shop.de/abmelden>'],
+        'urls' => ['https://beispiel-shop.de/angebote'],
+        'url_domains' => ['beispiel-shop.de'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Shop',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'transactional_guard' => '',
+            'guarded_ai_score' => 5.10,
+            'guarded_total' => 2.10,
+        ],
+    ]);
+
+    // Eine noch unbekannte fremde Login-Domain beendet den Schutz auch dann,
+    // wenn keine Blockliste sie bereits kennt.
+    $cases['transaktionsschutz-kein-fremder-link'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Alfahosting',
+        'from' => 'versand@alfahosting.de', 'from_email' => 'versand@alfahosting.de',
+        'from_display_name' => 'Alfahosting',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Alfahosting - Anmeldung von einem neuen Gerät',
+        'body' => 'Pruefen Sie die Anmeldung ueber den Link.',
+        'rspamd_score' => 1.0,
+        'urls' => ['https://konto-pruefen.example.net/login'],
+        'url_domains' => ['konto-pruefen.example.net'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Alfahosting',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'transactional_guard' => '',
+            'guarded_ai_score' => 5.10,
+            'guarded_total' => 6.10,
+        ],
+    ]);
+
+    // Ohne starke Authentifizierung ist derselbe Betreff kein Beleg fuer
+    // Echtheit; ein gespooftes From darf den Schutz nie bekommen.
+    $cases['transaktionsschutz-keine-schwache-auth'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Alfahosting',
+        'from' => 'versand@alfahosting.de', 'from_email' => 'versand@alfahosting.de',
+        'from_display_name' => 'Alfahosting',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Alfahosting - Anmeldung von einem neuen Gerät',
+        'body' => 'Eine Anmeldung von einem neuen Gerät wurde erkannt.',
+        'rspamd_score' => 1.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+        'urls' => ['https://alfahosting.de/kundenbereich'],
+        'url_domains' => ['alfahosting.de'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Alfahosting',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'transactional_guard' => '',
+            'guarded_ai_score' => 5.10,
+            'guarded_total' => 6.10,
+        ],
+    ]);
+
+    // Echter Rechnungs-Fehlalarm vom 19.09.: Das Modell vergab +5.10, der
+    // negative Rspamd-Wert hielt die Summe ohne den kuenstlichen Floor aber
+    // ohnehin klar unter Junk.
+    $cases['transaktionsschutz-milchfleck-rechnung'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Milchfleck',
+        'from' => 'info@milchfleck.de', 'from_email' => 'info@milchfleck.de',
+        'from_display_name' => 'Milchfleck',
+        'to' => 'andi@karrer.info',
+        'subject' => 'Rechnung RE158023 vom 16.09.2026',
+        'body' => 'Im Anhang finden Sie Ihre Rechnung.',
+        'rspamd_score' => -2.510032,
+        'attachments' => [['name' => 'Rechnung-RE158023.pdf', 'size' => 12000]],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Milchfleck',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'evidence' => [],
+            'transactional_guard' => 'billing',
+            'guarded_ai_score' => 5.10,
+            'guarded_total' => 2.59,
+        ],
+    ]);
+
+    // Ein ausfuehrbarer "Rechnungs"-Anhang bleibt ein harter Beleg und darf
+    // niemals vom Transaktionsschutz entwertet werden.
+    $cases['transaktionsschutz-kein-gefaehrlicher-anhang'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Milchfleck',
+        'from' => 'info@milchfleck.de', 'from_email' => 'info@milchfleck.de',
+        'from_display_name' => 'Milchfleck',
+        'to' => 'andi@karrer.info',
+        'subject' => 'Rechnung RE158023 vom 16.09.2026',
+        'body' => 'Im Anhang finden Sie Ihre Rechnung.',
+        'rspamd_score' => -2.51,
+        'attachments' => [['name' => 'Rechnung.pdf.exe', 'size' => 12000]],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Milchfleck',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'evidence' => ['dangerous-attachment'],
+            'transactional_guard' => '',
+            'guarded_ai_score' => 5.10,
+            'guarded_total' => 2.59,
+        ],
+    ]);
+
+    // Rechnungswort als Vorwand fuer Kaltakquise. Der Text macht die
+    // Verkaufsabsicht explizit, also greift der Guard nicht.
+    $cases['transaktionsschutz-keine-kaltakquise'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Web Agentur',
+        'from' => 'kontakt@web-agentur.de', 'from_email' => 'kontakt@web-agentur.de',
+        'from_display_name' => 'Web Agentur',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Rechnung fuer unser Webdesign-Angebot',
+        'body' => 'Wir moechten Ihnen eine kostenlose Analyse anbieten. Interesse an einem Termin?',
+        'rspamd_score' => 1.0,
+        'urls' => ['https://web-agentur.de/angebot'],
+        'url_domains' => ['web-agentur.de'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Web Agentur',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.10,
+        '_expect' => [
+            'transactional_guard' => '',
+            'guarded_ai_score' => 5.10,
+            'guarded_total' => 6.10,
+        ],
+    ]);
+
     return $cases;
 }
 
@@ -766,9 +1008,32 @@ function runFixtures() {
     foreach (fixtures() as $name => $data) {
         $mail  = prepareMailContext($data);
         $local = analyzeLocally($mail, 'test');
-        $ev    = collectStructuralEvidence($mail, $local, ['claimed_brand' => $data['claimed_brand'] ?? '']);
+        $analysis = array_merge([
+            'category' => 'unknown',
+            'claimed_brand' => $data['claimed_brand'] ?? '',
+            'red_flags' => [],
+        ], $data['_analysis'] ?? []);
+        $ev    = collectStructuralEvidence($mail, $local, $analysis);
         $strong = strongEvidence($ev);
         $rankRejectGuard = establishedDomainRejectGuard($local, $strong);
+        $transactionalGuard = transactionalGuardKind(
+            $mail,
+            $local,
+            $ev,
+            $analysis,
+            detectPromptInjection($mail['body_clean'] . ' ' . $mail['subject'])
+        );
+        $candidateScore = array_key_exists('_candidate_score', $data)
+            ? floatval($data['_candidate_score'])
+            : null;
+        $guardedScore = $candidateScore;
+        if ($candidateScore !== null && $transactionalGuard !== '') {
+            $guardedScore = clampToTotalCeiling(
+                $candidateScore,
+                $mail['rspamd_score'],
+                TRANSACTIONAL_GUARD_MAX_TOTAL
+            );
+        }
 
         $actual = [
             'impersonation' => floatval($local['impersonation_score'] ?? 0),
@@ -776,6 +1041,11 @@ function runFixtures() {
             'verified_brand' => $local['verified_brand'] ?? '',
             'sender_global_rank' => $local['sender_global_rank'] ?? null,
             'rank_reject_guard' => $rankRejectGuard,
+            'transactional_guard' => $transactionalGuard,
+            'guarded_ai_score' => $guardedScore,
+            'guarded_total' => $guardedScore !== null
+                ? round($mail['rspamd_score'] + $guardedScore, 2)
+                : null,
             'evidence' => $ev,
             'strong' => $strong,
         ];
@@ -804,6 +1074,11 @@ function runFixtures() {
             'impersonation_kind' => $local['impersonation_kind'] ?? '',
             'sender_global_rank' => $local['sender_global_rank'] ?? null,
             'rank_reject_guard' => $rankRejectGuard,
+            'transactional_guard' => $transactionalGuard,
+            'guarded_ai_score' => $guardedScore,
+            'guarded_total' => $guardedScore !== null
+                ? round($mail['rspamd_score'] + $guardedScore, 2)
+                : null,
             'handled'        => !empty($local['handled']),
             'risk_flags'     => $local['risk_flags'] ?? [],
             'trust_flags'    => $local['trust_flags'] ?? [],

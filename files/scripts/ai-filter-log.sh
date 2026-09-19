@@ -123,7 +123,10 @@ render_stats() {
         (.to // "-"),
         ((if (.rejected // false) then ["ABGEWIESEN"]
           elif .reject_eligible then ["freigegeben"]
-          else [] end) + (.evidence // []) | join(",")),
+          else [] end)
+          + (if (.transactional_guard // "") != ""
+             then ["TRANS:" + .transactional_guard] else [] end)
+          + (.evidence // []) | join(",")),
         (.subject // "")
       ] | @tsv' \
     | awk -F'\t' '{ printf "%-16s %7s  %-14s %-32s %-26s %-38s %s\n", $1,$2,$3,$4,$5,$6,$7 }'

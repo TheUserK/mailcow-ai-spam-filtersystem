@@ -188,6 +188,12 @@ define('REJECT_FLOOR', 16.0);
 // Modellurteil - anders als beim Reject braucht es keinen Strukturbeleg.
 define('JUNK_FLOOR', 8.0);
 
+// Stark authentifizierte, strukturell saubere Transaktionsmail darf nicht
+// allein wegen eines schwankenden Modellurteils in Junk rutschen. Knapp
+// UNTER dem Junk-Floor bleiben: Der Schutz nimmt nur den KI-Aufschlag zurueck,
+// Rspamds eigenen Score rettet er nicht. Siehe transactionalGuardKind().
+define('TRANSACTIONAL_GUARD_MAX_TOTAL', 7.99);
+
 // Laengenbudget fuer eine zusammengesetzte Betreiberangabe (Domain- plus
 // Adressebene). Siehe combineContextLevels() - die Adressebene ist die
 // vorrangige und wird nie zuerst gekuerzt.
@@ -328,8 +334,10 @@ logStats($requestId, [
     'impersonation_kind' => $result['impersonation_kind'] ?? '',
     'sender_global_rank' => $result['sender_global_rank'] ?? null,
     'rank_reject_guard' => !empty($result['rank_reject_guard']),
+    'transactional_guard' => $result['transactional_guard'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
     'confidence' => $result['confidence'] ?? 0,
+    'spam_probability' => $result['spam_probability'] ?? null,
     'ai_score_raw' => $result['ai_score_raw'] ?? null,
     'auth_strength' => $result['auth_strength'] ?? 'unknown',
     'list_headers' => !empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id']),
@@ -1258,6 +1266,210 @@ function authenticatedListMail(array $mail, array $localContext, array $evidence
     return !empty($mail['signals']['has_list_unsubscribe'])
         && ($localContext['auth_strength'] ?? '') === 'strong'
         && empty($evidence);
+}
+
+// ---------------------------------------------------------------------
+//  Deterministische Bremse fuer klar transaktionale Post.
+//
+//  Am 19.09. wurde dieselbe Alfahosting-Mail mit identischen technischen
+//  Merkmalen innerhalb von elf Minuten einmal als "transactional" (-0.96)
+//  und einmal als "spam" (+5.10) bewertet. temperature=0 verhindert solche
+//  Modellschwankungen nicht. Der zweite Lauf hob die Summe von Rspamds 5.75
+//  auf 10.85 und legte eine echte Geraeteanmeldung in Junk.
+//
+//  Der Schutz ist absichtlich enger als "Betreff enthaelt Rechnung":
+//  starke Authentifizierung, keine Listenmail, keine Modell-/Strukturwarnung,
+//  keine Reputationswarnung und nur Links zur Absenderfamilie bzw. zu
+//  gemeinsam genutzter statischer Infrastruktur. Er vergibt KEINE
+//  Ham-Punkte. Er verhindert nur, dass der KI-Anteil allein die Summe ueber
+//  TRANSACTIONAL_GUARD_MAX_TOTAL schiebt; Rspamd >= JUNK_FLOOR bleibt Junk.
+// ---------------------------------------------------------------------
+function transactionalGuardKind(
+    array $mail,
+    array $localContext,
+    array $evidence,
+    array $analysis,
+    array $injection = []
+) {
+    if (($localContext['auth_strength'] ?? '') !== 'strong'
+        || !empty($evidence)
+        || !empty($injection)
+        || !empty(normalizeStringList($analysis['red_flags'] ?? []))) {
+        return '';
+    }
+
+    // Newsletter und andere Massenpost bleiben draussen. Eine Listenmail mit
+    // "Ihre Abrechnung" im Betreff darf sich nicht als Transaktion tarnen.
+    if (!empty($mail['signals']['has_list_unsubscribe'])
+        || !empty($mail['headers']['list_id'])) {
+        return '';
+    }
+
+    $category = cleanTextValue($analysis['category'] ?? '');
+    foreach (['url_blacklisted', 'url_phishing', 'url_suspect',
+              'url_fresh_domain', 'sender_blocklisted'] as $signal) {
+        if (!empty($mail['signals'][$signal])) {
+            return '';
+        }
+    }
+
+    if (!transactionalClaimAligned($mail, $localContext, $analysis)
+        || !transactionalUrlsAligned($mail)
+        || !transactionalAttachmentsSafe($mail)
+        || transactionalSolicitationPresent($mail)) {
+        return '';
+    }
+
+    $subject = mb_strtolower((string)($mail['subject'] ?? ''));
+    $kind = '';
+    if (preg_match('/\b(rechnung|abrechnung|gutschrift|quittung|zahlungsbeleg|invoice|receipt|credit[ -]?note|billing[ -]?statement)\b/iu', $subject)) {
+        $kind = 'billing';
+    }
+
+    if ($kind === '' && (preg_match('/\b(anmeldung|login|sign[ -]?in)\b.{0,50}\b(neu\w*[ -]+ger\x{00e4}t|new[ -]+device)\b/iu', $subject)
+        || preg_match('/\b(neu\w*[ -]+ger\x{00e4}t|new[ -]+device)\b.{0,50}\b(anmeldung|login|sign[ -]?in)\b/iu', $subject)
+        || preg_match('/\b(sicherheits|best\x{00e4}tigungs|verifizierungs|einmal)[ -]?code\b/iu', $subject)
+        || preg_match('/\b(security|verification|confirmation|one[ -]?time)[ -]?code\b/iu', $subject))) {
+        $kind = 'account-security';
+    }
+
+    if ($kind === '') {
+        return '';
+    }
+
+    // Die beobachteten Modellfehler waren spam bzw. marketing. Ein
+    // phishing-Urteil wird nur fuer einen Security-Code entlastet, wenn die
+    // behauptete Marke und die stark authentifizierte Domain in unserer
+    // gepflegten Marken-/Konzernbeziehung stehen (z.B. o2/telefonica.com).
+    if (in_array($category, ['marketing', 'spam'], true)) {
+        return $kind;
+    }
+    if ($category === 'phishing'
+        && $kind === 'account-security'
+        && domainMayClaimBrand(
+            $mail['from_domain'] ?? '',
+            $analysis['claimed_brand'] ?? '',
+            $localContext['auth_strength'] ?? 'unknown'
+        )) {
+        return $kind;
+    }
+
+    return '';
+}
+
+// Die vom Modell genannte Identitaet muss maschinell zur Absenderdomain
+// passen. Ein leerer/generischer Markenname reicht nicht; bekannte
+// Konzernbeziehungen (o2/telefonica.com) laufen ueber dieselbe zentrale
+// Aliasfunktion wie die Impersonation-Pruefung.
+function transactionalClaimAligned(array $mail, array $localContext, array $analysis) {
+    $domain = normalizeHost($mail['from_domain'] ?? '');
+    $claim  = cleanTextValue($analysis['claimed_brand'] ?? '');
+    if ($domain === '' || $claim === '') {
+        return false;
+    }
+
+    if (domainMayClaimBrand(
+        $domain,
+        $claim,
+        $localContext['auth_strength'] ?? 'unknown'
+    )) {
+        return true;
+    }
+
+    $orgDomain = brandToken(implode('', organisationalLabels($domain)));
+    foreach (significantBrandWords($claim) as $word) {
+        if (mb_strpos($orgDomain, $word) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Fuer den Transaktionsschutz zaehlt nur dieselbe registrierbare Domain.
+// Die weichere Namensaehnlichkeit aus relatedToSenderDomain() waere hier
+// gefaehrlich: "alfahosting-login.example" kann jeder registrieren. Geteilte
+// CDNs und Social-Icons duerfen vorkommen; jedes andere Login-/Zahlungsziel
+// beendet den Schutz, auch wenn noch keine Blockliste die Domain kennt.
+function transactionalUrlsAligned(array $mail) {
+    $from = normalizeHost($mail['from_domain'] ?? '');
+    if ($from === '') {
+        return false;
+    }
+    $fromRoot = registrableDomain($from);
+
+    foreach (normalizeDomainList($mail['url_domains'] ?? []) as $domain) {
+        if ((isSharedAssetHost($domain) && transactionalSharedUrlsAreStatic($domain, $mail['urls'] ?? []))
+            || isSocialFooterHost($domain)
+            || registrableDomain($domain) === $fromRoot) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+// Eine CDN-Domain allein ist kein Freibrief: CloudFront & Co. hosten auch
+// Angreifer. Nur eindeutig statische Ressourcen duerfen die Fremddomain-
+// Sperre passieren; ein klickbares CDN-Ziel ohne Dateiendung beendet den
+// Guard. Fehlt die konkrete URL und liegt nur die Domain vor, gilt dasselbe.
+function transactionalSharedUrlsAreStatic($domain, array $urls) {
+    $domain = normalizeHost($domain);
+    $found = false;
+    foreach ($urls as $url) {
+        if (extractHostFromUrl($url) !== $domain) {
+            continue;
+        }
+        $found = true;
+        $path = (string)(parse_url($url, PHP_URL_PATH) ?? '');
+        if (!preg_match('/\.(?:avif|css|gif|ico|jpe?g|js|png|svg|webp|woff2?|ttf)$/iu', $path)) {
+            return false;
+        }
+    }
+    return $found;
+}
+
+// Fuer diesen Schutz reicht "nicht ausfuehrbar" nicht: Makro-Dokumente und
+// unbekannte Formate bleiben voll scorebar. Rechnungen brauchen hier nur die
+// ueblichen passiven Formate; Security-Hinweise haben normalerweise gar
+// keinen Anhang.
+function transactionalAttachmentsSafe(array $mail) {
+    static $safeExtensions = ['pdf', 'xml', 'txt', 'csv'];
+
+    foreach (($mail['attachments'] ?? []) as $attachment) {
+        $name = mb_strtolower((string)($attachment['name'] ?? ''));
+        if ($name === '' || strpos($name, '.') === false) {
+            return false;
+        }
+        $extension = pathinfo($name, PATHINFO_EXTENSION);
+        if (!in_array($extension, $safeExtensions, true)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Eng gefasste Kaltakquise-Phrasen. Sie verhindern, dass ein Betreff wie
+// "Rechnung fuer unser Webdesign-Angebot" die eigentliche Werbemail schuetzt.
+// Ein blosses Branchenwort (z.B. "Webdesign") reicht bewusst nicht, weil es
+// ebenso auf einer echten Rechnung stehen kann.
+function transactionalSolicitationPresent(array $mail) {
+    $text = mb_substr(
+        mb_strtolower((string)($mail['subject'] ?? '') . ' ' . (string)($mail['body_clean'] ?? '')),
+        0,
+        1800
+    );
+    static $patterns = [
+        '/\b(unverbindlich(?:es|en)? angebot|kostenlose analyse|gratis[ -]analyse)\b/iu',
+        '/\b(wir (?:m\x{00f6}chten|wollen|k\x{00f6}nnen) ihnen)\b.{0,80}\b(anbieten|vorstellen)\b/iu',
+        '/\b(interesse an|mehr kunden gewinnen|termin vereinbaren|kennenlerngespr\x{00e4}ch)\b/iu',
+        '/\b(free audit|complimentary audit|grow your business|book a call|would like to offer)\b/iu',
+    ];
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $text)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function structFlagList(array $struct) {
@@ -2386,6 +2598,13 @@ PROMPT;
     $strong = strongEvidence($evidence);
     $verifiedBrand = $localContext['verified_brand'] ?? '';
     $rankRejectGuard = establishedDomainRejectGuard($localContext, $strong);
+    $transactionalGuard = transactionalGuardKind(
+        $mail,
+        $localContext,
+        $evidence,
+        $analysis,
+        $injection
+    );
 
     // Geschuetzte Kategorien (legitimate/transactional/personal) duerfen
     // nur durchbrochen werden, wenn ZWEI voneinander unabhaengige starke
@@ -2474,6 +2693,7 @@ PROMPT;
         && $noTrustSignals
         && !$hasOperatorHint
         && !$authenticatedList
+        && $transactionalGuard === ''
         // Sonst wuerde dieselbe vom lokalen Marken-Flag gelenkte
         // Modellentscheidung durch die Hintertuer des zweiten Pfads doch
         // wieder rejecten, sobald Rspamd genug Punkte beisteuert.
@@ -2484,6 +2704,13 @@ PROMPT;
     $ceiling = ($mayReject && AI_MAY_REJECT)
         ? MAX_TOTAL_REJECTABLE
         : $policy['max_total'];
+
+    // Der Guard vergibt keinen Rabatt und aendert Rspamds eigenen Wert
+    // nicht. Er deckelt nur einen positiven KI-Beitrag knapp unter Junk.
+    // Liegt Rspamd selbst schon dort, wird der positive KI-Anteil zu null.
+    if ($transactionalGuard !== '') {
+        $ceiling = min($ceiling, TRANSACTIONAL_GUARD_MAX_TOTAL);
+    }
 
     if ($rejectEligible) {
         // Auf die SUMME zielen, nicht auf den eigenen Anteil.
@@ -2536,7 +2763,8 @@ PROMPT;
         && $confidence >= 0.80
         && empty($localContext['matched_profile'])
         && $verifiedBrand === ''
-        && !$realConversation;
+        && !$realConversation
+        && $transactionalGuard === '';
 
     if ($junkFloorApplies) {
         // KEIN min(..., policy['points']) hier - anders als beim
@@ -2613,6 +2841,7 @@ PROMPT;
         'impersonation_kind' => $localContext['impersonation_kind'] ?? '',
         'sender_global_rank' => $localContext['sender_global_rank'] ?? null,
         'rank_reject_guard' => $rankRejectGuard,
+        'transactional_guard' => $transactionalGuard,
         'prompt_injection' => $injection,
         // Damit im Report sichtbar wird, was ein Betreibersatz tatsaechlich
         // einsammelt - der Ersatz fuer die Testbarkeit, die Freitext nicht hat.
@@ -2634,12 +2863,14 @@ PROMPT;
         'reject_rule_confidence' => $rejectRule !== '' ? round($ruleConfidence, 2) : null,
         'auth_strength'   => $localContext['auth_strength'] ?? 'unknown',
         'confidence'      => $confidence,
-        // Was das Modell vergeben WOLLTE, bevor die Obergrenze zuschlug.
-        // Ohne diesen Wert taeuscht das Log: Die Betrugsmail aus Ecuador
-        // stand am 28.08. mit "+0.34 fraud" im Log und sah nach einem
-        // unsicheren Modell aus. Tatsaechlich waren es 8.28 Punkte bei 92 %
-        // Sicherheit - Rspamd lag schon bei 11.66, und der Deckel von 12
-        // liess nur noch 0.34 uebrig.
+        'spam_probability' => round(floatval($analysis['spam_probability'] ?? 0.5), 2),
+        // Wert unmittelbar vor der letzten Obergrenze. Anders als
+        // model_score kann er bereits Reject-/Junk-Boeden enthalten. Ohne
+        // beide Werte taeuscht das Log: Die Betrugsmail aus Ecuador stand am
+        // 28.08. mit "+0.34 fraud" im Log und sah nach einem unsicheren Modell
+        // aus. Tatsaechlich lag der Modellwert bei 8.28 Punkten und der Deckel
+        // liess wegen Rspamds 11.66 nur noch 0.34 uebrig. Beim Heise-Fall war
+        // es umgekehrt: model_score 5.4, ai_score_raw 12.67 wegen Junk-Floor.
         'ai_score_raw'    => round($scoreBeforeCeiling, 2),
     ];
 }
@@ -4451,6 +4682,12 @@ function logStats($requestId, $data) {
         // warum eine Mail eine Schwelle knapp verfehlt hat - genau die
         // Zahl fehlte beim Fall vom 27.08.
         'confidence' => round(floatval($data['confidence'] ?? 0), 2),
+        // Getrennt von confidence: 0.85 kann "sehr sicher Marketing" und
+        // gerade NICHT "85 % Spam" bedeuten. Beim Lidl-Fehlalarm war diese
+        // Unterscheidung im Log nicht mehr rekonstruierbar.
+        'spam_probability' => isset($data['spam_probability'])
+            ? round(floatval($data['spam_probability']), 2)
+            : null,
         'red_flags' => array_slice(normalizeStringList($data['red_flags'] ?? []), 0, 8),
         'analysis_source' => $data['analysis_source'] ?? 'unknown',
         'matched_profile' => $data['matched_profile'] ?? '',
@@ -4480,6 +4717,10 @@ function logStats($requestId, $data) {
             ? intval($data['sender_global_rank'])
             : null,
         'rank_reject_guard' => !empty($data['rank_reject_guard']),
+        // "billing" / "account-security" oder leer. Ein Treffer erklaert,
+        // warum ein positives Modellurteil die Junk-Schwelle nicht anheben
+        // durfte; Rspamds eigener Score bleibt daneben sichtbar.
+        'transactional_guard' => (string)($data['transactional_guard'] ?? ''),
         // Direkt geloggt statt aus red_flags-Text erraten: der Report
         // brauchte einmal genau das und hatte es sich schlecht genaehert.
         'auth_strength' => (string)($data['auth_strength'] ?? 'unknown'),
@@ -4774,21 +5015,23 @@ function domainMatchesAny($domain, array $allowedDomains) {
 // als Abweichung von der Profildomain zu werten, traf am 25.08. eine
 // echte PayPal-Zahlungsbestaetigung ueber "url-domain-mismatch" - der
 // einzige "fremde" Link war der Facebook-Button im Footer.
-$socialFooterDomains = [
-    'facebook.com', 'twitter.com', 'x.com', 'instagram.com',
-    'linkedin.com', 'youtube.com', 'youtu.be', 'pinterest.com',
-    'tiktok.com', 'threads.net',
-];
+function isSocialFooterHost($domain) {
+    static $socialFooterDomains = [
+        'facebook.com', 'twitter.com', 'x.com', 'instagram.com',
+        'linkedin.com', 'youtube.com', 'youtu.be', 'pinterest.com',
+        'tiktok.com', 'threads.net',
+    ];
+    return domainMatchesAny($domain, $socialFooterDomains);
+}
 
 function allDomainsAllowed(array $domains, array $allowedDomains) {
-    global $socialFooterDomains;
     $domains = normalizeDomainList($domains);
     if (empty($domains)) {
         return true;
     }
 
     foreach ($domains as $domain) {
-        if (domainMatchesAny($domain, $socialFooterDomains)) {
+        if (isSocialFooterHost($domain)) {
             continue;
         }
         if (!domainMatchesAny($domain, $allowedDomains)) {
