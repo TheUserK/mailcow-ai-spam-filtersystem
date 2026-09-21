@@ -558,6 +558,52 @@ function fixtures() {
         'headers' => ['list_unsubscribe' => '<https://madeleine.de/u>', 'list_id' => 'madeleine'],
     ]);
 
+    // Werbung eines etablierten Haendlers von seiner EIGENEN, gut
+    // gelisteten Domain, DMARC bestanden, Links nur auf sich selbst.
+    // Genau der Fall, um den es beim Newsletter-Problem geht: Rabatt-
+    // Betreff, kein Abo-Nachweis in der Mail - und trotzdem kein Spam,
+    // weil ein Unternehmen dieser Groesse keine unbestellte Werbung
+    // verschickt. Der Rang muss beim Modell ankommen, und der gute Rang
+    // nimmt die Mail zugleich aus dem Junk-Floor.
+    $cases['etablierter-haendler-werbung'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Tchibo',
+        'from' => 'news@tchibo.de', 'from_email' => 'news@tchibo.de',
+        'from_display_name' => 'Tchibo',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Nur heute: 30% auf alles',
+        'body' => 'Sichern Sie sich jetzt Ihren Rabatt. Zum Shop.',
+        'rspamd_score' => -1.2,
+        'url_domains' => ['tchibo.de'],
+        'signals' => ['forged_sender' => true, 'from_neq_envfrom' => true, 'has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://tchibo.de/u>', 'list_id' => 'tchibo'],
+        '_expect' => [
+            // Kein Markenverdacht, keine Evidenz - die Mail ist unauffaellig.
+            // Den Rang bekommt das Modell ueber senderRankLine(), siehe
+            // die Gruppe _rangzeile weiter unten.
+            'impersonation' => 0.0,
+            'evidence'      => [],
+            'strong'        => [],
+        ],
+    ]);
+
+    // Gegenprobe: dieselbe Werbung, aber von einer nicht gelisteten
+    // Domain. Hier traegt die Rechtslage-Begruendung NICHT - der Absender
+    // ist nicht etabliert, und es bleibt beim normalen Abo-Beleg.
+    $cases['unbekannter-haendler-werbung'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Tchibo',
+        'from' => 'news@tchibo-aktion-shop.de', 'from_email' => 'news@tchibo-aktion-shop.de',
+        'from_display_name' => 'Tchibo',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Nur heute: 30% auf alles',
+        'body' => 'Sichern Sie sich jetzt Ihren Rabatt. Zum Shop.',
+        'rspamd_score' => 2.0,
+        'url_domains' => ['tchibo-aktion-shop.de'],
+        '_expect' => [
+            'verified_brand' => '',
+            'evidence'       => [],
+        ],
+    ]);
+
     // Foederierte Marke: echte, eigenstaendige Bank, faelschlich als
     // Typosquat von "volksbank" gewertet (02.09., vvrb.de, +16 abgewiesen).
     $cases['vvrb-federated-bank'] = array_replace_recursive($base, [
@@ -1331,6 +1377,12 @@ function runFixtures() {
     // solchen ausgewiesen - und "mail.n26.co.uk" darf NICHT den Rang von
     // "co.uk" melden, das mit 112412 tatsaechlich in der Liste steht.
     $out['_rangzeile'] = [
+        // Die beiden Zeilen, an denen die Newsletter-Unterscheidung haengt:
+        // Ein etablierter Haendler bekommt einen Rang, eine frisch
+        // registrierte Aktionsdomain nicht. Der Prompt macht daraus die
+        // Regel "Werbung eines etablierten Unternehmens ist kein Spam".
+        'etablierter_haendler' => senderRankLine('tchibo.de'),
+        'aktionsdomain'        => senderRankLine('tchibo-aktion-shop.de'),
         'exakt'           => senderRankLine('tchibo.de'),
         'subdomain'       => senderRankLine('credit.sage.com'),
         'suffix_gesperrt' => senderRankLine('mail.n26.co.uk'),

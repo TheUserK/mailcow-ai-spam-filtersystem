@@ -302,6 +302,35 @@ The usable distinction is what is being sold - a retailer sells the recipient
 a **product** they could plausibly buy; cold outreach offers a **service for
 the recipient's business** with no relationship behind it.
 
+**Advertising from an established company is not spam** (since 21.09.). The
+second half of that distinction was still missing: the prompt had no way to
+settle the subscription question at all, so a genuine retailer newsletter
+with no "you signed up" line kept coming out as `spam`. It is now settled at
+the *sender* rather than in the mail. A well-ranked sending domain (Majestic,
+roughly the global top 100.000 or a good rank in its TLD) plus `auth:strong`
+or `auth:medium` plus links confined to that domain and its ESP means
+`newsletter` or `marketing`, never `spam` - no proof of subscription needed.
+
+The reasoning is legal, not technical: unsolicited commercial mail is
+unlawful in Germany without consent (§7 UWG), and for a company that spent
+years building that domain a violation costs more than the campaign earns.
+So consent is assumed rather than checked. Cold outreach is unaffected
+because its sender is either not established at all, or is selling a service
+for the recipient's business rather than a product - both already stated in
+the cold-outreach section.
+
+This decides the **category only**. A blocklisted link, a demand for
+credentials or payment, or a disguised link target still makes it `phishing`
+- the marketing accounts of large brands do get hijacked. And the rank is
+what carries it: `verifiedBrandSender()` runs against a hand-curated list of
+roughly 25 brands (PayPal, Amazon, DHL, o2, ...), so `verified-brand` will
+never fire for an ordinary retailer. The Majestic rank reaches every mail,
+via `senderRankLine()` in `buildUserPrompt()`.
+
+`sender_global_rank` in `stats.log` is **not** the same thing: it is only
+looked up when brand impersonation was suspected, to save an SQLite query per
+mail. The prompt always gets the rank line regardless.
+
 **Transactional consistency guard** (`transactionalGuardKind()`). A model
 can change its category even at `temperature: 0`. On 19.09. the same
 Alfahosting new-device notice, with the same sender, subject, URL domain,

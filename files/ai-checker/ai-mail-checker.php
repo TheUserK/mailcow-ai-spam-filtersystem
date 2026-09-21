@@ -1996,6 +1996,9 @@ Zu den Absender-Flags:
   "reply-to-domain-mismatch", "message-id-domain-mismatch" und
   "url-domain-mismatch" deutlich weniger - die Grundsatzfrage "ist das
   wirklich MARKE" ist bereits beantwortet.
+  Das gilt AUCH fuer die Abo-Frage - siehe den Absatz "Werbung eines
+  etablierten Unternehmens ist kein Spam" beim Absender-Domain-Rang. Eine
+  beglaubigte Marke erfuellt dessen Bedingungen immer.
 
 ABSENDER-DOMAIN-RANG:
 Die Zeile "Absender-Domain-Rang" zeigt, wie etabliert die Absenderdomain
@@ -2013,7 +2016,27 @@ Erwuenschtheit. Er gibt keinen Rabatt auf fehlende Einwilligung: Kaltakquise
 von einer gut platzierten Agenturdomain bleibt Kaltakquise, und ein
 Rollenbruch bleibt ein Rollenbruch. Rabattmails,
 Flashsales und Emoji-Betreffzeilen sind bei etablierten Versandhaendlern
-normaler Alltag, kein Spam-Indiz. "nicht gelistet" ist dagegen KEIN
+normaler Alltag, kein Spam-Indiz.
+
+WERBUNG EINES ETABLIERTEN UNTERNEHMENS IST KEIN SPAM.
+Kommt eine Werbe- oder Newsletter-Mail von einer gut gelisteten Domain (etwa
+global unter 100.000 oder mit gutem Rang in ihrer Endung), steht dabei
+"auth:strong" oder "auth:medium", und zeigen die Links auf diese Domain
+selbst oder ihren Versanddienstleister, dann gilt: "newsletter" oder
+"marketing", NIE "spam".
+Ob der Empfaenger bestellt hat, steht nicht in der Mail - du sollst es hier
+aber auch nicht beurteilen. Ein Unternehmen, das sich eine solche Domain
+ueber Jahre aufgebaut hat, verschickt keine unbestellte Werbung: In
+Deutschland ist Werbe-Mail ohne Einwilligung unzulaessig, und ein Verstoss
+kostet ein bekanntes Unternehmen mehr, als die Kampagne einbringt. Die
+Einwilligung ist bei so einem Absender also nicht zu pruefen, sondern
+vorauszusetzen. Das ist der Unterschied zur Kaltakquise weiter unten: Dort
+ist der Absender NICHT etabliert, oder er bietet eine Dienstleistung fuer
+das Geschaeft des Empfaengers an, statt ihm ein Produkt zu verkaufen.
+Die Grenze: Das entscheidet die KATEGORIE, nicht die Unbedenklichkeit.
+Blocklisten-Treffer, Zugangsdaten- oder Zahlungsaufforderungen und
+verschleierte Linkziele bleiben "phishing" - auch die Marketingkonten
+grosser Firmen werden gekapert. "nicht gelistet" ist dagegen KEIN
 Verdachtsmoment fuer sich allein - viele echte, kleine oder neue Absender
 (Vereine, lokale Betriebe, junge Startups) haben schlicht noch keine breite
 Verlinkung aufgebaut. Es bedeutet nur: hier hilft dieses Signal nicht, andere
@@ -2135,7 +2158,12 @@ Markenfaelschung mit einem zweiten unabhaengigen Beleg:
   seine unaufgeforderte Werbung verschickt, sieht technisch AUSSEHEN wie
   ein Newsletter, ist aber keiner.
   Als Beleg zaehlt nur, was NICHT vom Absender stammt: das Trust-Flag
-  "reply-to-our-own-mail" oder ein Treffer bei den Trusted-Sender-Profilen.
+  "reply-to-our-own-mail", ein Treffer bei den Trusted-Sender-Profilen,
+  "verified-brand:MARKE" - oder ein guter Absender-Domain-Rang bei
+  starker Authentifizierung. In den letzten beiden Faellen ersetzt die
+  Rechtslage den Beleg (siehe "Werbung eines etablierten Unternehmens ist
+  kein Spam"); ein Abo-Nachweis ist dort nicht noetig. Ein unbekannter,
+  nicht gelisteter Absender braucht ihn weiterhin.
   Ein Satz im Mailtext ("Sie erhalten diese Mail, weil Sie sich angemeldet
   haben", "aufgrund Ihrer Bestellung") ist eine BEHAUPTUNG des Absenders und
   beliebig erfindbar - er macht ein Abo plausibler, beweist es aber nicht,
