@@ -54,18 +54,24 @@ build and refresh it. Produces evidence `brand-claim-vs-known-domain`, or
 `brand-linked-not-sender` if the real brand domain is linked in the mail body
 while the sender is someone else entirely.
 
+A brand token may map to more than one independent domain. The generator
+selects candidate names from the configured Top-N range, then scans the full
+Majestic Million for same-name domains. Thus `expert.ru` no longer hides the
+lower-ranked `expert.de`; both are accepted as related domains, while a third,
+unrelated sender claiming "expert" still produces the same evidence. Rebuild
+the generated file once after upgrading this logic (`ai-filter-brands.sh`).
+
 **The list-free path** (`claimedBrandMismatch()`). The model returns
 `claimed_brand` - who the mail claims to be from. Code, not the model, then
 checks whether that name appears as a label of the sender's organisational
 domain. Neither list can hold every regional bank or small brand; this path
 covers the rest, at the cost of being weak evidence only (see below).
 
-It only counts as evidence when authentication is **not** strong, and **a
-passing DMARC alone makes it strong**. Every ESP - Campaign Monitor, Mailchimp,
-Brevo - puts its own bounce domain in the envelope, so rspamd raises
-`FORGED_SENDER` and `FROM_NEQ_ENVFROM` on perfectly legitimate newsletters. If
-those signals could still mark a DMARC-passing mail suspicious, the coupling
-would fail on exactly the senders it exists to protect.
+Strong authentication does not by itself suppress this path: it proves that
+the sender controls its own domain, not that the domain belongs to the claimed
+brand. The finding remains weak evidence and cannot reject on its own. Known
+delegated-platform topologies are removed before this comparison; authenticated
+list mail also closes the model-only reject path separately.
 
 Matching is word-based, not label equality: companies are rarely named after
 their domain. "Albana Hotel & Suites Silvaplana" sends from `hotelalbana.ch`,
@@ -338,14 +344,17 @@ authentication and Rspamd score, was first classified `transactional` with
 `-0.96` and then `spam` with `+5.10`. The second result moved the total from
 5.75 to 10.85.
 
-The guard recognises a deliberately small set of billing and account-security
-subjects and requires all of the following: strong authentication, no list
-headers, no model red flags or prompt injection, no structural evidence or
-URL/sender reputation warning, a claimed identity matching the sender domain,
-no explicit cold-outreach wording, and no link outside the sender's
-registrable domain (apart from shared static assets and social
-footer icons). Attachments, if present, are restricted to PDF, XML, TXT and
-CSV; macro documents and unknown formats stay fully scoreable. `fraud`,
+The guard recognises a deliberately small set of billing, account-security
+and delegated order subjects and always requires strong authentication, no
+list headers, no model red flags or prompt injection, no structural evidence
+or URL/sender reputation warning, no explicit cold-outreach wording, and only
+safe attachment types. The normal billing and account-security branches also
+require a claimed identity matching the sender domain and no link outside the
+sender's registrable domain (apart from shared static assets and social footer
+icons). The PTCloud order branch instead requires the separately verified
+platform topology and a claimed pharmacy matching its sole external merchant
+domain. Attachments, if present, are restricted to PDF, XML, TXT and CSV;
+macro documents and unknown formats stay fully scoreable. `fraud`,
 `pharma`, `clickbait` and unknown model categories are
 never protected. A `phishing` verdict is eligible only for an account-security
 code whose claimed brand and authenticated sender have an explicitly known
@@ -355,9 +364,36 @@ and caps only the positive AI contribution at
 `TRANSACTIONAL_GUARD_MAX_TOTAL` (7.99).
 Rspamd's own value is not lowered; if Rspamd alone is already at 8, the mail
 stays in junk. This is therefore not a sender whitelist and gives ordinary
-newsletters no allowance. The log records `billing` or `account-security` in
+newsletters no allowance. The log records `billing`, `account-security` or `order` in
 `transactional_guard`, and the daily report lists every activation so an
 over-broad pattern becomes visible.
+
+**Delegated sender platforms** (`delegatedSenderPlatform()`). Some services
+send *on behalf of* another company, so a different From domain, claimed
+organisation and Reply-To are the intended topology rather than fraud.
+Currently three narrow profiles exist: strongly authenticated, list-free
+Lexware invoice mail from `belege.lexware.de` with invoice-like subjects and
+only Lexware-family links; strongly authenticated Shopify list mail from
+`g.shopifyemail.com` with list headers and at least one merchant link; and
+PTCloud mail limited to list-free pharmacy pre-orders with an order number,
+exactly one external pharmacy domain and a claimed pharmacy name that matches
+that domain.
+
+This is deliberately not a whitelist. A platform match by itself grants no
+trust flag, changes neither category nor score, does not disable the junk
+floor, and cannot cause an auto-pass. It only suppresses the logically
+inapplicable generic brand mismatch (and, for Lexware, the unrelated Reply-To
+finding). The stricter PTCloud order match may additionally qualify for the
+transactional guard described above; that guard only caps the positive AI
+contribution and never lowers Rspamd's own score. A URL/sender
+reputation warning, shortener, dangerous attachment, missing authentication,
+foreign Lexware link, or missing Shopify list structure disables the profile.
+Every match is logged as `delegated_sender` and appears in the daily report.
+
+Only one brand-relationship path may emit evidence for the same contradiction.
+If `brand-linked-not-sender` or `brand-claim-vs-known-domain` fired, the weaker
+`brand-claim-mismatch` is suppressed; these are derivations of the same model
+claim, not independent evidence.
 
 **Authenticated list mail closes the AI-confident path**
 (`authenticatedListMail()`, since 16.09.). When a mail carries a

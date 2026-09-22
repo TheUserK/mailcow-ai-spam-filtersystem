@@ -126,6 +126,8 @@ render_stats() {
           else [] end)
           + (if (.transactional_guard // "") != ""
              then ["TRANS:" + .transactional_guard] else [] end)
+          + (if (.delegated_sender // "") != ""
+             then ["PLATTFORM:" + .delegated_sender] else [] end)
           + (.evidence // []) | join(",")),
         (.subject // "")
       ] | @tsv' \

@@ -335,6 +335,8 @@ logStats($requestId, [
     'sender_global_rank' => $result['sender_global_rank'] ?? null,
     'rank_reject_guard' => !empty($result['rank_reject_guard']),
     'transactional_guard' => $result['transactional_guard'] ?? '',
+    'delegated_sender' => $result['delegated_sender'] ?? '',
+    'sender_rank_context' => $result['sender_rank_context'] ?? '',
     'prompt_injection' => $result['prompt_injection'] ?? [],
     'confidence' => $result['confidence'] ?? 0,
     'spam_probability' => $result['spam_probability'] ?? null,
@@ -630,6 +632,13 @@ function extractMessageIdDomains($value) {
 //  faellt der Filter still auf die handgepflegte Liste zurueck.
 //
 //  Format je Zeile: markenname<TAB>echte-domain
+//
+//  Ein Markenname darf mehrfach vorkommen. Das ist kein Fehler, sondern
+//  bildet gleichnamige, unabhaengige Domains ab (z.B. expert.ru und
+//  expert.de). Der Generator sucht solche Kollisionen in der gesamten
+//  Million statt nur im Top-N-Ausschnitt. Der Checker akzeptiert dann jede
+//  der hinterlegten Domains als passend; fuer einen fremden Absender bleibt
+//  der Markenbeleg unveraendert scharf.
 // ---------------------------------------------------------------------
 function knownBrandDomains() {
     static $map = null;
@@ -648,7 +657,17 @@ function knownBrandDomains() {
         if (count($parts) < 2) {
             continue;
         }
-        $map[mb_strtolower($parts[0])] = normalizeHost($parts[1]);
+        $brand = mb_strtolower($parts[0]);
+        $domain = normalizeHost($parts[1]);
+        if ($brand === '' || $domain === '') {
+            continue;
+        }
+        if (!isset($map[$brand])) {
+            $map[$brand] = [];
+        }
+        if (!in_array($domain, $map[$brand], true)) {
+            $map[$brand][] = $domain;
+        }
     }
     return $map;
 }
@@ -974,7 +993,15 @@ function senderRankLine($fromDomain) {
 //  deren Absenderdomain die Marke nicht traegt. Genau daran ist am 24.08.
 //  eine echte Madeleine-Mail beinahe gescheitert.
 // ---------------------------------------------------------------------
-function claimedBrandIsKnownDomain(array $mail, array $analysis) {
+function claimedBrandIsKnownDomain(array $mail, array $analysis, $delegatedSender = '') {
+    // Bei einem nachgewiesenen Versand-im-Auftrag ist eine abweichende
+    // Absenderdomain gerade das erwartete technische Bild. Der Inhalt wird
+    // dadurch nicht vertrauenswuerdig; nur dieser eine Markenbeleg waere
+    // logisch falsch.
+    if ($delegatedSender !== '') {
+        return false;
+    }
+
     $map = knownBrandDomains();
     if (empty($map)) {
         return false;
@@ -1006,8 +1033,15 @@ function claimedBrandIsKnownDomain(array $mail, array $analysis) {
         if (mb_strpos($fromToken, $word) !== false) {
             continue;   // Absender traegt die Marke selbst
         }
-        if (relatedToSenderDomain($map[$word], $from)) {
-            continue;   // Schwesterdomain derselben Marke
+        $belongsToKnownFamily = false;
+        foreach ((array)$map[$word] as $knownDomain) {
+            if (relatedToSenderDomain($knownDomain, $from)) {
+                $belongsToKnownFamily = true;
+                break;
+            }
+        }
+        if ($belongsToKnownFamily) {
+            continue;   // eine der Schwesterdomains derselben Marke
         }
         return true;
     }
@@ -1033,7 +1067,11 @@ function claimedBrandIsKnownDomain(array $mail, array $analysis) {
 //  schickt aus floraprima-news.de und verlinkt floraprima.de - beide
 //  tragen den Namen, also greift die Regel nicht.
 // ---------------------------------------------------------------------
-function brandLinkedNotSender(array $mail, array $analysis) {
+function brandLinkedNotSender(array $mail, array $analysis, $delegatedSender = '') {
+    if ($delegatedSender !== '') {
+        return false;
+    }
+
     $words = significantBrandWords($analysis['claimed_brand'] ?? '');
     if (empty($words)) {
         return false;
@@ -1227,14 +1265,17 @@ function brandLinkDomains($brand) {
     return normalizeDomainList($domains);
 }
 
-function structuralSignals(array $mail, $verifiedBrand = '') {
+function structuralSignals(array $mail, $verifiedBrand = '', $delegatedSender = '') {
+    if ($delegatedSender === '') {
+        $delegatedSender = delegatedSenderPlatform($mail);
+    }
     return [
         'dangerous_attachments'  => findDangerousAttachments($mail['attachments']),
         'shortener_domains'      => findShortenerDomains($mail['url_domains'], $mail['urls'] ?? []),
         'free_hosting_links'     => findFreeHostingLinks($mail['url_domains'], $mail['from_domain']),
         'cloud_storage_only'     => allUrlsAreCloudStorage($mail['url_domains']),
         'hijacked_reply_to'      => hijackedReplyTo($mail),
-        'reply_to_unrelated'     => replyToUnrelatedDomain($mail),
+        'reply_to_unrelated'     => replyToUnrelatedDomain($mail, $delegatedSender),
         'reply_to_freemail_swap' => freemailReplyToSwap($mail),
         'no_disclosed_recipient' => noDisclosedRecipient($mail),
         'fake_thread'            => fakeThreadClaim($mail),
@@ -1278,10 +1319,12 @@ function authenticatedListMail(array $mail, array $localContext, array $evidence
 //  auf 10.85 und legte eine echte Geraeteanmeldung in Junk.
 //
 //  Der Schutz ist absichtlich enger als "Betreff enthaelt Rechnung":
-//  starke Authentifizierung, keine Listenmail, keine Modell-/Strukturwarnung,
-//  keine Reputationswarnung und nur Links zur Absenderfamilie bzw. zu
-//  gemeinsam genutzter statischer Infrastruktur. Er vergibt KEINE
-//  Ham-Punkte. Er verhindert nur, dass der KI-Anteil allein die Summe ueber
+//  starke Authentifizierung, keine Listenmail, keine Modell-/Strukturwarnung
+//  und keine Reputationswarnung. Die normalen Zweige erlauben nur Links zur
+//  Absenderfamilie bzw. zu gemeinsam genutzter statischer Infrastruktur;
+//  die PTCloud-Ausnahme verlangt stattdessen das separat gepruefte
+//  Plattform-/Apotheken-Muster. Der Guard vergibt KEINE Ham-Punkte. Er
+//  verhindert nur, dass der KI-Anteil allein die Summe ueber
 //  TRANSACTIONAL_GUARD_MAX_TOTAL schiebt; Rspamd >= JUNK_FLOOR bleibt Junk.
 // ---------------------------------------------------------------------
 function transactionalGuardKind(
@@ -1313,10 +1356,25 @@ function transactionalGuardKind(
         }
     }
 
-    if (!transactionalClaimAligned($mail, $localContext, $analysis)
-        || !transactionalUrlsAligned($mail)
-        || !transactionalAttachmentsSafe($mail)
+    if (!transactionalAttachmentsSafe($mail)
         || transactionalSolicitationPresent($mail)) {
+        return '';
+    }
+
+    // Bestellplattformen duerfen naturgemaess weder Absenderdomain noch
+    // Linkdomain der Apotheke tragen. Fuer den eng erkannten PTCloud-Fall
+    // ersetzt deshalb die zweistufige Plattform-/Markenpruefung die normale
+    // Sendergleichheit. Phishing/Fraud bleibt voll scorebar; entlastet
+    // werden nur die beobachteten Modellfehler spam/marketing.
+    if (($localContext['delegated_sender'] ?? '') === 'ptcloud-order') {
+        if (!delegatedSenderSupportsClaim($mail, $analysis, 'ptcloud-order')) {
+            return '';
+        }
+        return in_array($category, ['marketing', 'spam'], true) ? 'order' : '';
+    }
+
+    if (!transactionalClaimAligned($mail, $localContext, $analysis)
+        || !transactionalUrlsAligned($mail)) {
         return '';
     }
 
@@ -1491,7 +1549,8 @@ function analyzeLocally(array $mail, $requestId) {
     $matchedProfile = matchTrustedProfile($mail, $profiles);
     $authStrength = evaluateAuthStrength($mail);
     $verifiedBrand = verifiedBrandSender($mail);
-    $struct = structuralSignals($mail, $verifiedBrand);
+    $delegatedSender = delegatedSenderPlatform($mail);
+    $struct = structuralSignals($mail, $verifiedBrand, $delegatedSender);
 
     $dangerousAttachments = $struct['dangerous_attachments'];
     $shortenerDomains = $struct['shortener_domains'];
@@ -1675,6 +1734,10 @@ function analyzeLocally(array $mail, $requestId) {
         'matched_profile_kind' => $profileKind,
         'auth_strength' => $authStrength,
         'verified_brand' => $verifiedBrand,
+        // Reiner Topologie-Hinweis, kein Trust-Flag und kein Score-Rabatt.
+        // Er erklaert nur, warum bestimmte Absender-/Markenabweichungen bei
+        // einem echten Versand-im-Auftrag kein Betrugsbeleg sind.
+        'delegated_sender' => $delegatedSender,
         'impersonation_score' => $impersonationScore,
         'impersonation_kind' => $impersonationKind,
         'sender_global_rank' => $senderGlobalRank,
@@ -1836,6 +1899,10 @@ function buildUserPrompt(array $mail, array $localContext) {
         'text'          => $userPrompt,
         'operator_hint' => $hasOperatorHint,
         'reject_rule'   => $rejectRule,
+        // Exakt die Zeile, die das Modell gesehen hat. sender_global_rank
+        // bleibt absichtlich enger und erbt keinen Rang der Hauptdomain;
+        // dieses Feld dient nur der spaeteren Nachvollziehbarkeit.
+        'rank_context'  => $rankLine,
     ];
 }
 
@@ -2397,6 +2464,7 @@ PROMPT;
     $userPrompt      = $prompt['text'];
     $hasOperatorHint = $prompt['operator_hint'];
     $rejectRule      = $prompt['reject_rule'];
+    $rankContext     = $prompt['rank_context'];
 
     $payload = [
         'model' => AI_MODEL,
@@ -2870,6 +2938,8 @@ PROMPT;
         'sender_global_rank' => $localContext['sender_global_rank'] ?? null,
         'rank_reject_guard' => $rankRejectGuard,
         'transactional_guard' => $transactionalGuard,
+        'delegated_sender' => $localContext['delegated_sender'] ?? '',
+        'sender_rank_context' => $rankContext,
         'prompt_injection' => $injection,
         // Damit im Report sichtbar wird, was ein Betreibersatz tatsaechlich
         // einsammelt - der Ersatz fuer die Testbarkeit, die Freitext nicht hat.
@@ -3018,7 +3088,14 @@ function responseSchema() {
 // ---------------------------------------------------------------------
 function collectStructuralEvidence(array $mail, array $localContext, array $analysis = []) {
     // Eine Quelle: die Merkmale wurden in analyzeLocally() einmal berechnet.
-    $struct = $localContext['struct'] ?? structuralSignals($mail, $localContext['verified_brand'] ?? '');
+    $delegatedSender = array_key_exists('delegated_sender', $localContext)
+        ? (string)$localContext['delegated_sender']
+        : delegatedSenderPlatform($mail);
+    $struct = $localContext['struct'] ?? structuralSignals(
+        $mail,
+        $localContext['verified_brand'] ?? '',
+        $delegatedSender
+    );
     $evidence = [];
 
     if ($struct['cloud_storage_only']) {
@@ -3064,13 +3141,27 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
         $evidence[] = 'fabricated-ticket';
     }
     $handCuratedBrandHit = floatval($localContext['impersonation_score'] ?? 0) > 0;
+    $derivedBrandHit = false;
+    $brandDelegation = '';
     if (!$handCuratedBrandHit) {
-        if (brandLinkedNotSender($mail, $analysis)) {
+        // Fuer PTCloud reicht der lokale Plattformname allein noch nicht:
+        // Erst die vom Modell genannte Apotheke muss zu ALLEN fremden
+        // Haendlerdomains passen. Sonst koennte ein kompromittiertes
+        // Plattformkonto mit einem fremden Link den Markenbeleg verlieren.
+        $brandDelegation = delegatedSenderSupportsClaim(
+            $mail,
+            $analysis,
+            $delegatedSender
+        ) ? $delegatedSender : '';
+
+        if (brandLinkedNotSender($mail, $analysis, $brandDelegation)) {
             $evidence[] = 'brand-linked-not-sender';
-        } elseif (claimedBrandIsKnownDomain($mail, $analysis)) {
+            $derivedBrandHit = true;
+        } elseif (claimedBrandIsKnownDomain($mail, $analysis, $brandDelegation)) {
             // Nur wenn der direkte Beleg nicht schon greift - sonst stuende
             // derselbe Sachverhalt zweimal da.
             $evidence[] = 'brand-claim-vs-known-domain';
+            $derivedBrandHit = true;
         }
     }
     if (!empty($struct['free_hosting_links'])) {
@@ -3085,9 +3176,14 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if ($mail['rspamd_score'] >= RSPAMD_CONCUR_SCORE) {
         $evidence[] = 'rspamd-concurs';
     }
-    // Nur wenn die Markenliste NICHT schon zugeschlagen hat - sonst
-    // stuende derselbe Sachverhalt zweimal als "zwei" Belege da.
-    if (!$handCuratedBrandHit && claimedBrandMismatch($mail, $analysis)) {
+    // Nur wenn KEIN anderer Markenpfad schon zugeschlagen hat. Bis 22.09.
+    // stand bei PTCloud derselbe Widerspruch zweimal im Log:
+    // brand-linked-not-sender UND brand-claim-mismatch. Beide leiteten sich
+    // aus derselben Modellangabe und derselben Domainabweichung ab - keine
+    // zwei unabhaengigen Quellen.
+    if (!$handCuratedBrandHit
+        && !$derivedBrandHit
+        && claimedBrandMismatch($mail, $analysis, $brandDelegation)) {
         $evidence[] = 'brand-claim-mismatch';
     }
 
@@ -3248,7 +3344,154 @@ function hijackedReplyTo(array $mail) {
 //  Konstellation hat am 24.08. eine echte Madeleine-Mail beinahe als
 //  Phishing ausgewiesen.
 // ---------------------------------------------------------------------
-function replyToUnrelatedDomain(array $mail) {
+// Eng begrenzte Versandplattformen, bei denen From-Domain und behauptete
+// Organisation absichtlich verschieden sind. Das Ergebnis ist KEIN
+// Vertrauenssignal: Der Plattform-Treffer allein senkt keinen Score,
+// verhindert keinen Junk-Floor und erlaubt keinen Auto-Pass. Er verhindert
+// nur Belege, die bei dieser Topologie definitionsgemaess falsch waeren.
+// Der engere PTCloud-Bestelltreffer kann danach unabhaengig den oben
+// dokumentierten Transaktionsschutz ausloesen.
+//
+// Jede Ausnahme braucht starke Authentifizierung und ihre eigene Struktur:
+// Lexware nur listenlose Rechnungs-/Belegpost mit Links ausschliesslich zur
+// Lexware-Familie; Shopify nur echte Listenpost mit mindestens einem
+// Haendlerlink; PTCloud nur listenlose Vorbestellungen mit Bestellnummer und
+// genau EINER externen Apotheken-Domain. Reputationswarnungen, Kurzlinks und
+// gefaehrliche Anhaenge schalten die Ausnahme vollstaendig ab.
+function delegatedSenderPlatform(array $mail) {
+    if (evaluateAuthStrength($mail) !== 'strong') {
+        return '';
+    }
+
+    $signals = $mail['signals'] ?? [];
+    foreach (['url_blacklisted', 'url_phishing', 'url_suspect',
+              'url_fresh_domain', 'sender_blocklisted'] as $risk) {
+        if (!empty($signals[$risk])) {
+            return '';
+        }
+    }
+    if (!empty(findDangerousAttachments($mail['attachments'] ?? []))
+        || !empty(findShortenerDomains($mail['url_domains'] ?? [], $mail['urls'] ?? []))) {
+        return '';
+    }
+
+    $from = normalizeHost($mail['from_domain'] ?? '');
+    $hasListHeaders = !empty($signals['has_list_unsubscribe'])
+        || !empty($mail['headers']['list_unsubscribe'])
+        || !empty($mail['headers']['list_id']);
+
+    if (domainMatchesAny($from, ['belege.lexware.de'])) {
+        if ($hasListHeaders || !preg_match(
+            '/\b(rechnung|invoice|gutschrift|beleg|abrechnung)\b/iu',
+            (string)($mail['subject'] ?? '')
+        )) {
+            return '';
+        }
+        foreach (normalizeDomainList($mail['url_domains'] ?? []) as $domain) {
+            if (!domainMatchesAny($domain, ['lexware.de']) && !isSharedAssetHost($domain)) {
+                return '';
+            }
+        }
+        return 'lexware-billing';
+    }
+
+    if (domainMatchesAny($from, ['g.shopifyemail.com']) && $hasListHeaders) {
+        $hasMerchantLink = false;
+        foreach (normalizeDomainList($mail['url_domains'] ?? []) as $domain) {
+            if (isSharedAssetHost($domain)
+                || domainMatchesAny($domain, ['shopify.com', 'shopifyemail.com'])) {
+                continue;
+            }
+            $hasMerchantLink = true;
+            break;
+        }
+        if ($hasMerchantLink) {
+            return 'shopify-list';
+        }
+    }
+
+    if (domainMatchesAny($from, ['ptcloud.de']) && !$hasListHeaders) {
+        $subject = (string)($mail['subject'] ?? '');
+        if (!preg_match('/\bvorbestellung\b.{0,60}\b\d{5,}\b/iu', $subject)) {
+            return '';
+        }
+
+        // PTCloud und die Bayerische Landesapothekerkammer sind erwartete
+        // Infrastruktur. Daneben muss genau eine registrierbare Domain der
+        // konkreten Apotheke uebrigbleiben. Zwei verschiedene Ziele waeren
+        // kein normaler Versand-im-Auftrag mehr und beenden die Ausnahme.
+        $merchantRoots = [];
+        foreach (normalizeDomainList($mail['url_domains'] ?? []) as $domain) {
+            if (domainMatchesAny($domain, ['ptcloud.de', 'blak.de'])
+                || isSharedAssetHost($domain)
+                || isSocialFooterHost($domain)) {
+                continue;
+            }
+            $merchantRoots[registrableDomain($domain)] = true;
+        }
+        if (count($merchantRoots) === 1) {
+            return 'ptcloud-order';
+        }
+    }
+
+    return '';
+}
+
+// Passt die vom Modell genannte Organisation wirklich zu den externen
+// Haendlerdomains der Plattform? Fuer Lexware/Shopify reichen deren bereits
+// eng gefasste Profile. Bei PTCloud ist diese zweite Stufe entscheidend:
+// ptcloud.de darf nicht beliebige fremde Links unter dem Deckmantel einer
+// Vorbestellung freikaufen.
+function delegatedSenderSupportsClaim(array $mail, array $analysis, $platform) {
+    if ($platform === '') {
+        return false;
+    }
+    if ($platform !== 'ptcloud-order') {
+        return true;
+    }
+
+    $words = significantBrandWords($analysis['claimed_brand'] ?? '');
+    if (empty($words)) {
+        return false;
+    }
+
+    $foundMerchant = false;
+    foreach (normalizeDomainList($mail['url_domains'] ?? []) as $domain) {
+        if (domainMatchesAny($domain, ['ptcloud.de', 'blak.de'])
+            || isSharedAssetHost($domain)
+            || isSocialFooterHost($domain)) {
+            continue;
+        }
+
+        $linkToken = brandToken(implode('', organisationalLabels($domain)));
+        $aligned = false;
+        foreach ($words as $word) {
+            if (mb_strpos($linkToken, $word) !== false) {
+                $aligned = true;
+                break;
+            }
+        }
+        if (!$aligned) {
+            return false;
+        }
+        $foundMerchant = true;
+    }
+
+    return $foundMerchant;
+}
+
+function replyToUnrelatedDomain(array $mail, $delegatedSender = '') {
+    if ($delegatedSender === '') {
+        $delegatedSender = delegatedSenderPlatform($mail);
+    }
+
+    // Bei Lexware ist das Reply-To des Rechnungsstellers gerade der Sinn
+    // der Plattform. Nur der schwache "unrelated"-Befund wird entwertet;
+    // ein Freemail-Swap/hijackedReplyTo bleibt davon unberuehrt.
+    if ($delegatedSender === 'lexware-billing') {
+        return false;
+    }
+
     // Nur wenn der scharfe Beleg nicht schon greift - sonst stuende
     // derselbe Sachverhalt zweimal als "zwei" Belege da.
     if (hijackedReplyTo($mail)) {
@@ -4364,13 +4607,17 @@ function domainMayClaimBrand($domain, $claim, $authStrength = 'unknown') {
 //  Die KI liefert nur die Behauptung, das Urteil faellt Code - damit
 //  bleibt der Beleg unabhaengig genug fuer den Reject-Gate.
 //
-//  Der entscheidende Schutz ist die Kopplung an die Auth-Staerke: Firmen
-//  versenden staendig ueber Dienstleister (Mailchimp, Brevo, Sendgrid)
-//  und behaupten dabei ihren eigenen Namen aus fremder Domain. Solche
-//  Post ist SPF/DKIM-sauber. Nur wenn die Authentifizierung NICHT stark
-//  ist, zaehlt eine Abweichung als Beleg.
+//  Starke Authentifizierung beweist nur die Kontrolle ueber die From-Domain,
+//  nicht ihre Beziehung zur behaupteten Marke. Deshalb bleibt die
+//  Abweichung ein schwacher Beleg. Fuer legitimen Versand-im-Auftrag gibt es
+//  davor eng gefasste Plattformprofile; der Beleg allein traegt weiterhin
+//  keine Ablehnung.
 // ---------------------------------------------------------------------
-function claimedBrandMismatch(array $mail, array $analysis) {
+function claimedBrandMismatch(array $mail, array $analysis, $delegatedSender = '') {
+    if ($delegatedSender !== '') {
+        return false;
+    }
+
     $token = brandToken((string)($analysis['claimed_brand'] ?? ''));
 
     // Zu kurz ist keine Marke ("AG", "eG"), und Gattungsbegriffe sind es
@@ -4745,10 +4992,17 @@ function logStats($requestId, $data) {
             ? intval($data['sender_global_rank'])
             : null,
         'rank_reject_guard' => !empty($data['rank_reject_guard']),
-        // "billing" / "account-security" oder leer. Ein Treffer erklaert,
+        // "billing" / "account-security" / "order" oder leer. Ein Treffer erklaert,
         // warum ein positives Modellurteil die Junk-Schwelle nicht anheben
         // durfte; Rspamds eigener Score bleibt daneben sichtbar.
         'transactional_guard' => (string)($data['transactional_guard'] ?? ''),
+        // Versand-im-Auftrag erklaert entwertete Strukturbelege; der
+        // Plattformtreffer selbst ist weder Whitelist noch Score-Rabatt.
+        // Ein separater transactional_guard kann zusaetzlich greifen.
+        'delegated_sender' => (string)($data['delegated_sender'] ?? ''),
+        // Die vollstaendige Rangzeile aus dem Prompt, inklusive des
+        // Fallbacks auf die uebergeordnete Domain bei Subdomains.
+        'sender_rank_context' => mb_substr((string)($data['sender_rank_context'] ?? ''), 0, 180),
         // Direkt geloggt statt aus red_flags-Text erraten: der Report
         // brauchte einmal genau das und hatte es sich schlecht genaehert.
         'auth_strength' => (string)($data['auth_strength'] ?? 'unknown'),

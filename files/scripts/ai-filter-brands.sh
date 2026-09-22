@@ -59,7 +59,7 @@ OUT="data/ai-checker/brand_domains.txt"
 if [[ "$ACTION" == "status" ]]; then
     if [[ -f "$OUT" ]]; then
         echo -e "${GREEN}Vorhanden${NC}: $OUT"
-        echo "  Marken:      $(grep -vc '^#' "$OUT" || echo 0)"
+        echo "  Zuordnungen: $(grep -vc '^#' "$OUT" || echo 0)"
         echo "  Erzeugt am:  $(date -r "$OUT" '+%d.%m.%Y %H:%M')"
     else
         echo -e "${YELLOW}Noch nicht erzeugt${NC} - ai-filter-brands.sh aufrufen"
@@ -164,7 +164,49 @@ awk -F, -v skipfile="$TMP/skip.txt" -v maxn="$COUNT" -v debug="$DEBUG" '
             printf "  uebernommen:  %d\n", kept     > "/dev/stderr"
             for (r in drop) printf "  verworfen %-26s %d\n", r ":", drop[r] > "/dev/stderr"
         }
-    }' "$TMP/million.csv" > "$TMP/body.txt" || true
+    }' "$TMP/million.csv" > "$TMP/candidates.txt" || true
+
+# Ein Markenwort kann zu mehreren unabhaengigen Domains gehoeren. Die Top-N-
+# Auswahl allein sah bei "expert" nur expert.ru; expert.de liegt deutlich
+# weiter hinten und war dadurch unsichtbar. Eine einzelne angeblich "echte"
+# Domain ist fuer solche Namen sachlich falsch.
+#
+# Gescannt wird deshalb die komplette Million, aber nur fuer die wenigen
+# bereits ausgewaehlten Markenwoerter. Alle gleichnamigen Zweitniveau-Domains
+# kommen als weitere Zeilen in die Liste. Der Checker akzeptiert jede davon
+# als Markenfamilie; ein wirklich fremder Absender bleibt unveraendert ein
+# harter Treffer. Die Spam-Erkennung verliert dadurch also keinen Beleg.
+awk -F, -v candidates="$TMP/candidates.txt" '
+    BEGIN {
+        while ((getline line < candidates) > 0) {
+            split(line, p, /\t/)
+            if (p[1] != "") wanted[p[1]] = 1
+        }
+        close(candidates)
+    }
+    NR == 1 { next }
+    {
+        domain = tolower($3); tld = tolower($4)
+        gsub(/[\r"]/, "", domain); gsub(/[\r"]/, "", tld)
+        if (domain == "" || tld == "") next
+        suffix = "." tld
+        if (substr(domain, length(domain) - length(suffix) + 1) != suffix) next
+        label = substr(domain, 1, length(domain) - length(suffix))
+        if (index(label, ".") > 0) next
+        gsub(/[^a-z0-9]/, "", label)
+        key = label SUBSEP domain
+        if ((label in wanted) && !(key in seen)) {
+            seen[key] = 1
+            print label "\t" domain
+        }
+    }' "$TMP/million.csv" > "$TMP/body.txt"
+
+if [[ "$DEBUG" -eq 1 ]]; then
+    CANDIDATE_BRANDS=$(wc -l < "$TMP/candidates.txt" | tr -d ' ')
+    MAPPED_DOMAINS=$(wc -l < "$TMP/body.txt" | tr -d ' ')
+    echo "  eindeutige Markenwoerter: $CANDIDATE_BRANDS" >&2
+    echo "  zugeordnete Domains:      $MAPPED_DOMAINS" >&2
+fi
 
 # NICHT "LINES" nennen. Das ist eine Bash-Sondervariable: mit checkwinsize
 # - seit Bash 5 standardmaessig an - setzt die Shell LINES und COLUMNS nach
@@ -192,7 +234,7 @@ fi
     printf '# Lizenz: Creative Commons Attribution 3.0 Unported, (c) Majestic-12 Ltd\n'
     printf '#         https://creativecommons.org/licenses/by/3.0/\n'
     printf '#\n'
-    printf '# Format: markenname<TAB>echte-domain\n'
+    printf '# Format: markenname<TAB>echte-domain (Markenname darf mehrfach vorkommen)\n'
     printf '# Nicht von Hand pflegen - wird bei jedem Lauf neu erzeugt.\n'
     printf '# Einzelne Marken ausschliessen: in die skip-Liste im Skript eintragen.\n'
     printf '#\n'
@@ -203,5 +245,5 @@ mkdir -p data/ai-checker
 mv "$TMP/brands.txt" "$OUT"
 chmod 644 "$OUT"
 
-echo -e "${GREEN}[OK]${NC} $FOUND_BRANDS Marken nach $OUT geschrieben"
+echo -e "${GREEN}[OK]${NC} $FOUND_BRANDS Marken-Domain-Zuordnungen nach $OUT geschrieben"
 echo "     Pruefen mit: ai-filter-brands.sh --show hetzner"

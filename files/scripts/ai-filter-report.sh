@@ -320,6 +320,14 @@ BODY=$(
         "$(printf 'Starke Auth, passende Links, keine Warnsignale; KI allein durfte die Mail nicht in Junk heben.')" \
         '(.transactional_guard // "") != ""' && FOUND=1
 
+    # 0e. Versand-im-Auftrag: bewusst KEINE Whitelist. Diese Gruppe zeigt
+    #     jede Aktivierung, damit sich neue Plattformprofile erst im Betrieb
+    #     bewaehren muessen. Score, Kategorie und Junk-Floor bleiben normal;
+    #     entwertet werden nur logisch unmoegliche Marken-/Reply-To-Belege.
+    render_group "Delegierte Versandplattform erkannt" \
+        "$(printf 'Kein Score-Rabatt: nur erwartbare From-/Markenabweichung entwertet. Passen Plattform und Mailtyp?')" \
+        '(.delegated_sender // "") != ""' && FOUND=1
+
     # 7. Betrug erkannt, aber kein Beleg - also zugestellt.
     #
     # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist

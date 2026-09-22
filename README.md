@@ -237,6 +237,11 @@ mail that *claims* to be from a brand ("Ihre DHL Sendung...") sent from a
 domain that has nothing to do with it - independent of the small hand-curated
 brand list used for typosquat detection.
 
+Candidate names come from the configured Top-N range, but same-name domains
+are resolved against the full Million. A token such as `expert` can therefore
+map to both `expert.ru` and `expert.de` instead of whichever domain happened
+to rank first; unrelated senders claiming that name are still detected.
+
 This list is generated locally on your server and is **not shipped in the
 repo** - only the generator script is. `install.sh` builds it once on
 install and schedules a weekly refresh (`/etc/cron.d/ai-filter-brands`,

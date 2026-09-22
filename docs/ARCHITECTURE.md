@@ -68,6 +68,16 @@ threshold. Rspamd is never rescued: if its own score is already at the junk
 threshold, the mail remains there. Every activation is stored as
 `transactional_guard` and included in the contradiction report.
 
+Delegated delivery platforms are handled separately. A narrowly matched
+Lexware invoice or Shopify list mail only loses structural evidence that is
+impossible to interpret correctly for an "on behalf of" sender topology;
+category, AI score, junk floor and Rspamd score stay untouched. PTCloud order
+mail additionally receives the deterministic `order` transaction guard,
+because two genuine pre-order messages were otherwise rejected at the SMTP
+threshold. Its claimed pharmacy must match the sole external merchant domain.
+Matches are stored as `delegated_sender`; risky URLs, attachments, missing
+authentication or a topology mismatch disable the exception.
+
 Either way, no trusted-sender match and no reply to an existing thread (a
 forgeable `In-Reply-To` header is not enough by itself - see
 `partOfRealConversation()`) are required. A single wrong verdict therefore
@@ -148,7 +158,8 @@ Incoming Email
 - Receives email context via HTTP POST from Rspamd (from/to, headers, SPF/DKIM/DMARC results, URLs, attachments, content stats, ...)
 - Checks whether both sides are local Mailcow domains (Mailcow DB lookup) -> skip
 - Matches the sender against built-in + custom trusted sender profiles (shippers, marketplaces, banks, telecoms) and checks Reply-To/Return-Path/Message-Id/link-domain alignment -> safe auto-pass if everything lines up and auth is strong
-- Checks for brand impersonation via three mechanisms: a hand-curated list of real brand domains (typosquat/foreign-domain), a generated list of several thousand brands from the Majestic Million (`knownBrandDomains()`), and a weaker word-match fallback (`claimedBrandMismatch()`) - see [CONFIGURATION.md](CONFIGURATION.md#brand-impersonation-three-paths)
+- Checks for brand impersonation via three mechanisms: a hand-curated list of real brand domains (typosquat/foreign-domain), a generated list of several thousand brands from the Majestic Million (`knownBrandDomains()`, including same-name multi-domain mappings), and a weaker word-match fallback (`claimedBrandMismatch()`) - see [CONFIGURATION.md](CONFIGURATION.md#brand-impersonation-three-paths)
+- Recognises narrowly defined delegated sender topologies (`delegatedSenderPlatform()`) so Lexware/Shopify/PTCloud delivery infrastructure does not manufacture false brand or Reply-To evidence; PTCloud's order guard is separately constrained to authenticated pre-orders whose claimed pharmacy matches the linked merchant domain
 - Turns Rspamd's URL-reputation symbols into risk flags. A blocklist hit also blocks the trusted-sender auto-pass, since even a genuine sender can link a compromised subdomain
 - Computes all structural evidence once (`structuralSignals()`/`collectStructuralEvidence()`) - fake threads, hijacked reply-to, fabricated tickets, role claims on freemail, free-hosting links, and more - shared between the AI prompt's risk flags and the reject-eligibility check, so the two can never drift apart
 - Adds the recipient's own business context to the prompt (`businessContextFor()`, from `business_context.json`) so the model can tell whether the mail even makes sense for this recipient - it catches mail addressing you as the provider of a service you don't offer, and deliberately not confirmations for services you bought elsewhere. See [CONFIGURATION.md](CONFIGURATION.md#recipient-context-business_contextjson)

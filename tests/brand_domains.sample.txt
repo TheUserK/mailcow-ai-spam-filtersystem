@@ -4,3 +4,5 @@ hetzner	hetzner.com
 paypal	paypal.com
 floraprima	floraprima.de
 madeleine	madeleine.de
+expert	expert.ru
+expert	expert.de

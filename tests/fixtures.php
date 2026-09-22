@@ -1046,6 +1046,310 @@ function fixtures() {
         ],
     ]);
 
+    // 19.09.: Lexware versendet den Beleg im Auftrag des kleinen
+    // Rechnungsstellers. From und verlinkte Plattform gehoeren Lexware,
+    // Reply-To und behauptete Organisation dem Rechnungssteller. Genau
+    // diese absichtliche Trennung darf weder reply-to-unrelated noch einen
+    // generischen Markenwiderspruch erzeugen. Score und Kategorie bleiben
+    // davon ausdruecklich unberuehrt.
+    $cases['delegiert-lexware-rechnung'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Gartenservice GmbH',
+        'from' => 'versand@belege.lexware.de', 'from_email' => 'versand@belege.lexware.de',
+        'from_display_name' => 'Beispiel Gartenservice via Lexware',
+        'reply_to' => 'rechnung@beispiel-gartenservice.example',
+        'to' => 'kunde@example.org',
+        'subject' => 'Rechnung RE471100 von Beispiel Gartenservice GmbH',
+        'body' => 'Ihre Rechnung wurde mit Lexware erstellt.',
+        'rspamd_score' => -4.0,
+        'urls' => ['https://app.lexware.de/belege/abc'],
+        'url_domains' => ['app.lexware.de'],
+        '_analysis' => [
+            'category' => 'fraud',
+            'claimed_brand' => 'Beispiel Gartenservice GmbH',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 6.30,
+        '_expect' => [
+            'delegated_sender' => 'lexware-billing',
+            'evidence' => [],
+            'transactional_guard' => '',
+            'guarded_ai_score' => 6.30,
+        ],
+    ]);
+
+    // Gegenprobe: Eine fremde Link-Domain beendet die Plattform-Ausnahme.
+    // Die echte Spam-/Phishing-Erkennung behaelt beide bisherigen Belege.
+    $cases['delegiert-lexware-fremder-link'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Gartenservice GmbH',
+        'from' => 'versand@belege.lexware.de', 'from_email' => 'versand@belege.lexware.de',
+        'from_display_name' => 'Beispiel Gartenservice via Lexware',
+        'reply_to' => 'rechnung@beispiel-gartenservice.example',
+        'to' => 'kunde@example.org',
+        'subject' => 'Rechnung RE471100 von Beispiel Gartenservice GmbH',
+        'body' => 'Bitte pruefen Sie die Rechnung ueber den Link.',
+        'rspamd_score' => 4.0,
+        'urls' => ['https://konto-pruefen.example.net/rechnung'],
+        'url_domains' => ['konto-pruefen.example.net'],
+        '_analysis' => [
+            'category' => 'fraud',
+            'claimed_brand' => 'Beispiel Gartenservice GmbH',
+            'red_flags' => [],
+        ],
+        '_expect' => [
+            'delegated_sender' => '',
+            'evidence' => ['reply-to-unrelated-domain', 'brand-claim-mismatch'],
+        ],
+    ]);
+
+    // Gegenprobe: Ein gespooftes Lexware-From ist keine Plattformpost.
+    $cases['delegiert-lexware-ohne-auth'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Gartenservice GmbH',
+        'from' => 'versand@belege.lexware.de', 'from_email' => 'versand@belege.lexware.de',
+        'from_display_name' => 'Beispiel Gartenservice via Lexware',
+        'reply_to' => 'rechnung@beispiel-gartenservice.example',
+        'to' => 'kunde@example.org',
+        'subject' => 'Rechnung RE471100 von Beispiel Gartenservice GmbH',
+        'body' => 'Ihre Rechnung wurde mit Lexware erstellt.',
+        'rspamd_score' => 4.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+        'urls' => ['https://app.lexware.de/belege/abc'],
+        'url_domains' => ['app.lexware.de'],
+        '_analysis' => [
+            'category' => 'fraud',
+            'claimed_brand' => 'Beispiel Gartenservice GmbH',
+            'red_flags' => [],
+        ],
+        '_expect' => [
+            'delegated_sender' => '',
+            'evidence' => ['brand-claim-mismatch'],
+        ],
+    ]);
+
+    // Shopify verschickt echte Listenpost im Namen des Haendlers. Die
+    // Abweichung ist strukturell normal, darf aber weder die Kategorie noch
+    // den KI-Score veraendern.
+    $cases['delegiert-shopify-newsletter'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Handel GmbH',
+        'from' => 'store@g.shopifyemail.com', 'from_email' => 'store@g.shopifyemail.com',
+        'from_display_name' => 'Beispiel Handel GmbH',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ein Prosit der Gemütlichkeit',
+        'body' => 'Neuigkeiten aus unserem Beispiel-Shop.',
+        'rspamd_score' => -3.0,
+        'signals' => ['has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://beispiel-handel.example/abmelden>'],
+        'urls' => ['https://shop.beispiel-handel.example/aktion'],
+        'url_domains' => ['shop.beispiel-handel.example'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Handel GmbH',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 5.04,
+        '_expect' => [
+            'delegated_sender' => 'shopify-list',
+            'evidence' => [],
+            'transactional_guard' => '',
+            'guarded_ai_score' => 5.04,
+        ],
+    ]);
+
+    // Auch ein echter Shopify-Absender verliert die Ausnahme sofort bei
+    // einer URL-Reputationswarnung. Der Spam-Beleg bleibt voll erhalten.
+    $cases['delegiert-shopify-mit-blocklist'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Handel GmbH',
+        'from' => 'store@g.shopifyemail.com', 'from_email' => 'store@g.shopifyemail.com',
+        'from_display_name' => 'Beispiel Handel GmbH',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ein Prosit der Gemütlichkeit',
+        'body' => 'Bitte folgen Sie dem Link.',
+        'rspamd_score' => 5.0,
+        'signals' => ['has_list_unsubscribe' => true, 'url_blacklisted' => true],
+        'headers' => ['list_unsubscribe' => '<https://beispiel-handel.example/abmelden>'],
+        'urls' => ['https://shop.beispiel-handel.example/aktion'],
+        'url_domains' => ['shop.beispiel-handel.example'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Handel GmbH',
+            'red_flags' => [],
+        ],
+        '_expect' => [
+            'delegated_sender' => '',
+            'evidence' => ['url-on-blocklist', 'brand-linked-not-sender'],
+        ],
+    ]);
+
+    // 22.09.: PTCloud verschickt die Vorbestellung im Namen einer lokalen
+    // Apotheke. Die fremde Marke und die verlinkte Apothekendomain sind der
+    // Sinn der Plattform, keine Markenfaelschung. Selbst wenn das Modell
+    // erneut "spam" sagt, darf sein Anteil die Bestellung nicht in Junk
+    // oder ueber den Reject-Floor tragen.
+    $cases['delegiert-ptcloud-vorbestellung'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Apotheke',
+        'from' => 'noreply@ptcloud.de', 'from_email' => 'noreply@ptcloud.de',
+        'from_display_name' => 'Beispiel Apotheke',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ihre Vorbestellung 471100 vom 22.09.2026',
+        'body' => 'Ihre Vorbestellung ist bei der Beispiel Apotheke eingegangen.',
+        'rspamd_score' => -0.626398,
+        'urls' => ['https://www.blak.de/', 'https://apotheke-beispiel.example/'],
+        'url_domains' => ['blak.de', 'apotheke-beispiel.example'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Apotheke',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 6.30,
+        '_expect' => [
+            'delegated_sender' => 'ptcloud-order',
+            'evidence' => [],
+            'strong' => [],
+            'transactional_guard' => 'order',
+            'guarded_ai_score' => 6.30,
+            'guarded_total' => 5.67,
+        ],
+    ]);
+
+    // Zweite echte Mail: Rspamd steht bereits bei 6.52. Der Guard rettet
+    // Rspamds Wert nicht weg, begrenzt aber den KI-Anteil auf 1.47, damit
+    // die Summe bei 7.99 bleibt.
+    $cases['delegiert-ptcloud-nachricht'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Apotheke',
+        'from' => 'noreply@ptcloud.de', 'from_email' => 'noreply@ptcloud.de',
+        'from_display_name' => 'Beispiel Apotheke',
+        'to' => 'kunde@example.org',
+        'subject' => 'Nachricht zu Ihrer Vorbestellung 471100 vom 22.09.2026',
+        'body' => 'Es liegt eine Nachricht zu Ihrer Vorbestellung vor.',
+        'rspamd_score' => 6.518733,
+        'urls' => ['https://www.blak.de/', 'https://apotheke-beispiel.example/', 'https://apotheke-beispiel.ptcloud.de/order/471100'],
+        'url_domains' => ['blak.de', 'apotheke-beispiel.example', 'apotheke-beispiel.ptcloud.de'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Apotheke',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 6.30,
+        '_expect' => [
+            'delegated_sender' => 'ptcloud-order',
+            'evidence' => [],
+            'strong' => [],
+            'transactional_guard' => 'order',
+            'guarded_ai_score' => 1.47,
+            'guarded_total' => 7.99,
+        ],
+    ]);
+
+    // Auch ein formal passendes Plattformmuster darf ein echtes
+    // Betrugsurteil nicht deckeln. Die Topologie entwertet lediglich den
+    // unpassenden Markenwiderspruch; der volle KI-Score bleibt erhalten.
+    $cases['delegiert-ptcloud-fraud-bleibt-scharf'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Apotheke',
+        'from' => 'noreply@ptcloud.de', 'from_email' => 'noreply@ptcloud.de',
+        'from_display_name' => 'Beispiel Apotheke',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ihre Vorbestellung 471100 vom 22.09.2026',
+        'body' => 'Pruefen Sie die Nachricht zu Ihrer Vorbestellung.',
+        'rspamd_score' => 2.0,
+        'urls' => ['https://apotheke-beispiel.example/'],
+        'url_domains' => ['apotheke-beispiel.example'],
+        '_analysis' => [
+            'category' => 'fraud',
+            'claimed_brand' => 'Beispiel Apotheke',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 10.0,
+        '_expect' => [
+            'delegated_sender' => 'ptcloud-order',
+            'evidence' => [],
+            'transactional_guard' => '',
+            'guarded_ai_score' => 10.0,
+            'guarded_total' => 12.0,
+        ],
+    ]);
+
+    // Gegenprobe: Eine zweite, fremde Ziel-Domain beendet das Profil. Der
+    // starke Link-/Markenbeleg bleibt erhalten, aber derselbe Widerspruch
+    // darf nicht zusaetzlich als brand-claim-mismatch doppelt erscheinen.
+    $cases['delegiert-ptcloud-fremder-link'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Apotheke',
+        'from' => 'noreply@ptcloud.de', 'from_email' => 'noreply@ptcloud.de',
+        'from_display_name' => 'Beispiel Apotheke',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ihre Vorbestellung 471100 vom 22.09.2026',
+        'body' => 'Pruefen Sie Ihre Vorbestellung ueber den Link.',
+        'rspamd_score' => 2.0,
+        'urls' => ['https://apotheke-beispiel.example/', 'https://konto-pruefen.example.net/login'],
+        'url_domains' => ['apotheke-beispiel.example', 'konto-pruefen.example.net'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Apotheke',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 6.30,
+        '_expect' => [
+            'delegated_sender' => '',
+            'evidence' => ['brand-linked-not-sender'],
+            'strong' => ['brand-linked-not-sender'],
+            'transactional_guard' => '',
+            'guarded_ai_score' => 6.30,
+        ],
+    ]);
+
+    // Gegenprobe: Ohne starke Authentifizierung ist ptcloud.de nur eine
+    // Behauptung. Keine Plattform-Ausnahme, kein Transaktionsschutz.
+    $cases['delegiert-ptcloud-ohne-auth'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Apotheke',
+        'from' => 'noreply@ptcloud.de', 'from_email' => 'noreply@ptcloud.de',
+        'from_display_name' => 'Beispiel Apotheke',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ihre Vorbestellung 471100 vom 22.09.2026',
+        'body' => 'Ihre Vorbestellung ist eingegangen.',
+        'rspamd_score' => 2.0,
+        'auth' => ['spf' => 'fail', 'dkim' => 'none', 'dmarc' => 'fail'],
+        'urls' => ['https://apotheke-beispiel.example/'],
+        'url_domains' => ['apotheke-beispiel.example'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Apotheke',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 6.30,
+        '_expect' => [
+            'delegated_sender' => '',
+            'evidence' => ['brand-linked-not-sender'],
+            'strong' => ['brand-linked-not-sender'],
+            'transactional_guard' => '',
+        ],
+    ]);
+
+    // Gegenprobe: Auch bei starker Authentifizierung schaltet ein externer
+    // Reputationstreffer die Plattform-Ausnahme ab. Echter Spam aus einem
+    // kompromittierten PTCloud-Konto bleibt damit voll abweisbar.
+    $cases['delegiert-ptcloud-mit-blocklist'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Beispiel Apotheke',
+        'from' => 'noreply@ptcloud.de', 'from_email' => 'noreply@ptcloud.de',
+        'from_display_name' => 'Beispiel Apotheke',
+        'to' => 'kunde@example.org',
+        'subject' => 'Ihre Vorbestellung 471100 vom 22.09.2026',
+        'body' => 'Pruefen Sie Ihre Vorbestellung ueber den Link.',
+        'rspamd_score' => 5.0,
+        'signals' => ['url_blacklisted' => true],
+        'urls' => ['https://apotheke-beispiel.example/'],
+        'url_domains' => ['apotheke-beispiel.example'],
+        '_analysis' => [
+            'category' => 'spam',
+            'claimed_brand' => 'Beispiel Apotheke',
+            'red_flags' => [],
+        ],
+        '_candidate_score' => 6.30,
+        '_expect' => [
+            'delegated_sender' => '',
+            'evidence' => ['url-on-blocklist', 'brand-linked-not-sender'],
+            'strong' => ['url-on-blocklist', 'brand-linked-not-sender'],
+            'transactional_guard' => '',
+        ],
+    ]);
+
     return $cases;
 }
 
@@ -1088,6 +1392,7 @@ function runFixtures() {
             'sender_global_rank' => $local['sender_global_rank'] ?? null,
             'rank_reject_guard' => $rankRejectGuard,
             'transactional_guard' => $transactionalGuard,
+            'delegated_sender' => $local['delegated_sender'] ?? '',
             'guarded_ai_score' => $guardedScore,
             'guarded_total' => $guardedScore !== null
                 ? round($mail['rspamd_score'] + $guardedScore, 2)
@@ -1121,6 +1426,7 @@ function runFixtures() {
             'sender_global_rank' => $local['sender_global_rank'] ?? null,
             'rank_reject_guard' => $rankRejectGuard,
             'transactional_guard' => $transactionalGuard,
+            'delegated_sender' => $local['delegated_sender'] ?? '',
             'guarded_ai_score' => $guardedScore,
             'guarded_total' => $guardedScore !== null
                 ? round($mail['rspamd_score'] + $guardedScore, 2)
@@ -1238,7 +1544,8 @@ function runFixtures() {
         'rspamd_score' => 2.5,
     ]);
     $pl = analyzeLocally($pm, 'test');
-    $rendered = buildUserPrompt($pm, $pl)['text'];
+    $promptData = buildUserPrompt($pm, $pl);
+    $rendered = $promptData['text'];
     $posAnfang = strpos($rendered, '===MAIL-ANFANG===');
     $zeile = function ($name) use ($rendered) {
         if (!preg_match('/^' . preg_quote($name, '/') . ': (.*)$/m', $rendered, $m)) {
@@ -1258,6 +1565,7 @@ function runFixtures() {
         // Nichts verrutscht: die Regelzeile darf nicht den Betreff tragen
         'regelzeile'         => $zeile('Betreiber-Regel (Abweisung)'),
         'betreffzeile'       => $zeile('Subject'),
+        'rangkontext_gleich' => ($promptData['rank_context'] ?? null) === $zeile('Absender-Domain-Rang'),
         'endmarke_einmal'    => substr_count($rendered, '===MAIL-ENDE==='),
         'startmarke_einmal'  => substr_count($rendered, '===MAIL-ANFANG==='),
     ];
@@ -1388,6 +1696,16 @@ function runFixtures() {
         'suffix_gesperrt' => senderRankLine('mail.n26.co.uk'),
         'unbekannt'       => senderRankLine('nie-gesehene-domain-xyz.de'),
         'leer'            => senderRankLine(''),
+    ];
+
+    // Gleichnamige Domains duerfen sich in der generierten Markenliste
+    // nicht mehr gegenseitig ueberschreiben. expert.ru stand weit vor
+    // expert.de und wurde deshalb faelschlich als die eine echte Domain
+    // dargestellt. Beide Beziehungen bleiben jetzt erhalten.
+    $brands = knownBrandDomains();
+    $out['_marken_kollision'] = [
+        'expert' => $brands['expert'] ?? [],
+        'hetzner' => $brands['hetzner'] ?? [],
     ];
 
     return $out;
