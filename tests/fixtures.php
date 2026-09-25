@@ -1570,6 +1570,65 @@ function runFixtures() {
         'startmarke_einmal'  => substr_count($rendered, '===MAIL-ANFANG==='),
     ];
 
+    // Fail-open bei KI-Ausfall. Am 24.09. hing der Anbieter dreizehnmal;
+    // eine "Booking.com"-Gastbeschwerde von einer fremden Domain kam mit
+    // Rspamd -0.9 in den Posteingang, obwohl die Markenfaelschung lokal
+    // erkannt wird. Erwartung: ohne KI auf die Junk-Untergrenze, aber
+    // niemals ueber MAX_TOTAL_DEFAULT (also nie abgewiesen). Die harmlose
+    // Mail muss bei 0 bleiben.
+    $foMail = function (array $over) {
+        return prepareMailContext(array_replace_recursive([
+            'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+            'signals' => [], 'content_stats' => [], 'urls' => [], 'attachments' => [],
+            'headers' => ['to_header' => 'info@moving-pictures.de'],
+            'to' => 'info@moving-pictures.de',
+            'body' => 'Text.',
+        ], $over));
+    };
+    $foRun = function ($m) {
+        $l = analyzeLocally($m, 'test');
+        $r = failOpenResponse($m, $l, 'api-error-http-0');
+        return [
+            'score'  => $r['score'],
+            'gesamt' => round($m['rspamd_score'] + $r['score'], 2),
+            'quelle' => $r['analysis_source'],
+            'belege' => $r['evidence'],
+        ];
+    };
+    $out['_ki_ausfall'] = [
+        'markenfaelschung' => $foRun($foMail([
+            'from' => 'raul@sushibar-beispiel.cl', 'from_email' => 'raul@sushibar-beispiel.cl',
+            'from_display_name' => 'Booking.com',
+            'subject' => 'DRINGEND: Beschwerde des Gastes',
+            'rspamd_score' => -0.9,
+            'url_domains' => ['booking.com'],
+        ])),
+        'harmlos' => $foRun($foMail([
+            'from' => 'kontakt@partner-beispiel.de', 'from_email' => 'kontakt@partner-beispiel.de',
+            'from_display_name' => 'Partner Beispiel',
+            'subject' => 'Termin naechste Woche',
+            'rspamd_score' => 0.4,
+        ])),
+        // Rspamd schon hoch: Deckel darf nicht ueberschritten werden.
+        'rspamd_schon_hoch' => $foRun($foMail([
+            'from' => 'raul@sushibar-beispiel.cl', 'from_email' => 'raul@sushibar-beispiel.cl',
+            'from_display_name' => 'Booking.com',
+            'subject' => 'DRINGEND: Beschwerde des Gastes',
+            'rspamd_score' => 11.5,
+        ])),
+    ];
+
+    // Zeitbudget des ersten API-Versuchs. Schnelles Modell: kurzer erster
+    // Versuch, Platz fuer einen zweiten. Langsames Modell oder zu wenig
+    // Messwerte: wie bisher das ganze Budget.
+    $out['_erster_versuch'] = [
+        'ohne_messwerte'   => firstAttemptTimeout(18, []),
+        'schnell_1_5s'     => firstAttemptTimeout(18, [1.2, 1.5, 1.4, 1.6, 1.3, 2.0]),
+        'schnell_budget10' => firstAttemptTimeout(10, [1.2, 1.5, 1.4, 1.6, 1.3]),
+        'langsam_18s'      => firstAttemptTimeout(25, [16, 18, 19, 17, 20]),
+        'ausreisser'       => firstAttemptTimeout(18, [1.4, 1.5, 9.8, 1.3, 1.6]),
+    ];
+
     // Zusammengesetzte Betreiberangabe: Die vorrangige Adressebene darf
     // NIE wegfallen, auch wenn die Domainregel das Budget sprengt.
     $out['_kontext_ebenen'] = [

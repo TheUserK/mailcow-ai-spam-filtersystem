@@ -115,7 +115,7 @@ their own (minus anything currently on probation, see below):
 | `operator-reject-rule` | the operator wrote a reject rule for this recipient and the model confirms the mail matches it. Lifts the category lock; the only config that rejects |
 | `reply-to-unrelated-domain` | same pattern, but the reply mailbox sits at a provider the freemail detection doesn't know. Requires DMARC pass, a non-freemail sender, no list headers, and a Reply-To domain unrelated to the sender's. **On probation** |
 | `fake-thread` | a Re:/AW: subject or a quoted-reply body with no In-Reply-To/References header |
-| `fake-thread-foreign-ref` | the same claim one step subtler: the header *is* there, but it points at no Message-ID of ours. Cold outreach replying to its own earlier mail. **On probation** |
+| `fake-thread-foreign-ref` | the same claim one step subtler: the header *is* there, but it points at no Message-ID of ours. Cold outreach replying to its own earlier mail. Armed since 25.09. (on probation 16.-25.09., hit only cold outreach, no false positive); still needs a rejectable category to reject, so a genuine reply categorised `personal` stays protected |
 | `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
 | `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
 | `rspamd-concurs` | Rspamd's own score is already at or above `RSPAMD_CONCUR_SCORE` (10) - a fully independent second source agreeing |
@@ -148,11 +148,10 @@ reasons for an off-domain reply route (ticket systems on a vendor domain,
 external consultants, deliberately redirected replies), and one real hit is
 not a basis for an irreversible rejection - `sender-on-blocklist` (since
 16.09.), for the same reason: address-exact lists are reliable, but only one
-case has been seen so far, which is not a data basis - and
-`fake-thread-foreign-ref` (since 16.09.), because anyone pulled into a
-third party's thread legitimately carries a foreign Message-ID in the header.
-The narrow `fake-thread` case (no header at all) is untouched and stays
-armed. Watch the report group "Beleg auf
+case has been seen so far, which is not a data basis.
+`fake-thread-foreign-ref` was on probation from 16.09. to 25.09. and was armed
+after hitting only cold outreach from freemail mailboxes, without a single
+false positive. Watch the report group "Beleg auf
 Bewaehrung hat gefeuert" and arm it by deleting the line once it has proven
 itself. Re-adding a name to `probationEvidence()` puts it back on probation -
 a one-line change either way.
@@ -896,7 +895,22 @@ mailcow. When that expires rspamd forces a **soft reject** - the mail is
 deferred with a `4.7.1`, not merely delivered unscored. A retry after a full
 timeout would always blow past it, so the checker only asks a second time if
 there is time left in the budget. Keep `api_timeout` at 20 s or below unless
-you raise `task_timeout` in mailcow as well.
+you raise `task_timeout` in mailcow as well (`ai-filter-model.sh --timeout`
+adjusts the whole chain).
+
+Since 25.09. the **first attempt no longer gets the whole budget**. Before,
+a stalled request used up all of it and the retry never happened - it only
+ever helped after a fast failure such as an immediate 503, i.e. never in the
+case that actually occurs: on 24.09. the provider stalled thirteen times
+("timed out after 10002 ms with 0 bytes received"). `firstAttemptTimeout()`
+now caps the first attempt at four times the median of the last 20
+successful response times (at least 5 s), recorded in
+`data/logs/ai-checker/api_latency.json`. With gpt-oss-120b at ~1.5 s and an
+18 s budget that is 6 s for the first attempt and ~11 s for a second one. For
+a slow reasoning model the cap would leave no room for a retry, so the first
+attempt gets the full budget again - nothing is lost compared to before. With
+fewer than five measurements it also behaves as before. `errors.log` shows
+"First attempt stalled - retrying" when the split kicked in.
 
 `cost_per_call` is what the budget guard divides `MONTHLY_BUDGET_EUR` by, so it
 has to match the model you are actually paying for - switching model does not

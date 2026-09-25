@@ -150,9 +150,27 @@ http_timeout = 45.0,
 ### API/network errors
 
 A failed call to the AI (timeout, HTTP error, unparseable response) fails
-open: the checker returns score 0 rather than penalizing the mail, and Rspamd
-falls back to its normal (non-AI) scoring for that mail. Check `errors.log`
-for the reason.
+open: the mail is never rejected on that basis, and Rspamd's own scoring
+decides. Check `errors.log` for the reason.
+
+Since 25.09. "fails open" no longer means "0 points no matter what". The
+structural checks run locally, without the AI - brand impersonation,
+blocklists, shorteners, hijacked reply routes. If one of them is strong
+evidence, the mail is lifted to the junk floor (`analysis_source:
+local-fallback` in `stats.log`), but the total stays under
+`MAX_TOTAL_DEFAULT` and therefore always below the reject threshold. On
+24.09. a "Booking.com" guest complaint from a sushi bar's domain reached the
+inbox at Rspamd -0.9 during a provider outage, although the impersonation had
+been detected locally.
+
+A stalled provider looks like this in `errors.log`:
+
+    API request failed  curl_error: Operation timed out after 10002 milliseconds with 0 bytes received
+
+Zero bytes means no answer at all, not a slow one. Several of those on one day
+while `ai-filter-model.sh --test` passes afterwards is a provider-side
+problem. `First attempt stalled - retrying` means the budget split caught one
+and a second attempt was made.
 
 ## Internal-Mail Detection Not Working
 

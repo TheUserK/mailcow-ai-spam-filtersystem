@@ -106,6 +106,8 @@ define('MAX_CALLS_PER_MONTH', AVG_COST_PER_CALL_EUR > 0
 define('BUDGET_FILE', '/var/log/ai-checker/monthly_budget.json');
 // Letzte erfolgreich gelesene Domainliste - siehe getLocalDomains().
 define('LOCAL_DOMAINS_CACHE', '/var/log/ai-checker/local_domains.json');
+// Die letzten erfolgreichen API-Antwortzeiten - siehe firstAttemptTimeout().
+define('LATENCY_FILE', '/var/log/ai-checker/api_latency.json');
 
 // Betreff und Body-Auszug in stats.log schreiben? Das sind Inhaltsdaten von
 // Absendern, die dem nie zugestimmt haben - daher standardmaessig AUS.
@@ -1090,7 +1092,13 @@ function brandLinkedNotSender(array $mail, array $analysis, $delegatedSender = '
     // diesen Beleg.
     $hasListHeaders = !empty($mail['headers']['list_unsubscribe'])
         || !empty($mail['headers']['list_id']);
-    if ($hasListHeaders && evaluateAuthStrength($mail) === 'strong') {
+    // Nicht bei schlechter Link-Reputation: Dann ist die Liste kein Indiz
+    // fuer einen echten Newsletter mehr, sondern Tarnung. Genau das
+    // verlangt die Fixture "delegiert-shopify-mit-blocklist" - die
+    // Ausnahme faellt bei einer URL-Reputationswarnung sofort weg.
+    $urlReputationBad = !empty($mail['signals']['url_blacklisted'])
+        || !empty($mail['signals']['url_phishing']);
+    if ($hasListHeaders && evaluateAuthStrength($mail) === 'strong' && !$urlReputationBad) {
         return false;
     }
 
@@ -2512,6 +2520,13 @@ PROMPT;
     $result = null; $httpCode = 0; $curlErr = ''; $schemaDropped = false;
     for ($attempt = 1; $attempt <= 2; $attempt++) {
         $remaining = (int)ceil($deadline - microtime(true));
+        // Der erste Versuch bekommt nur so viel Zeit, wie eine normale
+        // Antwort braucht - mit reichlich Reserve -, damit bei einer
+        // haengenden Anfrage noch ein zweiter Anlauf moeglich bleibt.
+        // Siehe firstAttemptTimeout().
+        $attemptTimeout = $attempt === 1
+            ? min($remaining, firstAttemptTimeout(API_TIMEOUT, recentApiLatencies()))
+            : $remaining;
         if ($attempt > 1 && $remaining < 3) {
             logError($requestId, 'No time left for a second attempt', [
                 'http_code' => $httpCode,
@@ -2528,16 +2543,28 @@ PROMPT;
                 'Content-Type: application/json',
             ],
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => max(3, $remaining),
+            CURLOPT_TIMEOUT        => max(3, $attemptTimeout),
             CURLOPT_CONNECTTIMEOUT => CONNECT_TIMEOUT,
             CURLOPT_SSL_VERIFYPEER => true,
         ]);
+        $started  = microtime(true);
         $result   = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlErr  = curl_error($ch);
         curl_close($ch);
 
-        if ($httpCode === 200) break;
+        if ($httpCode === 200) {
+            recordApiLatency(microtime(true) - $started);
+            break;
+        }
+
+        if ($attempt === 1 && $httpCode === 0 && $attemptTimeout < $remaining) {
+            logError($requestId, 'First attempt stalled - retrying', [
+                'attempt_timeout' => $attemptTimeout,
+                'budget'          => API_TIMEOUT,
+                'curl_error'      => $curlErr,
+            ]);
+        }
 
         if ($httpCode === 400 && !$schemaDropped && isset($payload['response_format'])) {
             unset($payload['response_format']);
@@ -2559,7 +2586,7 @@ PROMPT;
 
     if ($httpCode !== 200) {
         logError($requestId, 'API request failed', ['http_code' => $httpCode, 'curl_error' => $curlErr]);
-        return neutralResponse("api-error-http-$httpCode");
+        return failOpenResponse($mail, $localContext, "api-error-http-$httpCode");
     }
 
     $apiResponse = json_decode($result, true);
@@ -2601,7 +2628,7 @@ PROMPT;
             'model'            => AI_MODEL,
             'reasoning_effort' => AI_REASONING_EFFORT !== '' ? AI_REASONING_EFFORT : '(provider default)',
         ]);
-        return neutralResponse('parse-error');
+        return failOpenResponse($mail, $localContext, 'parse-error');
     }
 
     if ($recovered) {
@@ -4022,12 +4049,15 @@ function probationEvidence() {
         // den einen Fall, der die Klasse ausgeloest hat. Erst im Report
         // beobachten, dann scharf schalten.
         'sender-on-blocklist',
-        // Seit 16.09. Wer in einen fremden Thread hineingezogen wird und
-        // antwortet, hat legitim eine fremde Message-ID im Header. Der
-        // enge Fall (gar kein Header) ist davon unberuehrt und bleibt
-        // scharf. Vorerst wirkt dieser hier ueber den Prompt und den
-        // Score, nicht ueber die Ablehnung.
-        'fake-thread-foreign-ref',
+        // 'fake-thread-foreign-ref' stand vom 16. bis 25.09. hier. In der
+        // Zeit hat es an echter Post nur Kaltakquise aus Outlook-Postfaechern
+        // getroffen - "Re: Complete price", "Re: Quick Ranking..??",
+        // "Re: Search Suggestion" - und keinen einzigen Fehlalarm erzeugt.
+        // Die Befuerchtung (wer in einen fremden Thread gezogen wird, hat
+        // legitim eine fremde Message-ID) bleibt abgesichert: Abgewiesen wird
+        // nur, wenn das Modell die Mail zugleich in eine angreifbare
+        // Kategorie steckt. Eine echte Antwort ist "personal"/"legitimate"
+        // und damit geschuetzt.
     ];
 }
 
@@ -4894,6 +4924,98 @@ function buildLocalDecision($score, $action, $reason, $category, array $redFlags
         'red_flags' => $redFlags,
         'analysis_source' => 'local',
     ];
+}
+
+// ---------------------------------------------------------------------
+//  Antwort, wenn die KI nicht antwortet (Timeout, HTTP-Fehler, kaputtes
+//  JSON).
+//
+//  Bis 25.09. gab es hier pauschal 0 Punkte - auch die Befunde, die der
+//  Checker ganz ohne KI ermittelt, fielen weg. Am 24.09. hing IONOS den
+//  ganzen Tag zeitweise; 13 Anfragen liefen in den Timeout. Darunter eine
+//  "Booking.com"-Gastbeschwerde von einer Sushibar-Domain: Die
+//  Markenfaelschung wird LOKAL erkannt und haette allein gereicht, die Mail
+//  in den Junk zu legen. Sie landete mit Rspamd -0.9 im Posteingang.
+//
+//  Jetzt gilt: Liegt ein starker, nicht auf Bewaehrung stehender
+//  Strukturbeleg vor, geht die Mail auf die Junk-Untergrenze. Mehr nicht:
+//  Die Summe bleibt unter MAX_TOTAL_DEFAULT und damit IMMER unter der
+//  Reject-Schwelle - ohne KI-Urteil wird nichts abgewiesen, einsortiert
+//  schon. Dieselben Vertrauenssperren wie beim Junk-Floor im Normalbetrieb:
+//  bekannter Absender, beglaubigte Marke, echte Konversation.
+// ---------------------------------------------------------------------
+function failOpenResponse(array $mail, array $localContext, $reason) {
+    $response = neutralResponse($reason);
+
+    $evidence = collectStructuralEvidence($mail, $localContext, []);
+    $strong   = strongEvidence($evidence);
+
+    $response['evidence']        = $evidence;
+    $response['probation']       = array_values(array_intersect($evidence, probationEvidence()));
+    $response['struct_flags']    = structFlagList($localContext['struct'] ?? []);
+    $response['analysis_source'] = 'local-fallback';
+
+    if (empty($strong)
+        || !empty($localContext['matched_profile'])
+        || ($localContext['verified_brand'] ?? '') !== ''
+        || partOfRealConversation($mail)) {
+        return $response;
+    }
+
+    $rspamd = floatval($mail['rspamd_score'] ?? 0);
+    $needed = ceil((JUNK_FLOOR - $rspamd) * 100 - 1e-9) / 100;
+    $score  = max(floatval($localContext['impersonation_score'] ?? 0), $needed, 0.0);
+    $score  = clampToTotalCeiling($score, $rspamd, MAX_TOTAL_DEFAULT);
+
+    $response['score']  = $score;
+    $response['reason'] = $reason . '; ohne KI eingeordnet, lokale Belege: ' . implode(', ', $strong);
+    return $response;
+}
+
+// ---------------------------------------------------------------------
+//  Wie lange darf der ERSTE API-Versuch dauern?
+//
+//  Bis 25.09. bekam er das ganze Budget. Hing die Anfrage, war die Zeit
+//  weg und ein zweiter Versuch fand nie statt - er griff nur bei schnellen
+//  Fehlern wie einem sofortigen 503, also genau nicht bei dem Fehler, der
+//  am 24.09. dreizehnmal auftrat ("timed out after 10002 ms with 0 bytes
+//  received"). gpt-oss-120b antwortet sonst in rund 1,5 s; eine Anfrage,
+//  die nach dem Vierfachen noch kein Byte geliefert hat, haengt.
+//
+//  Die Grenze richtet sich nach den tatsaechlich gemessenen Antwortzeiten,
+//  nicht nach einer festen Zahl: Ein langsames Reasoning-Modell mit 15-20 s
+//  pro Antwort wuerde bei einem festen Anteil jede zweite Anfrage selbst
+//  abbrechen. Ist die Grenze so gross, dass fuer einen zweiten Versuch
+//  ohnehin nichts uebrig bliebe, bekommt der erste wieder das ganze Budget
+//  - dann ist nichts verloren gegenueber vorher.
+//
+//  Reine Funktion (Messwerte als Parameter), damit sie testbar ist.
+// ---------------------------------------------------------------------
+function firstAttemptTimeout($budget, array $samples) {
+    $budget = (int)$budget;
+    if (count($samples) < 5) {
+        return $budget;                 // noch keine Erfahrung: wie bisher
+    }
+    sort($samples);
+    $median = floatval($samples[intdiv(count($samples), 2)]);
+    $cap = (int)ceil(max(5.0, $median * 4));
+    return ($cap >= $budget - 3) ? $budget : $cap;
+}
+
+function recentApiLatencies() {
+    $raw = @file_get_contents(LATENCY_FILE);
+    if ($raw === false) {
+        return [];
+    }
+    $data = json_decode($raw, true);
+    return is_array($data) ? array_values(array_filter($data, 'is_numeric')) : [];
+}
+
+function recordApiLatency($seconds) {
+    $samples   = recentApiLatencies();
+    $samples[] = round(floatval($seconds), 2);
+    $samples   = array_slice($samples, -20);
+    @file_put_contents(LATENCY_FILE, json_encode($samples), LOCK_EX);
 }
 
 function neutralResponse($reason) {
