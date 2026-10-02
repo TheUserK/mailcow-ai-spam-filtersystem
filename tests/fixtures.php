@@ -180,6 +180,34 @@ function fixtures() {
         'signals' => ['freemail_reply_to' => true, 'suspicious_reply_to' => true],
     ]);
 
+    // 02.10.: "Obligatorische Aktivierung von 'Trusted Device'" als Hetzner,
+    // aus dem gekaperten Postfach einer kleinen Firma. DMARC bestanden,
+    // List-Unsubscribe gesetzt, Link auf hetzner.com plus t.co. Die
+    // Newsletter-Ausnahme hat beide Markenbelege abgeschaltet; ohne starken
+    // Beleg blieb es beim Junk. Mit Kuerzer gibt es die Ausnahme nicht mehr.
+    $cases['hetzner-phishing-mit-liste'] = array_replace_recursive($base, [
+        'claimed_brand' => 'Hetzner Online GmbH',
+        'from' => 'konto@holzbau-beispiel.de', 'from_email' => 'konto@holzbau-beispiel.de',
+        'from_display_name' => 'Hetzner Online GmbH',
+        'to' => 'info@karrerlabs.de',
+        'subject' => 'Obligatorische Aktivierung von "Trusted Device"',
+        'body' => 'Bitte aktivieren Sie Ihr Geraet innerhalb von 24 Stunden.',
+        'rspamd_score' => -0.82,
+        'urls' => ['https://www.hetzner.com/', 'https://t.co/abc123'],
+        'url_domains' => ['hetzner.com', 't.co'],
+        'signals' => ['forged_sender' => true, 'from_neq_envfrom' => true, 'has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://holzbau-beispiel.de/abmelden>'],
+        '_analysis' => [
+            'category' => 'phishing',
+            'claimed_brand' => 'Hetzner Online GmbH',
+            'red_flags' => [],
+        ],
+        '_expect' => [
+            'evidence' => ['url-shortener', 'brand-linked-not-sender'],
+            'strong'   => ['brand-linked-not-sender'],
+        ],
+    ]);
+
     $cases['blutzucker-spam'] = array_replace_recursive($base, [
         'from' => 'support@arrow.onetwotee.shop', 'from_email' => 'support@arrow.onetwotee.shop',
         'from_display_name' => 'Gesundheit',

@@ -120,7 +120,7 @@ their own (minus anything currently on probation, see below):
 | `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
 | `rspamd-concurs` | Rspamd's own score is already at or above `RSPAMD_CONCUR_SCORE` (10) - a fully independent second source agreeing |
 | `fabricated-ticket` | an invented case/ticket number with no real prior thread |
-| `brand-linked-not-sender` | the mail links a real brand's domain, but the sender is unrelated to it |
+| `brand-linked-not-sender` | the mail links a real brand's domain, but the sender is unrelated to it. Exempt for brand newsletters sent through an ESP (list headers + strong auth) - but since 02.10. **not** when the mail links through a shortener (t.co, bit.ly, ...) or Rspamd flags its links. On 02.10. a Hetzner "Trusted Device" phish from a hijacked small-business mailbox set List-Unsubscribe and passed DMARC; the exemption silenced both brand classes and the mail only reached junk. A genuine brand newsletter links directly. Same rule for `brand-claim-vs-known-domain` |
 | `brand-claim-vs-known-domain` | the model's claimed brand matches a domain in the generated Majestic-Million brand list, and the sender doesn't |
 
 Everything not in that table is **weak**: it feeds the score and the prompt,

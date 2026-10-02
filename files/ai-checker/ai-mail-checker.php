@@ -995,6 +995,48 @@ function senderRankLine($fromDomain) {
 //  deren Absenderdomain die Marke nicht traegt. Genau daran ist am 24.08.
 //  eine echte Madeleine-Mail beinahe gescheitert.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  Darf eine Mail, die eine fremde Marke nennt oder verlinkt, als
+//  Marken-Newsletter ueber einen Versanddienst gelten?
+//
+//  Marken versenden ihre Newsletter ueber Dienste, deren Domain die Marke
+//  nicht traegt (Madeleine ueber spotlermail.com, 24.08.) - technisch
+//  dasselbe Bild wie eine Faelschung. Bis 02.10. genuegten dafuer
+//  Listenkoepfe plus starke Authentifizierung. Das kostet einen Angreifer
+//  mit gekapertem Firmenpostfach genau einen Header: Am 02.10. kam
+//  "Obligatorische Aktivierung von 'Trusted Device'" als Hetzner von einer
+//  kleinen Holzbaufirma, DMARC bestanden, List-Unsubscribe gesetzt, Link
+//  auf hetzner.com plus t.co. Das Modell sagte 0.90 phishing - und beide
+//  Markenbelege (brand-linked-not-sender, brand-claim-vs-known-domain)
+//  schwiegen wegen dieser Ausnahme. Ohne starken Beleg blieb es beim Junk.
+//
+//  Ein echter Marken-Newsletter verlinkt direkt, nicht ueber Kuerzer wie
+//  t.co oder bit.ly: Er WILL, dass man sieht, wohin es geht. Dasselbe
+//  Kriterium nutzt delegatedSenderPlatform() schon. Dazu wie bisher: keine
+//  Warnung von Rspamds URL-Reputation.
+//
+//  Bewusst NICHT verlangt: ein Majestic-Rang der Absenderdomain. Das haette
+//  auch gekaperte Postfaecher ohne Kuerzer erfasst, aber jeder
+//  Versanddienst, dessen Domain nicht in den Top 1 Million steht, haette
+//  damit die Ausnahme verloren - und genau dann wird ein echter Newsletter,
+//  den das Modell faelschlich "phishing" nennt, unwiderruflich abgewiesen.
+//  Das ist der Fehler vom 24.08., wegen dem es diese Ausnahme gibt.
+// ---------------------------------------------------------------------
+function brandNewsletterExemption(array $mail) {
+    $hasListHeaders = !empty($mail['headers']['list_unsubscribe'])
+        || !empty($mail['headers']['list_id']);
+    if (!$hasListHeaders || evaluateAuthStrength($mail) !== 'strong') {
+        return false;
+    }
+    if (!empty($mail['signals']['url_blacklisted']) || !empty($mail['signals']['url_phishing'])) {
+        return false;
+    }
+    if (!empty(findShortenerDomains($mail['url_domains'] ?? [], $mail['urls'] ?? []))) {
+        return false;
+    }
+    return true;
+}
+
 function claimedBrandIsKnownDomain(array $mail, array $analysis, $delegatedSender = '') {
     // Bei einem nachgewiesenen Versand-im-Auftrag ist eine abweichende
     // Absenderdomain gerade das erwartete technische Bild. Der Inhalt wird
@@ -1009,9 +1051,7 @@ function claimedBrandIsKnownDomain(array $mail, array $analysis, $delegatedSende
         return false;
     }
 
-    $hasListHeaders = !empty($mail['headers']['list_unsubscribe'])
-        || !empty($mail['headers']['list_id']);
-    if ($hasListHeaders && evaluateAuthStrength($mail) === 'strong') {
+    if (brandNewsletterExemption($mail)) {
         return false;
     }
 
@@ -1090,15 +1130,7 @@ function brandLinkedNotSender(array $mail, array $analysis, $delegatedSender = '
     // kostet ihn aber Aufwand und macht ihn nachverfolgbar - und die Mail
     // bleibt ueber Kategorie und Score angreifbar, nur eben nicht ueber
     // diesen Beleg.
-    $hasListHeaders = !empty($mail['headers']['list_unsubscribe'])
-        || !empty($mail['headers']['list_id']);
-    // Nicht bei schlechter Link-Reputation: Dann ist die Liste kein Indiz
-    // fuer einen echten Newsletter mehr, sondern Tarnung. Genau das
-    // verlangt die Fixture "delegiert-shopify-mit-blocklist" - die
-    // Ausnahme faellt bei einer URL-Reputationswarnung sofort weg.
-    $urlReputationBad = !empty($mail['signals']['url_blacklisted'])
-        || !empty($mail['signals']['url_phishing']);
-    if ($hasListHeaders && evaluateAuthStrength($mail) === 'strong' && !$urlReputationBad) {
+    if (brandNewsletterExemption($mail)) {
         return false;
     }
 
