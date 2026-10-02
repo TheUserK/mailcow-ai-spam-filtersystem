@@ -642,6 +642,17 @@ Bewerbung eines realen Menschen mit echtem Lebenslauf - `personal`, Confidence
 bewarb sich auf eine Stelle im Gastgewerbe bei einer Firma, die keines
 betreibt.
 
+**Eine Mail aus nichts als einem Link erfüllt nie eine Regel** (seit
+02.10.). Am 01.10. teilte der Geschäftsführer vom privaten iPhone einen
+booking.com-Link an ein Firmenpostfach - kein Betreff, kein eigener Text.
+Das Modell schloss daraus „Absender hält uns für ein Hotel“, und die
+Hotel-Regel wies die Mail ab, bei einer Firma, die laut Kontext für Hotels und
+Buchungsportale produziert. Ein Link zeigt, was der Absender *ansieht*, nicht
+wofür er den Empfänger *hält*. Der Prompt sagt das jetzt ausdrücklich, und im
+Code kann `operator-reject-rule` nicht mehr entstehen, wenn ohne die Links
+höchstens 200 Zeichen Text übrig bleiben (`linkOnlyMail()`). Die echten
+Hotel-Maschen haben immer Text: Anrede als Unterkunft, Beschwerde, Buchung.
+
 **Kontrolle:** Report-Gruppe „Eigene Reject-Regel hat gegriffen" listet jeden
 Treffer. Solange eine Regel neu ist, gehört da hineingeschaut.
 

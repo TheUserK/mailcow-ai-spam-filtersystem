@@ -1646,6 +1646,60 @@ function runFixtures() {
         ])),
     ];
 
+    // 01.10.: Ein geteilter booking.com-Link vom privaten iPhone des
+    // Geschaeftsfuehrers, kein Betreff, kein eigener Text - wurde ueber die
+    // Hotel-Regel abgewiesen. Eine reine Link-Mail darf keine Regel tragen;
+    // die echte Hotel-Masche mit Anrede und Beschwerde schon.
+    $lm = function (array $over) {
+        return prepareMailContext(array_replace_recursive([
+            'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+            'signals' => [], 'content_stats' => [], 'attachments' => [],
+            'headers' => ['to_header' => 'cd@moving-pictures.de'],
+            'from' => 'chef@icloud.com', 'from_email' => 'chef@icloud.com',
+            'to' => 'cd@moving-pictures.de', 'subject' => '', 'rspamd_score' => -1.6,
+        ], $over));
+    };
+    $out['_nur_link'] = [
+        'geteilter_link' => linkOnlyMail($lm([
+            'body' => 'https://www.booking.com/hotel/de/alpenblick.html Hotel Alpenblick - Aktuelle Preise',
+            'urls' => ['https://www.booking.com/hotel/de/alpenblick.html'],
+            'url_domains' => ['booking.com'],
+        ])),
+        'hotel_masche' => linkOnlyMail($lm([
+            'body' => 'Sehr geehrte Partnerunterkunft, ein Gast hat sich ueber den Zustand des Zimmers beschwert und Fotos von Bettwanzen eingereicht. Bitte pruefen Sie die Beweise umgehend ueber den folgenden Link, sonst wird die Beschwerde an die Plattform weitergeleitet. https://share.google/abc',
+            'urls' => ['https://share.google/abc'],
+            'url_domains' => ['share.google'],
+        ])),
+        'ohne_link' => linkOnlyMail($lm(['body' => 'Kurz zur Info.'])),
+    ];
+
+    // 01.10.: "St.Nr." im Rechnungsfuss wurde zur Domain "st.nr" (Nauru).
+    $rechnung = prepareMailContext([
+        'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+        'signals' => [], 'content_stats' => [], 'attachments' => [],
+        'headers' => ['to_header' => 'info@moving-pictures.de'],
+        'from' => 'buchhaltung@tankstelle-beispiel.de', 'from_email' => 'buchhaltung@tankstelle-beispiel.de',
+        'to' => 'info@moving-pictures.de', 'subject' => 'Monatsrechnung',
+        'body' => 'Anbei Ihre Monatsrechnung. St.Nr. 151/123/45678, USt-IdNr. DE123456789. Mehr unter www.tankstelle-beispiel.de',
+        'rspamd_score' => -1.5,
+    ]);
+    $out['_abkuerzung'] = [
+        'url_domains'   => $rechnung['url_domains'],
+        // So kam es wirklich an: Rspamd liefert "st.nr" ueber das Lua-Modul.
+        'von_rspamd'    => prepareMailContext([
+            'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+            'signals' => [], 'content_stats' => [], 'attachments' => [],
+            'from' => 'buchhaltung@tankstelle-beispiel.de', 'to' => 'info@moving-pictures.de',
+            'subject' => 'Monatsrechnung', 'body' => 'St.Nr. 151/123/45678', 'rspamd_score' => -1.5,
+            'urls' => ['http://st.nr', 'https://www.tankstelle-beispiel.de/'],
+            'url_domains' => ['st.nr', 'tankstelle-beispiel.de'],
+        ])['url_domains'],
+        'st_nr'         => isAbbreviationArtifact('st.nr'),
+        'kd_nr'         => isAbbreviationArtifact('Kd.Nr'),
+        'echte_domain'  => isAbbreviationArtifact('best.de'),
+        'echte_nr'      => isAbbreviationArtifact('nic.nr'),
+    ];
+
     // Zeitbudget des ersten API-Versuchs. Schnelles Modell: kurzer erster
     // Versuch, Platz fuer einen zweiten. Langsames Modell oder zu wenig
     // Messwerte: wie bisher das ganze Budget.

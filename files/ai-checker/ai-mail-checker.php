@@ -430,6 +430,16 @@ function prepareMailContext(array $data) {
         $urlDomains = array_values(array_unique(array_merge($urlDomains, $extracted['domains'])));
     }
 
+    // Abkuerzungen, die die URL-Erkennung fuer Domains haelt. Siehe
+    // isAbbreviationArtifact().
+    $urlDomains = array_values(array_filter($urlDomains, function ($d) {
+        return !isAbbreviationArtifact($d);
+    }));
+    $rawUrls = array_values(array_filter($rawUrls, function ($u) {
+        $host = parse_url(preg_match('#^[a-z][a-z0-9+.-]*://#i', $u) ? $u : 'http://' . $u, PHP_URL_HOST);
+        return !is_string($host) || !isAbbreviationArtifact($host);
+    }));
+
     $attachments = normalizeAttachments($data['attachments'] ?? []);
     $fromDomain = normalizeHost($data['from_domain'] ?? extractDomainFromAddress($data['from_email'] ?? $from));
     $toDomain = normalizeHost($data['to_domain'] ?? extractDomainFromAddress($to));
@@ -2218,6 +2228,11 @@ Kaltakquise-Anbieter bietet ihm eine Dienstleistung FUER sein Geschaeft an,
 ohne dass je eine Beziehung bestand. Die zweite Sorte bleibt "spam", auch mit
 perfektem List-Unsubscribe und sauberer Authentifizierung.
 
+Die Zeile "URL-Domains" stammt aus einer automatischen Erkennung, die auch
+im Fliesstext nach Domains sucht. Abkuerzungen wie "St.Nr.", "Kd.Nr." oder
+"Tel.Nr." landen dort gelegentlich als Domain mit Laenderendung. Eine
+Domain, die nur als solche Abkuerzung Sinn ergibt, ist kein Link.
+
 Zu den URL-Flags (kommen aus etablierten Blocklisten, nicht von dir zu pruefen):
 - "sender-on-blocklist": die ABSENDERADRESSE selbst steht auf einer Liste
   bekannter Spamversender. Das betrifft nicht einen Link, sondern den
@@ -2451,6 +2466,15 @@ Diese Antwort fuehrt zur endgueltigen Abweisung der Mail. Deshalb:
   Menschen mit echtem Anliegen erfuellt eine Regel genauso wie eine
   Massenmail. Umgekehrt macht ein unangenehmer Ton aus einer Mail keinen
   Treffer.
+- Ein Link, eine Erwaehnung oder ein weitergeleiteter Inhalt ist KEIN
+  Treffer. Ein Link auf ein Buchungsportal, ein Hotel oder eine
+  Bewertungsseite zeigt, was der Absender ANSIEHT, nicht wofuer er den
+  Empfaenger HAELT - erst recht, wenn der Empfaenger-Kontext sagt, dass der
+  Betrieb fuer solche Branchen arbeitet. Ein Treffer verlangt, dass der
+  Absender den Empfaenger IN EIGENEN WORTEN als solchen Betrieb behandelt:
+  ihn als Unterkunft anspricht, bei ihm buchen will, sich ueber einen
+  Aufenthalt beschwert, sich bei ihm auf eine solche Stelle bewirbt. Eine
+  Mail ohne eigenen Text erfuellt eine Regel nie.
 - Nennt die Regel Beispiele oder zaehlt Faelle auf, sind das BEISPIELE und
   keine abschliessende Liste. Pruefe immer zuerst den allgemeinen Satz der
   Regel. Trifft der zu, ist es ein Treffer - auch wenn der konkrete Fall in
@@ -2742,7 +2766,19 @@ PROMPT;
     $ruleConfidence = isset($analysis['reject_rule_confidence'])
         ? floatval($analysis['reject_rule_confidence'])
         : $confidence;
-    $ruleMatched = $rejectRule !== '' && $ruleSignal !== '' && $ruleConfidence >= 0.80;
+    // Eine Mail, die aus nichts als einem Link besteht, sagt nichts darueber,
+    // wofuer der Absender den Empfaenger HAELT - sie zeigt nur, was er
+    // ansieht. Am 01.10. teilte der Geschaeftsfuehrer vom privaten iPhone
+    // einen booking.com-Link an ein Firmenpostfach, ohne Betreff, ohne
+    // eigenen Text. Das Modell schrieb "Sender references booking.com,
+    // implying recipient is a hotel" und die Hotel-Regel wies die Mail ab -
+    // bei einer Firma, die laut Kontext fuer Hotels und Buchungsportale
+    // produziert. Die echten Hotel-Maschen haben dagegen immer Text: eine
+    // Anrede als Unterkunft, eine Beschwerde, eine Buchung.
+    // Abweisen darf die Regel deshalb nur Mails mit eigenem Text.
+    // Einsortieren bleibt ueber Kategorie und Junk-Floor moeglich.
+    $ruleMatched = $rejectRule !== '' && $ruleSignal !== '' && $ruleConfidence >= 0.80
+        && !linkOnlyMail($mail);
     if ($ruleMatched) {
         $evidence[] = 'operator-reject-rule';
     }
@@ -3017,7 +3053,11 @@ PROMPT;
         // Ohne diese Zahl laesst sich im Nachhinein nicht unterscheiden,
         // ob eine Regel knapp an der 0.80 gescheitert ist oder gar nicht
         // erst gemeldet wurde.
-        'reject_rule_confidence' => $rejectRule !== '' ? round($ruleConfidence, 2) : null,
+        // Nur bei gemeldetem Treffer. Das Modell schreibt bei einem Nein
+        // haeufig seine Sicherheit ueber das Nein hinein (0.9, 0.95), obwohl
+        // der Prompt 0.0 verlangt - im Log sah das wie ein knapper Treffer aus.
+        'reject_rule_confidence' => $rejectRule === '' ? null
+            : ($ruleSignal !== '' ? round($ruleConfidence, 2) : 0.0),
         'auth_strength'   => $localContext['auth_strength'] ?? 'unknown',
         'confidence'      => $confidence,
         'spam_probability' => round(floatval($analysis['spam_probability'] ?? 0.5), 2),
@@ -3738,6 +3778,48 @@ function findFreeHostingLinks(array $domains, $fromDomain) {
 //  eine Mail landet dann bei 0 statt im Minus. Niemand verliert Post,
 //  aber der Filter stellt ihr auch kein Zeugnis mehr aus.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  Besteht die Mail praktisch nur aus Links? Gleiche Messung wie in
+//  bareLinkFromStranger(), aber unabhaengig vom Absender - die Frage
+//  "sagt die Mail etwas ueber den Empfaenger" haengt nicht daran, ob der
+//  Absender bekannt ist.
+// ---------------------------------------------------------------------
+function linkOnlyMail(array $mail) {
+    if (empty($mail['urls']) && empty($mail['url_domains'])
+        && intval($mail['content_stats']['link_count'] ?? 0) < 1) {
+        return false;
+    }
+    $text = preg_replace('#https?://\S+#iu', ' ', (string)($mail['body_clean'] ?? ''));
+    $text = preg_replace('#\bwww\.\S+#iu', ' ', (string)$text);
+    $text = trim(preg_replace('/\s+/u', ' ', (string)$text));
+    return mb_strlen($text) <= 200;
+}
+
+// ---------------------------------------------------------------------
+//  Abkuerzungen, die die URL-Erkennung fuer Domains haelt.
+//
+//  Am 01.10. lief die Monatsrechnung einer Tankstelle als Spam durch: In
+//  den URL-Domains stand "st.nr" - das "St.Nr." (Steuernummer) aus dem
+//  Rechnungsfuss, erkannt als Domain auf Nauru (.nr). Eine Rechnung, die
+//  angeblich auf eine Inselstaat-Domain verlinkt, sieht nach
+//  Rechnungs-Phishing aus. Deshalb eine kurze, feste Liste der Formen, die
+//  in deutscher Geschaeftspost staendig vorkommen. Eine echte Domain mit
+//  diesem Namen waere eine Zweibuchstaben-Domain unter einer Laenderendung,
+//  die genau einer Formularabkuerzung entspricht - das nehmen wir hin.
+// ---------------------------------------------------------------------
+function isAbbreviationArtifact($domain) {
+    $domain = mb_strtolower(trim((string)$domain), 'UTF-8');
+    // Nur ".nr" (Nummer) und ".id" (Ust-Id, Ident) - echte Endungen, die in
+    // deutschem Text fast ausschliesslich als Abkuerzung auftauchen.
+    // Bewusst NICHT .de/.at/.ch: "best.de" oder "art.de" koennten echte
+    // Links sein, und ein verschluckter Link waere schlimmer als ein
+    // missverstandenes Kuerzel.
+    return (bool)preg_match(
+        '/^(st|str|steuer|tel|fax|kd|kunden|rg|re|rech|best|art|auftr|lief|vertr|mitgl|pers|ust|hrb|hra|ident|reg)\.(nr|id)$/u',
+        $domain
+    );
+}
+
 function bareLinkFromStranger(array $mail) {
     // Nur bei Freemail-Erstkontakt: ueber Firmendomains fuehrt Rspamd
     // gar nicht Buch, dort waere "unbekannt" eine Falschaussage.
