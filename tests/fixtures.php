@@ -1378,6 +1378,167 @@ function fixtures() {
         ],
     ]);
 
+    // =================================================================
+    //  Whitelist (ai-filter-whitelist.sh). Alle Absender erfunden.
+    //
+    //  Das Versprechen: Ein freigegebener, authentifizierter Absender wird
+    //  zugestellt - ausser bei starken Hinweisen auf ein missbrauchtes
+    //  Konto. Das Modell allein bricht es nie.
+    // =================================================================
+    $wlBase = array_replace_recursive($base, [
+        'from' => 'buchhaltung@lieferant-beispiel.de', 'from_email' => 'buchhaltung@lieferant-beispiel.de',
+        'from_display_name' => 'Lieferant Beispiel GmbH',
+        'to' => 'einkauf@empfaenger-beispiel.de',
+        'whitelist' => ['entry' => 'lieferant-beispiel.de', 'kind' => 'domain',
+                        'authenticated' => true, 'auth_via' => 'dmarc'],
+    ]);
+
+    // Der Grund fuer die Whitelist: Rspamd haelt die echte Rechnung fuer
+    // Spam (IP auf einer RBL, Bayes daneben). Zustellen.
+    $cases['whitelist-rechnung-rspamd-fehlalarm'] = array_replace_recursive($wlBase, [
+        'subject' => 'Rechnung 2026-1042',
+        'body' => 'Anbei unsere Rechnung fuer die Lieferung vom 02.10.',
+        'rspamd_score' => 16.2,
+        'attachments' => [['name' => 'Rechnung-2026-1042.pdf', 'type' => 'application/pdf', 'size' => 81234]],
+        '_analysis' => ['category' => 'transactional', 'confidence' => 0.9],
+        '_expect' => ['whitelist_verdict' => 'deliver', 'whitelist_abuse' => []],
+    ]);
+
+    // Newsletter des Lieferanten, Modell sagt "spam" und ist sich sicher.
+    // Freigegeben ist freigegeben - "spam" ist kein Missbrauch.
+    $cases['whitelist-newsletter-spamurteil'] = array_replace_recursive($wlBase, [
+        'from' => 'news@lieferant-beispiel.de', 'from_email' => 'news@lieferant-beispiel.de',
+        'subject' => 'Herbstaktion: 20 % auf alles',
+        'body' => 'Nur diese Woche. Jetzt bestellen: https://bit.ly/herbst',
+        'rspamd_score' => 9.1,
+        'urls' => ['https://bit.ly/herbst'], 'url_domains' => ['bit.ly'],
+        'signals' => ['has_list_unsubscribe' => true],
+        'headers' => ['list_unsubscribe' => '<https://lieferant-beispiel.de/abmelden>'],
+        '_analysis' => ['category' => 'spam', 'confidence' => 0.95],
+        '_expect' => ['whitelist_verdict' => 'deliver', 'whitelist_abuse' => []],
+    ]);
+
+    // Gekapertes Konto: echte Domain, sauberes DMARC, aber die Antwort soll
+    // an ein Freemail-Postfach, und das Modell ist sicher, dass es Betrug
+    // ist ("neue Bankverbindung"). Zwei unabhaengige Quellen - aussetzen.
+    $cases['whitelist-gekapert-bankverbindung'] = array_replace_recursive($wlBase, [
+        'subject' => 'Aenderung unserer Bankverbindung',
+        'body' => 'Bitte ueberweisen Sie offene Rechnungen ab sofort auf unser neues Konto. Bitte kurze Bestaetigung per Antwort.',
+        'rspamd_score' => 1.2,
+        'reply_to' => 'buchhaltung-neu@freemail.example',
+        'signals' => ['freemail_reply_to' => true, 'suspicious_reply_to' => true],
+        '_analysis' => ['category' => 'fraud', 'confidence' => 0.93],
+        '_expect' => ['whitelist_verdict' => 'abuse', 'whitelist_abuse' => ['ai-fraud+hijacked-reply-to']],
+    ]);
+
+    // Dieselbe Antwortadresse ohne Betrugsurteil: der Handwerksbetrieb, der
+    // Antworten an sein t-online-Postfach leitet. Zustellen.
+    $cases['whitelist-freemail-antwortweg-harmlos'] = array_replace_recursive($wlBase, [
+        'subject' => 'Angebot Dachsanierung',
+        'body' => 'Wie besprochen anbei das Angebot. Rueckfragen gerne an meine Adresse unten.',
+        'rspamd_score' => 3.0,
+        'reply_to' => 'meisterbetrieb@freemail.example',
+        'signals' => ['freemail_reply_to' => true, 'suspicious_reply_to' => true],
+        '_analysis' => ['category' => 'legitimate', 'confidence' => 0.85],
+        '_expect' => ['whitelist_verdict' => 'deliver', 'whitelist_abuse' => []],
+    ]);
+
+    // "Dokument geteilt" aus dem gekaperten Konto, Link auf eine
+    // Baukastenseite. Aussetzen.
+    $cases['whitelist-gekapert-dokument-geteilt'] = array_replace_recursive($wlBase, [
+        'subject' => 'Lieferant Beispiel hat ein Dokument mit Ihnen geteilt',
+        'body' => 'Klicken Sie hier, um das Dokument anzusehen.',
+        'rspamd_score' => 2.0,
+        'urls' => ['https://dokument-ansicht.000webhostapp.com/login'],
+        'url_domains' => ['dokument-ansicht.000webhostapp.com'],
+        '_analysis' => ['category' => 'phishing', 'confidence' => 0.96],
+        '_expect' => ['whitelist_verdict' => 'abuse', 'whitelist_abuse' => ['ai-phishing+free-hosting-link']],
+    ]);
+
+    // Gleiche Mail, aber das Modell ist sich nicht sicher genug. Zustellen.
+    $cases['whitelist-ki-unsicher'] = array_replace_recursive($cases['whitelist-gekapert-dokument-geteilt'], [
+        '_analysis' => ['category' => 'phishing', 'confidence' => 0.80],
+        '_expect' => ['whitelist_verdict' => 'deliver'],
+    ]);
+    // array_replace_recursive mischt Listen, statt sie zu ersetzen.
+    $cases['whitelist-ki-unsicher']['_expect']['whitelist_abuse'] = [];
+
+    // Das Modell ist sich sicher, aber nichts Strukturelles stuetzt es.
+    // Das Modell allein bricht das Versprechen nicht. Zustellen.
+    $cases['whitelist-ki-allein'] = array_replace_recursive($wlBase, [
+        'subject' => 'Dringend: Zahlung heute noch freigeben',
+        'body' => 'Bitte geben Sie die Zahlung heute noch frei, sonst stoppen wir die Lieferung.',
+        'rspamd_score' => 4.0,
+        '_analysis' => ['category' => 'fraud', 'confidence' => 0.97],
+        '_expect' => ['whitelist_verdict' => 'deliver', 'whitelist_abuse' => []],
+    ]);
+
+    // Ausfuehrbarer Anhang: reicht allein, egal was das Modell sagt.
+    $cases['whitelist-exe-anhang'] = array_replace_recursive($wlBase, [
+        'subject' => 'Rechnung',
+        'body' => 'Anbei die Rechnung.',
+        'rspamd_score' => 3.0,
+        'attachments' => [['name' => 'Rechnung.pdf.exe', 'type' => 'application/octet-stream', 'size' => 51200]],
+        '_analysis' => ['category' => 'transactional', 'confidence' => 0.9],
+        '_expect' => ['whitelist_verdict' => 'abuse', 'whitelist_abuse' => ['dangerous-attachment']],
+    ]);
+
+    // "Rechnung.zip" verschicken echte Lieferanten. Allein kein Missbrauch.
+    $cases['whitelist-zip-rechnung'] = array_replace_recursive($wlBase, [
+        'subject' => 'Rechnungen September',
+        'body' => 'Anbei alle Rechnungen aus September als Archiv.',
+        'rspamd_score' => 6.5,
+        'attachments' => [['name' => 'Rechnungen-September.zip', 'type' => 'application/zip', 'size' => 512000]],
+        '_analysis' => ['category' => 'transactional', 'confidence' => 0.88],
+        '_expect' => ['whitelist_verdict' => 'deliver', 'whitelist_abuse' => []],
+    ]);
+
+    // Link auf einer Phishing-Liste (DBL_PHISH, OpenPhish ...). Reicht allein.
+    $cases['whitelist-phishing-liste'] = array_replace_recursive($wlBase, [
+        'subject' => 'Neue Bestellung',
+        'body' => 'Bitte bestaetigen Sie die Bestellung im Portal.',
+        'rspamd_score' => 7.0,
+        'urls' => ['https://portal-login.example/x'], 'url_domains' => ['portal-login.example'],
+        'signals' => ['url_malicious' => true, 'url_blacklisted' => true],
+        '_analysis' => ['category' => 'legitimate', 'confidence' => 0.7],
+        '_expect' => ['whitelist_verdict' => 'abuse', 'whitelist_abuse' => ['malicious-url']],
+    ]);
+
+    // Spam-Blockliste (DBL_SPAM) auf der Werbedomain des Lieferanten - kein
+    // Phishing. Ohne Betrugsurteil kein Missbrauch.
+    $cases['whitelist-spam-blockliste'] = array_replace_recursive($wlBase, [
+        'subject' => 'Neuer Katalog',
+        'body' => 'Unser neuer Katalog ist online.',
+        'rspamd_score' => 8.0,
+        'urls' => ['https://katalog-aktion.example/'], 'url_domains' => ['katalog-aktion.example'],
+        'signals' => ['url_blacklisted' => true],
+        '_analysis' => ['category' => 'marketing', 'confidence' => 0.9],
+        '_expect' => ['whitelist_verdict' => 'deliver', 'whitelist_abuse' => []],
+    ]);
+
+    $cases['whitelist-virus'] = array_replace_recursive($wlBase, [
+        'subject' => 'Auftragsbestaetigung',
+        'body' => 'Anbei die Auftragsbestaetigung.',
+        'rspamd_score' => 2.0,
+        'attachments' => [['name' => 'AB-4711.docm', 'type' => 'application/vnd.ms-word', 'size' => 40000]],
+        'signals' => ['virus' => true],
+        '_analysis' => ['category' => 'transactional', 'confidence' => 0.9],
+        '_expect' => ['whitelist_verdict' => 'abuse', 'whitelist_abuse' => ['virus']],
+    ]);
+
+    // Eintrag passt zur Adresse, Absender aber nicht authentifiziert -
+    // jemand schreibt "From: lieferant-beispiel.de" von woanders. Kein
+    // Zustellversprechen, normale Bewertung.
+    $cases['whitelist-nicht-authentifiziert'] = array_replace_recursive($wlBase, [
+        'auth' => ['spf' => 'fail', 'dkim' => 'unknown', 'dmarc' => 'fail'],
+        'whitelist' => ['authenticated' => false, 'auth_via' => 'dmarc-fail'],
+        'subject' => 'Rechnung 2026-1043',
+        'body' => 'Anbei unsere Rechnung.',
+        'rspamd_score' => 9.0,
+        '_analysis' => ['category' => 'phishing', 'confidence' => 0.9],
+        '_expect' => ['whitelist_verdict' => 'auth-failed', 'whitelist_abuse' => []],
+    ]);
+
     return $cases;
 }
 
@@ -1428,6 +1589,17 @@ function runFixtures() {
             'evidence' => $ev,
             'strong' => $strong,
         ];
+        // Nur fuer die Whitelist-Faelle, damit sich die uebrigen Ausgaben
+        // nicht aendern. Das Modellurteil kommt wie oben aus _analysis.
+        if (isset($data['whitelist'])) {
+            $decision = whitelistDecision($mail, $local, [
+                'evidence'   => $ev,
+                'category'   => $analysis['category'],
+                'confidence' => $analysis['confidence'] ?? 0,
+            ]);
+            $actual['whitelist_verdict'] = $decision['verdict'];
+            $actual['whitelist_abuse'] = $decision['abuse'];
+        }
         foreach (($data['_expect'] ?? []) as $field => $expected) {
             if (!array_key_exists($field, $actual) || $actual[$field] !== $expected) {
                 throw new RuntimeException(sprintf(
@@ -1476,6 +1648,10 @@ function runFixtures() {
             'listen_schutz'  => authenticatedListMail($mail, $local, $ev),
             'scoreFromAi'    => $scores,
         ];
+        if (isset($actual['whitelist_verdict'])) {
+            $out[$name]['whitelist_verdict'] = $actual['whitelist_verdict'];
+            $out[$name]['whitelist_abuse'] = $actual['whitelist_abuse'];
+        }
     }
 
     // Haengt an keiner einzelnen Mail, sondern an der Kontextdatei neben
@@ -1762,7 +1938,8 @@ function runFixtures() {
     $ret = substr($ret, 0, strpos($ret, "\n    ];"));
     preg_match_all('/^\s*\'([a-z_]+)\'\s*=>/m', $ret, $m4);
     // 'score', 'action' und 'reason' gehen direkt an respondSuccess().
-    $geliefert = array_merge($m4[1], ['score', 'action', 'reason']);
+    // 'whitelist' haengt applyWhitelistDecision() erst danach an.
+    $geliefert = array_merge($m4[1], ['score', 'action', 'reason', 'whitelist']);
     $ohneQuelle = array_values(array_diff(array_unique($m3[1]), $geliefert));
     sort($ohneQuelle);
 

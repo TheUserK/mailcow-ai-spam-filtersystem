@@ -157,7 +157,7 @@ case "${1:-}" in
         UPGRADE_MODE=true
         FORCE_REPLACE=true
         echo -e "${YELLOW}Reinstall mode${NC} - every component is replaced with the shipped version."
-        echo "Your API key and trusted_sender_profiles.json are kept; everything else"
+        echo "Your API key, trusted_sender_profiles.json and the whitelist are kept; everything else"
         echo "(settings, rspamd group config, compose override) is overwritten."
         echo ""
         ;;
@@ -168,7 +168,7 @@ case "${1:-}" in
         echo "  (none)      Fresh installation"
         echo "  --upgrade   Upgrade existing installation (preserves your config)"
         echo "  --reinstall Replace every component with the shipped version."
-        echo "              Keeps only the API key and trusted_sender_profiles.json."
+        echo "              Keeps only the API key, trusted_sender_profiles.json and the whitelist."
         echo "  --check     Run health check on existing installation"
         echo "  --help      Show this help"
         exit 0
@@ -387,25 +387,75 @@ done
 
 # === WEGWERF-TLDS ===
 # Punktaufschlag fuer Absenderdomains auf haeufig missbrauchten Endungen.
-# Die Map gehoert dem Betreiber (er pflegt eigene TLDs ein) und wird nie
-# ueberschrieben. Der multimap-Abschnitt kommt in local.d/multimap.conf -
-# dort koennen schon andere Regeln stehen, also nur anhaengen, wenn unsere
-# noch fehlt.
-if [[ ! -f "data/conf/rspamd/ai-filter-tlds.map" ]]; then
-    cp "$SCRIPT_DIR/files/rspamd/ai-filter-tlds.map" data/conf/rspamd/ai-filter-tlds.map
-    chmod 644 data/conf/rspamd/ai-filter-tlds.map
-    echo -e "${GREEN}[OK]${NC} Fishy-TLD list installed"
+# Die Pruefung selbst steckt seit 11.10. im Lua-Modul (AI_FILTER_FISHY_TLD),
+# die Liste liegt in custom/ - nur dieser Unterordner ist im Container als
+# /etc/rspamd/custom eingehaengt. Vorher lag sie im Wurzelordner
+# data/conf/rspamd/, den mailcow gar nicht einhaengt: Rspamd meldete
+# "map file is not found", der Aufschlag hat nie gegriffen.
+# Die Map gehoert dem Betreiber und wird nie ueberschrieben; eine alte
+# Fassung im Wurzelordner zieht mitsamt eigenen Ergaenzungen um.
+mkdir -p data/conf/rspamd/custom
+TLD_MAP="data/conf/rspamd/custom/ai-filter-tlds.map"
+if [[ ! -f "$TLD_MAP" ]]; then
+    if [[ -f "data/conf/rspamd/ai-filter-tlds.map" ]]; then
+        mv "data/conf/rspamd/ai-filter-tlds.map" "$TLD_MAP"
+        echo -e "${GREEN}[OK]${NC} Fishy-TLD list moved to custom/ (it was never visible to Rspamd before)"
+    else
+        cp "$SCRIPT_DIR/files/rspamd/ai-filter-tlds.map" "$TLD_MAP"
+        echo -e "${GREEN}[OK]${NC} Fishy-TLD list installed"
+    fi
+    chmod 644 "$TLD_MAP"
 else
-    echo -e "${GREEN}[OK]${NC} Existing ai-filter-tlds.map preserved"
+    echo -e "${GREEN}[OK]${NC} Existing custom/ai-filter-tlds.map preserved"
+    if [[ -f "data/conf/rspamd/ai-filter-tlds.map" ]]; then
+        echo -e "${YELLOW}[!]${NC} data/conf/rspamd/ai-filter-tlds.map is no longer read - custom/ai-filter-tlds.map is."
+        echo    "    Move any own additions over, then delete the old file."
+    fi
 fi
 
-if ! grep -qs "AI_FILTER_FISHY_TLD" data/conf/rspamd/local.d/multimap.conf 2>/dev/null; then
-    cat "$SCRIPT_DIR/files/rspamd/ai-filter-tlds.conf" >> data/conf/rspamd/local.d/multimap.conf
-    chmod 644 data/conf/rspamd/local.d/multimap.conf
-    echo -e "${GREEN}[OK]${NC} Fishy-TLD scoring enabled (+2.5, never blocks alone)"
-else
-    echo -e "${GREEN}[OK]${NC} Fishy-TLD rule already present"
+# Die alte Multimap-Regel wieder aus mailcows local.d/multimap.conf holen.
+# Die Datei gehoert zu mailcows Repository: update.sh schleppt jede
+# Aenderung als lokalen Commit mit, und aendert upstream dieselbe Datei,
+# bricht das Update (auch der woechentliche Autoupdate) mit einem
+# Merge-Konflikt ab. Ausserdem wuerde Rspamd das Symbol sonst doppelt
+# registrieren - einmal hier, einmal im Lua-Modul.
+# Entfernt wird genau der Block, den fruehere Fassungen angehaengt haben:
+# sein Kopfkommentar und der Abschnitt AI_FILTER_FISHY_TLD { ... }.
+MULTIMAP="data/conf/rspamd/local.d/multimap.conf"
+if grep -qs "AI_FILTER_FISHY_TLD" "$MULTIMAP"; then
+    cp "$MULTIMAP" "$MULTIMAP.backup.$(date +%s)"
+    awk '
+        state == 0 && /^# Punktaufschlag fuer Absender auf Wegwerf-Topleveldomains/ { state = 1; next }
+        state == 1 && (/^#/ || /^[[:space:]]*$/) { next }
+        state == 1 && /^AI_FILTER_FISHY_TLD[[:space:]]*\{/ { state = 2; next }
+        state == 1 { state = 0 }
+        state == 0 && /^AI_FILTER_FISHY_TLD[[:space:]]*\{/ { state = 2; next }
+        state == 2 { if (/^}/) state = 0; next }
+        { print }
+    ' "$MULTIMAP" > "$MULTIMAP.tmp" && cat "$MULTIMAP.tmp" > "$MULTIMAP"
+    rm -f "$MULTIMAP.tmp"
+    if grep -qs "AI_FILTER_FISHY_TLD" "$MULTIMAP"; then
+        echo -e "${YELLOW}[!]${NC} Could not remove the old AI_FILTER_FISHY_TLD rule from $MULTIMAP - please delete it by hand"
+    else
+        echo -e "${GREEN}[OK]${NC} Old fishy-TLD rule removed from mailcow's multimap.conf (backup kept)"
+    fi
 fi
+echo -e "${GREEN}[OK]${NC} Fishy-TLD scoring active in the Lua module (+2.5, never blocks alone)"
+
+# === WHITELIST ===
+# Gehoert dem Betreiber, wird nie ueberschrieben - auch nicht von
+# --reinstall. Gepflegt wird sie mit ai-filter-whitelist.sh. Liegt in
+# lua/ neben den Einstellungen, weil genau dieses Verzeichnis sicher im
+# Rspamd-Container eingehaengt ist.
+if [[ ! -f "data/conf/rspamd/lua/ai-filter-whitelist.map" ]]; then
+    cp "$SCRIPT_DIR/files/rspamd/ai-filter-whitelist.map" data/conf/rspamd/lua/ai-filter-whitelist.map
+    chmod 644 data/conf/rspamd/lua/ai-filter-whitelist.map
+    echo -e "${GREEN}[OK]${NC} Whitelist created (empty) - manage with ai-filter-whitelist.sh"
+else
+    WL_COUNT=$(sed -e 's/#.*$//' data/conf/rspamd/lua/ai-filter-whitelist.map | grep -c '[^[:space:]]' || true)
+    echo -e "${GREEN}[OK]${NC} Existing whitelist preserved ($WL_COUNT entries)"
+fi
+
 
 # === GREYLISTING ===
 # Kostet Erstkontakten ein paar Minuten und raeumt billige Massenversender
@@ -707,6 +757,7 @@ echo "  ai-filter-healthcheck.sh  Health check (also: install.sh --check)"
 echo "  ai-filter-model.sh     Show or change the model / AI provider"
 echo "  ai-filter-report.sh    Cases where the filter contradicts itself"
 echo "  ai-filter-context.sh   Recipient context; --hint sets what only you know"
+echo "  ai-filter-whitelist.sh Senders that are always delivered unless the account is abused"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ai-checker"
 echo ""

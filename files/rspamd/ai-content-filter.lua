@@ -142,6 +142,173 @@ local sender_blocklist_symbols = {
   'MSBL_EBL', 'RBL_MSBL_EBL',
 }
 
+-- Nur die Listen, die ausdruecklich Phishing oder Schadcode fuehren.
+-- Bewusst getrennt von uribl_bad_symbols: DBL_SPAM oder URIBL_BLACK
+-- treffen auch mal die Werbedomain eines echten Lieferanten. Fuer einen
+-- Absender auf der Whitelist hebt nur DIESE Sorte Treffer die Zustellung
+-- allein auf - siehe whitelistAbuse() im Checker.
+local malicious_url_symbols = {
+  'DBL_PHISH', 'DBL_MALWARE', 'DBL_BOTNET',
+  'DBL_ABUSE_PHISH', 'DBL_ABUSE_MALWARE', 'DBL_ABUSE_BOTNET',
+  'PH_SURBL_MULTI', 'MW_SURBL_MULTI',
+  'PHISHED_OPENPHISH', 'PHISHED_PHISHTANK',
+}
+
+local virus_symbols = {
+  'CLAM_VIRUS',
+}
+
+-- =====================================================================
+--  Eigene Whitelist (ai-filter-whitelist.sh)
+--
+--  Anders als die Mailcow-Whitelist ist das kein Freibrief: Eine Mail von
+--  einem eingetragenen Absender wird zugestellt - egal was Rspamd oder die
+--  KI vom Inhalt halten -, AUSSER es gibt starke Hinweise, dass das Konto
+--  missbraucht wird. Ein gekapertes Lieferantenpostfach, das ploetzlich
+--  "neue Bankverbindung" schreibt, ist genau der Fall, den eine starre
+--  Whitelist durchwinkt.
+--
+--  Zwei Bedingungen, damit ein Eintrag ueberhaupt greift:
+--    1. Der sichtbare Absender (From-Kopfzeile) passt zum Eintrag.
+--    2. Der Absender ist fuer genau diese Domain authentifiziert. Sonst
+--       koennte jeder "From: lieferant.de" hineinschreiben.
+--
+--  Die Datei wird alle 60 s neu gelesen - kein Rspamd-Neustart noetig.
+-- =====================================================================
+local whitelist_path = '/etc/rspamd/lua/ai-filter-whitelist.map'
+local whitelist_ttl = 60
+local whitelist_cache = { loaded_at = nil, domains = {}, addresses = {}, count = 0 }
+
+local function load_whitelist()
+  local now = os.time()
+  if whitelist_cache.loaded_at and now - whitelist_cache.loaded_at < whitelist_ttl then
+    return whitelist_cache
+  end
+
+  local domains, addresses, count = {}, {}, 0
+  local f = io.open(whitelist_path, 'r')
+  if f then
+    for line in f:lines() do
+      local entry = (line:gsub('#.*$', '')):match('^%s*(%S+)')
+      if entry then
+        entry = entry:lower()
+        if entry:find('@', 1, true) then
+          addresses[entry] = true
+        else
+          domains[entry] = true
+        end
+        count = count + 1
+      end
+    end
+    f:close()
+  end
+
+  whitelist_cache = { loaded_at = now, domains = domains, addresses = addresses, count = count }
+  return whitelist_cache
+end
+
+-- Eintrag "lieferant.de" gilt auch fuer mail.lieferant.de, ein Eintrag mit
+-- @ nur fuer genau diese Adresse.
+local function whitelist_entry_for(addr, domain)
+  local wl = load_whitelist()
+  if wl.count == 0 then
+    return nil
+  end
+  addr, domain = addr:lower(), domain:lower()
+  if addr ~= '' and wl.addresses[addr] then
+    return addr, 'address'
+  end
+  local d = domain
+  while d and d ~= '' do
+    if wl.domains[d] then
+      return d, 'domain'
+    end
+    d = d:match('^[^.]+%.(.+)$')
+  end
+  return nil
+end
+
+-- Gleiche Domain oder eine Subdomain der anderen. Strenger als DMARCs
+-- "relaxed alignment" (Geschwister-Subdomains zaehlen hier nicht) - fuer
+-- eine Zustellgarantie lieber zu streng als zu grosszuegig.
+local function domains_aligned(a, b)
+  a, b = a:lower(), b:lower()
+  if a == '' or b == '' then
+    return false
+  end
+  return a == b
+    or a:sub(-(#b + 1)) == '.' .. b
+    or b:sub(-(#a + 1)) == '.' .. a
+end
+
+-- Ist der sichtbare Absender wirklich der, der er vorgibt zu sein?
+-- DMARC entscheidet, wo die Domain eine Policy hat. Ohne Policy (bei
+-- kleinen Firmen haeufig) pruefen wir selbst: DKIM-Signatur oder SPF fuer
+-- eine Domain, die zur From-Domain passt.
+local function sender_authenticated(task, from_domain, smtp_domain)
+  if from_domain == '' then
+    return false, 'no-from'
+  end
+  if task:get_symbol('DMARC_POLICY_ALLOW') then
+    return true, 'dmarc'
+  end
+  if any_symbol(task, { 'DMARC_POLICY_REJECT', 'DMARC_POLICY_QUARANTINE', 'DMARC_POLICY_SOFTFAIL' }) then
+    return false, 'dmarc-fail'
+  end
+
+  local dkim = task:get_symbol('R_DKIM_ALLOW')
+  if dkim then
+    for _, res in ipairs(dkim) do
+      for _, opt in ipairs(res.options or {}) do
+        local signer = tostring(opt):match('^([^:]+)')
+        if signer and domains_aligned(signer, from_domain) then
+          return true, 'dkim'
+        end
+      end
+    end
+  end
+
+  if task:get_symbol('R_SPF_ALLOW') and domains_aligned(smtp_domain, from_domain) then
+    return true, 'spf'
+  end
+
+  return false, 'unauthenticated'
+end
+
+-- Was Rspamd selbst schon sicher weiss, ganz ohne Checker: Virus oder ein
+-- Link auf einer Phishing-/Malware-Liste. Reicht auch dann, wenn der
+-- Checker nicht antwortet.
+local function whitelist_local_abuse(task)
+  local reasons = {}
+  if any_symbol(task, virus_symbols) then
+    table.insert(reasons, 'virus')
+  end
+  if any_symbol(task, malicious_url_symbols) then
+    table.insert(reasons, 'malicious-url')
+  end
+  return reasons
+end
+
+-- Zustellen: Aktion "no action" erzwingen. Damit greift weder Junk noch
+-- Greylisting noch Reject, auch nicht Rspamds eigener Score oder eine
+-- niedrigere Schwelle, die ein Postfach fuer sich eingestellt hat.
+-- Hat ein anderes Modul (Virenscanner, Ratelimit) schon eine Aktion
+-- festgelegt, bleibt die stehen.
+local function whitelist_deliver(task, wl)
+  if task:has_pre_result() then
+    rspamd_logger.infox(task, 'AI Filter: whitelist %s matched, but another module already set the action - left alone',
+      wl.entry)
+    return
+  end
+  if cfg.log_only_mode then
+    rspamd_logger.infox(task, 'AI Filter: LOG-ONLY mode, whitelist %s would have forced delivery', wl.entry)
+    return
+  end
+  task:insert_result('AI_WHITELIST', 1.0, wl.entry)
+  task:set_pre_result('no action', 'AI whitelist: ' .. wl.entry, 'ai_filter')
+  rspamd_logger.infox(task, 'AI Filter: whitelist %s (%s) - delivery forced', wl.entry, wl.auth_via)
+end
+
 local function header_str(task, name)
   local h = task:get_header(name)
   if h then
@@ -150,31 +317,90 @@ local function header_str(task, name)
   return ''
 end
 
+-- =====================================================================
+--  Punktaufschlag fuer Absender auf Wegwerf-Topleveldomains
+--
+--  Bewusst KEIN Block und kein Reject: 2.5 Punkte reichen allein weder fuer
+--  den Junk-Ordner noch fuer eine Ablehnung. Der Aufschlag wirkt nur
+--  zusammen mit dem, was Rspamd und die KI ohnehin schon sehen. Auf diesen
+--  Endungen gibt es echte Firmen - sie sollen Post schicken koennen, nur
+--  eben nicht mit demselben Vertrauensvorschuss wie eine .de-Adresse.
+--
+--  Bis 11.10. war das eine Multimap-Regel, angehaengt an mailcows eigene
+--  local.d/multimap.conf, mit map = "$CONFDIR/ai-filter-tlds.map". Zwei
+--  Fehler auf einmal: mailcow haengt nur Unterordner von data/conf/rspamd
+--  nach /etc/rspamd, die Map lag aber im Wurzelordner - Rspamd meldete
+--  "map file is not found", die Regel hat nie gegriffen. Und die
+--  multimap.conf gehoert zu mailcows Repository: Jede Aenderung dort
+--  schleppt update.sh als lokalen Commit mit, und sobald upstream dieselbe
+--  Datei aendert, bricht das Update mit einem Merge-Konflikt ab.
+--
+--  Jetzt hier im eigenen Modul (plugins.d, von mailcow nicht getrackt), die
+--  Liste in custom/ (gemountet nach /etc/rspamd/custom). Gilt fuer die
+--  Absenderdomain, nicht fuer verlinkte Domains: Ein Link auf eine
+--  .shop-Seite ist in einem Newsletter voellig normal.
+--
+--  Liste: data/conf/rspamd/custom/ai-filter-tlds.map, wird alle 60 s neu
+--  gelesen. Gewicht: "AI_FILTER_FISHY_TLD" in local.d/groups.conf.
+-- =====================================================================
+local fishy_tld_path = '/etc/rspamd/custom/ai-filter-tlds.map'
+local fishy_tld_cache = { loaded_at = nil, tlds = {} }
+
+local function load_fishy_tlds()
+  local now = os.time()
+  if fishy_tld_cache.loaded_at and now - fishy_tld_cache.loaded_at < 60 then
+    return fishy_tld_cache.tlds
+  end
+  local tlds = {}
+  local f = io.open(fishy_tld_path, 'r')
+  if f then
+    for line in f:lines() do
+      local tld = (line:gsub('#.*$', '')):match('^%s*%.?(%S+)')
+      if tld then
+        tlds[tld:lower()] = true
+      end
+    end
+    f:close()
+  elseif not fishy_tld_cache.loaded_at then
+    rspamd_logger.warnx(rspamd_config, 'AI Filter: %s not found - fishy-TLD scoring inactive', fishy_tld_path)
+  end
+  fishy_tld_cache = { loaded_at = now, tlds = tlds }
+  return tlds
+end
+
+rspamd_config:register_symbol({
+  name = 'AI_FILTER_FISHY_TLD',
+  type = 'normal',
+  callback = function(task)
+    -- Ausgehende Post der eigenen Nutzer bekommt keinen Aufschlag.
+    if task:get_user() then
+      return false
+    end
+    local domain = ''
+    local from = task:get_from('smtp')
+    if from and from[1] and from[1].domain then
+      domain = from[1].domain
+    end
+    if domain == '' then
+      local mime = task:get_from('mime')
+      if mime and mime[1] and mime[1].domain then
+        domain = mime[1].domain
+      end
+    end
+    local tld = domain:lower():match('%.([^.]+)$')
+    if tld and load_fishy_tlds()[tld] then
+      task:insert_result('AI_FILTER_FISHY_TLD', 1.0, tld)
+      return true
+    end
+    return false
+  end,
+})
+
 rspamd_config:register_symbol({
   name = 'AI_CONTENT_FILTER',
   type = 'postfilter',
   callback = function(task)
     local score = task:get_metric_score('default')[1]
-
-    -- Skip if the outcome is already decided without us.
-    --
-    -- "Decided" heisst: Rspamd weist ohnehin selbst ab. Deshalb gehoert
-    -- skip_score_above auf die Reject-Schwelle und keinen Punkt darunter.
-    -- Stand hier 14.0 bei einer Schwelle von 15.0, entstand dazwischen ein
-    -- toter Bereich: Die KI wurde als "schon entschieden" uebersprungen,
-    -- abgewiesen wurde aber nichts - die Mail ging mit Spam-Kopfzeile durch.
-    -- Getroffen hat das ausgerechnet die verdaechtigste Post, je naeher an
-    -- der Schwelle, desto weniger Pruefung. Am 13.09. kam so eine
-    -- Kaltakquise-Mail bei 14.85 durch, deren Absenderdomain auf zwei
-    -- Blocklisten stand (DBL_SPAM + ABUSE_SURBL) - mit KI-Aufruf haette der
-    -- Beleg "url-on-blocklist" sehr wahrscheinlich zur Ablehnung gefuehrt.
-    -- Am 11.09. dasselbe bei 14.70.
-    --
-    -- Kosten: ein paar zusaetzliche Aufrufe fuer das schmale Band zwischen
-    -- den alten 14.0 und der Schwelle.
-    if score >= cfg.skip_score_above or score < cfg.skip_score_below then
-      return false
-    end
 
     -- Skip localhost
     local from = task:get_from('smtp')
@@ -224,6 +450,45 @@ rspamd_config:register_symbol({
       from_display_name = from_mime[1].name or ''
     end
 
+    -- Eigene Whitelist. Abgeglichen wird die From-KOPFZEILE - das ist der
+    -- Absender, den der Empfaenger sieht und dem er vertraut.
+    local wl = nil
+    local wl_entry, wl_kind = whitelist_entry_for(from_mime_addr, from_mime_domain)
+    if wl_entry then
+      local ok, via = sender_authenticated(task, from_mime_domain, from_smtp_domain)
+      wl = { entry = wl_entry, kind = wl_kind, authenticated = ok, auth_via = via }
+      if not ok then
+        rspamd_logger.infox(task, 'AI Filter: whitelist %s matched, but sender not authenticated (%s) - normal filtering',
+          wl_entry, via)
+      end
+    end
+    local wl_active = wl ~= nil and wl.authenticated
+
+    -- Skip if the outcome is already decided without us.
+    --
+    -- "Decided" heisst: Rspamd weist ohnehin selbst ab. Deshalb gehoert
+    -- skip_score_above auf die Reject-Schwelle und keinen Punkt darunter.
+    -- Stand hier 14.0 bei einer Schwelle von 15.0, entstand dazwischen ein
+    -- toter Bereich: Die KI wurde als "schon entschieden" uebersprungen,
+    -- abgewiesen wurde aber nichts - die Mail ging mit Spam-Kopfzeile durch.
+    -- Getroffen hat das ausgerechnet die verdaechtigste Post, je naeher an
+    -- der Schwelle, desto weniger Pruefung. Am 13.09. kam so eine
+    -- Kaltakquise-Mail bei 14.85 durch, deren Absenderdomain auf zwei
+    -- Blocklisten stand (DBL_SPAM + ABUSE_SURBL) - mit KI-Aufruf haette der
+    -- Beleg "url-on-blocklist" sehr wahrscheinlich zur Ablehnung gefuehrt.
+    -- Am 11.09. dasselbe bei 14.70.
+    --
+    -- Kosten: ein paar zusaetzliche Aufrufe fuer das schmale Band zwischen
+    -- den alten 14.0 und der Schwelle.
+    --
+    -- Ausnahme Whitelist: Liegt Rspamd ueber der Reject-Schwelle, ist das
+    -- bei einem eingetragenen Absender gerade der Fehlalarm, gegen den die
+    -- Whitelist schuetzen soll. Geprueft wird dann trotzdem - auf
+    -- Missbrauch, nicht auf Spam.
+    if score < cfg.skip_score_below or (score >= cfg.skip_score_above and not wl_active) then
+      return false
+    end
+
     local from_addr = from_smtp_addr ~= '' and from_smtp_addr or from_mime_addr
     if from_addr == '' then
       from_addr = 'unknown'
@@ -231,8 +496,11 @@ rspamd_config:register_symbol({
     local from_email = from_mime_addr ~= '' and from_mime_addr or from_addr
     local from_domain_for_freemail = from_mime_domain ~= '' and from_mime_domain or from_smtp_domain
 
-    -- Check sender whitelist (skips the AI call entirely)
-    if from_smtp_domain ~= '' then
+    -- Alte Liste aus ai-filter-settings.lua: spart nur den KI-Aufruf,
+    -- verspricht keine Zustellung. Steht der Absender zusaetzlich auf der
+    -- eigenen Whitelist, geht die vor - die braucht den Checker fuer die
+    -- Missbrauchspruefung.
+    if not wl_active and from_smtp_domain ~= '' then
       for _, d in ipairs(cfg.whitelist_domains) do
         if from_smtp_domain:lower() == d:lower() then
           rspamd_logger.infox(task, 'AI Filter: whitelisted domain %s, skipping', from_smtp_domain)
@@ -240,7 +508,7 @@ rspamd_config:register_symbol({
         end
       end
     end
-    if from_addr ~= 'unknown' then
+    if not wl_active and from_addr ~= 'unknown' then
       for _, s in ipairs(cfg.whitelist_senders) do
         if from_addr:lower() == s:lower() then
           rspamd_logger.infox(task, 'AI Filter: whitelisted sender %s, skipping', from_addr)
@@ -454,6 +722,8 @@ rspamd_config:register_symbol({
         url_fresh_domain = url_fresh,
         url_phishing = url_phishing,
         sender_blocklisted = sender_blocklisted,
+        url_malicious = any_symbol(task, malicious_url_symbols),
+        virus = any_symbol(task, virus_symbols),
         known_sender = known_sender,
         unknown_sender = unknown_sender,
         reply_to_our_mail = is_reply_to_us,
@@ -465,7 +735,23 @@ rspamd_config:register_symbol({
         link_count = #urls,
         attachment_count = #attachments,
       },
+      -- nil, wenn kein Eintrag passt - dann fehlt der Schluessel ganz.
+      whitelist = wl,
     }
+
+    -- Whitelist ohne Checker-Urteil (Fehler, Timeout, alte Checker-
+    -- Fassung): zustellen, solange Rspamd selbst nichts Hartes gefunden
+    -- hat. Eine Stoerung beim KI-Anbieter darf keine freigegebene Post
+    -- kosten.
+    local function whitelist_fallback(why)
+      local abuse = whitelist_local_abuse(task)
+      if #abuse > 0 then
+        rspamd_logger.infox(task, 'AI Filter: whitelist %s suspended (%s) - %s', wl.entry,
+          table.concat(abuse, ','), why)
+        return
+      end
+      whitelist_deliver(task, wl)
+    end
 
     rspamd_http.request({
       task = task,
@@ -478,6 +764,9 @@ rspamd_config:register_symbol({
           -- Fail open: a network/HTTP error says nothing about the mail
           -- itself, so we don't penalize it.
           rspamd_logger.warnx(task, 'AI Filter: API error - err=%s code=%s', tostring(err), tostring(code))
+          if wl_active then
+            whitelist_fallback('checker unavailable')
+          end
           return
         end
 
@@ -489,6 +778,23 @@ rspamd_config:register_symbol({
           rspamd_logger.infox(task, 'AI Filter: result score=%.2f action=%s category=%s reason=%s',
             ai_score, tostring(result.action), tostring(result.category), tostring(result.reason))
 
+          if wl_active then
+            local verdict = type(result.whitelist) == 'table' and result.whitelist.verdict or nil
+            if verdict == 'abuse' then
+              -- Starke Hinweise auf ein missbrauchtes Konto: Die Whitelist
+              -- tritt zurueck, es gilt die normale Bewertung unten.
+              local abuse = result.whitelist.abuse
+              rspamd_logger.infox(task, 'AI Filter: whitelist %s suspended (%s) - normal filtering', wl.entry,
+                type(abuse) == 'table' and table.concat(abuse, ',') or '?')
+            elseif verdict == 'deliver' then
+              whitelist_deliver(task, wl)
+              return
+            else
+              whitelist_fallback('no whitelist verdict from checker')
+              return
+            end
+          end
+
           if cfg.log_only_mode then
             rspamd_logger.infox(task, 'AI Filter: LOG-ONLY mode, would have added score=%.2f', ai_score)
             return
@@ -499,6 +805,9 @@ rspamd_config:register_symbol({
           end
         else
           rspamd_logger.warnx(task, 'AI Filter: failed to parse checker response')
+          if wl_active then
+            whitelist_fallback('unparsable checker response')
+          end
         end
       end,
       timeout = cfg.http_timeout
@@ -507,6 +816,20 @@ rspamd_config:register_symbol({
     return true
   end,
   priority = 10
+})
+
+rspamd_config:set_metric_symbol({
+  name = 'AI_FILTER_FISHY_TLD',
+  score = 2.5,
+  description = 'Absenderdomain auf einer haeufig missbrauchten TLD',
+  group = 'ai_filter'
+})
+
+rspamd_config:set_metric_symbol({
+  name = 'AI_WHITELIST',
+  score = 0.0,
+  description = 'Sender on the AI filter whitelist, delivery forced',
+  group = 'ai_filter'
 })
 
 rspamd_config:set_metric_symbol({

@@ -1,0 +1,8 @@
+# Whitelist des AI-Filters - verwaltet mit ai-filter-whitelist.sh
+#
+# Ein Eintrag pro Zeile: eine Domain (gilt auch fuer Subdomains) oder eine
+# einzelne Adresse. Alles ab # ist Kommentar.
+#
+# Zugestellt wird nur, wenn der Absender sich fuer diese Domain ausweist
+# (DMARC, oder DKIM/SPF passend zur From-Domain), und nur, solange es
+# keine starken Hinweise auf ein missbrauchtes Konto gibt.

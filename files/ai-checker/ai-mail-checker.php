@@ -286,6 +286,10 @@ if (isInternalMail($mail['from'], $mail['to'])) {
 $localResult = analyzeLocally($mail, $requestId);
 
 if (!empty($localResult['handled'])) {
+    $localResult = applyWhitelistDecision(
+        $localResult,
+        whitelistDecision($mail, $localResult, $localResult)
+    );
     logStats($requestId, [
         'from' => $mail['from'],
         'to' => $mail['to'],
@@ -299,21 +303,31 @@ if (!empty($localResult['handled'])) {
         'analysis_source' => $localResult['analysis_source'] ?? 'local',
         'matched_profile' => $localResult['matched_profile'] ?? '',
         'url_domains' => $mail['url_domains'],
+        'ai_score_raw' => $localResult['ai_score_raw'] ?? null,
+        'whitelist' => $localResult['whitelist'] ?? null,
     ]);
 
     respondSuccess(
         $localResult['score'],
         $localResult['action'],
         $localResult['reason'],
-        $requestId
+        $requestId,
+        $localResult['whitelist'] ?? null
     );
 }
 
 if (!checkBudget($requestId)) {
-    respondSuccess(0.0, 'add', 'budget-exceeded', $requestId);
+    // Ohne KI-Urteil entscheiden fuer die Whitelist nur die lokalen
+    // Belege - das Budget darf keine freigegebene Post kosten.
+    $budget = applyWhitelistDecision(
+        neutralResponse('budget-exceeded'),
+        whitelistDecision($mail, $localResult, neutralResponse('budget-exceeded'))
+    );
+    respondSuccess(0.0, 'add', 'budget-exceeded', $requestId, $budget['whitelist'] ?? null);
 }
 
 $result = analyzeWithAI($mail, $localResult, $requestId);
+$result = applyWhitelistDecision($result, whitelistDecision($mail, $localResult, $result));
 
 logStats($requestId, [
     'from' => $mail['from'],
@@ -357,13 +371,15 @@ logStats($requestId, [
     'reject_rule' => $result['reject_rule'] ?? '',
     'reject_rule_confidence' => $result['reject_rule_confidence'] ?? null,
     'business_hint' => !empty($result['business_hint']),
+    'whitelist' => $result['whitelist'] ?? null,
 ]);
 
 respondSuccess(
     $result['score'],
     $result['action'],
     $result['reason'],
-    $requestId
+    $requestId,
+    $result['whitelist'] ?? null
 );
 
 
@@ -514,7 +530,15 @@ function prepareMailContext(array $data) {
             // (MSBL EBL). Adressgenau, deshalb auch bei Freemail
             // aussagekraeftig - siehe sender_blocklist_symbols im Lua-Modul.
             'sender_blocklisted' => !empty($signals['sender_blocklisted']),
+            // Nur Phishing-/Malware-Listen (DBL_PHISH, PH_SURBL, OpenPhish
+            // ...) - enger als url_blacklisted. Und ClamAVs Befund. Beides
+            // wertet bisher nur whitelistAbuse() aus.
+            'url_malicious' => !empty($signals['url_malicious']),
+            'virus' => !empty($signals['virus']),
         ],
+        // Eintrag aus ai-filter-whitelist.sh, den das Lua-Modul fuer diese
+        // Mail gefunden hat. null = Absender steht nicht drauf.
+        'whitelist' => normalizeWhitelistMatch($data['whitelist'] ?? null),
         'content_stats' => [
             'body_length' => intval($contentStats['body_length'] ?? mb_strlen($body)),
             'text_part_count' => intval($contentStats['text_part_count'] ?? 0),
@@ -4175,6 +4199,158 @@ function probationEvidence() {
     ];
 }
 
+// =====================================================================
+//  WHITELIST (ai-filter-whitelist.sh)
+//
+//  Ein Eintrag ist ein Zustellversprechen: Was von dort kommt, landet im
+//  Posteingang - auch wenn Rspamd oder die KI es fuer Spam halten. Wer
+//  einen Absender freigibt und die Mail danach trotzdem im Junk findet,
+//  hat zu Recht keine Geduld mehr mit dem Filter.
+//
+//  Gebrochen wird das Versprechen nur bei starken Hinweisen, dass das
+//  Konto selbst missbraucht wird. Ein gekapertes Lieferantenpostfach ist
+//  der teuerste Fall ueberhaupt ("neue Bankverbindung, bitte bis
+//  Freitag"), und genau den winkt eine starre Whitelist durch.
+//
+//  Ob der Absender wirklich der ist, der er vorgibt zu sein (DMARC, oder
+//  DKIM/SPF passend zur From-Domain), prueft das Lua-Modul. Hier kommt nur
+//  an, was dort schon zugeordnet ist.
+// =====================================================================
+
+function normalizeWhitelistMatch($value) {
+    if (!is_array($value) || cleanTextValue($value['entry'] ?? '') === '') {
+        return null;
+    }
+    return [
+        'entry'         => mb_strtolower(cleanTextValue($value['entry'])),
+        'kind'          => ($value['kind'] ?? '') === 'address' ? 'address' : 'domain',
+        'authenticated' => !empty($value['authenticated']),
+        'auth_via'      => cleanTextValue($value['auth_via'] ?? ''),
+    ];
+}
+
+// Belege, die nur ZUSAMMEN mit einem sehr sicheren Phishing-/Betrugsurteil
+// der KI die Whitelist aufheben. Jeder fuer sich kommt bei echten
+// Geschaeftspartnern vor: der Handwerksbetrieb mit Antwortadresse bei
+// t-online, die Rechnung als Link auf einen Cloud-Speicher, ein Kurzlink
+// im Newsletter. Typisch fuer ein gekapertes Konto ist erst die
+// Kombination - "Dokument geteilt" mit Link auf eine Baukastenseite, eine
+// Zahlungsaufforderung mit umgeleiteter Antwortadresse.
+//
+// Bewusst NICHT dabei: alles, was sich aus "kennen wir nicht" speist
+// (fake-thread, role-name-on-freemail, rspamd-concurs, undisclosed-
+// recipient ...). Diesen Absender kennen wir ja gerade, und Rspamds Score
+// ist bei einem Whitelist-Absender eher der Fehlalarm als der Beleg.
+// brand-claim-mismatch fehlt ebenfalls: Es stammt allein aus der
+// Modellangabe und waere damit keine zweite, unabhaengige Quelle.
+function whitelistAbuseCompanions() {
+    return [
+        'hijacked-reply-to',
+        'reply-to-unrelated-domain',
+        'reply-to-freemail-swap',
+        'brand-impersonation',
+        'brand-linked-not-sender',
+        'brand-claim-vs-known-domain',
+        'free-hosting-link',
+        'cloud-storage-only-links',
+        'url-on-blocklist',
+        'url-shortener',
+        'url-fresh-domain',
+        'zip-suspicious-name',
+    ];
+}
+
+// Starke Hinweise auf Missbrauch des freigegebenen Kontos. Leere Liste =
+// zustellen.
+//
+// Allein reicht:
+//   - ein Virus (ClamAV)
+//   - ein Link auf einer Phishing-/Malware-Liste
+//   - ein ausfuehrbarer Anhang (.exe, .js, .iso ...). Ein ZIP namens
+//     "Rechnung.zip" dagegen nicht - das verschicken echte Lieferanten.
+//
+// Sonst nur: KI sagt phishing/fraud mit mindestens AI_CONFIDENT_CONFIDENCE
+// UND mindestens ein Beleg aus whitelistAbuseCompanions(). Das Modell allein
+// bricht das Versprechen nie, ein "spam"- oder "marketing"-Urteil schon gar
+// nicht - der Newsletter des Lieferanten ist freigegeben, so wie er ist.
+function whitelistAbuse(array $mail, array $evidence, $category, $confidence) {
+    $abuse = [];
+
+    if (!empty($mail['signals']['virus'])) {
+        $abuse[] = 'virus';
+    }
+    if (!empty($mail['signals']['url_malicious'])) {
+        $abuse[] = 'malicious-url';
+    }
+
+    $attachments = findDangerousAttachments($mail['attachments'] ?? []);
+    $executable = array_values(array_diff($attachments, ['zip-suspicious-name']));
+    if (!empty($executable)) {
+        $abuse[] = 'dangerous-attachment';
+    }
+
+    if (in_array($category, ['phishing', 'fraud'], true)
+        && floatval($confidence) >= AI_CONFIDENT_CONFIDENCE) {
+        $seen = $evidence;
+        if (!empty($mail['signals']['url_fresh_domain'])) {
+            $seen[] = 'url-fresh-domain';
+        }
+        if (in_array('zip-suspicious-name', $attachments, true)) {
+            $seen[] = 'zip-suspicious-name';
+        }
+        $companions = array_values(array_unique(array_intersect($seen, whitelistAbuseCompanions())));
+        if (!empty($companions)) {
+            $abuse[] = 'ai-' . $category . '+' . implode('+', $companions);
+        }
+    }
+
+    return $abuse;
+}
+
+// Urteil fuer das Lua-Modul und das Log. null = kein Whitelist-Absender.
+//   deliver      - zustellen, Score wird nicht angewandt
+//   abuse        - Whitelist ausgesetzt, normale Bewertung
+//   auth-failed  - Eintrag passt zur Adresse, der Absender ist aber nicht
+//                  als diese Domain authentifiziert: normale Bewertung.
+//                  Steht im Report, weil genau das die Frage "warum liegt
+//                  die freigegebene Mail im Junk?" beantwortet.
+function whitelistDecision(array $mail, array $localContext, array $result) {
+    $wl = $mail['whitelist'] ?? null;
+    if ($wl === null) {
+        return null;
+    }
+    $decision = ['entry' => $wl['entry'], 'verdict' => 'auth-failed', 'abuse' => []];
+    if (!$wl['authenticated']) {
+        return $decision;
+    }
+
+    $evidence = $result['evidence'] ?? collectStructuralEvidence($mail, $localContext, []);
+    $decision['abuse'] = whitelistAbuse(
+        $mail,
+        $evidence,
+        (string)($result['category'] ?? ''),
+        floatval($result['confidence'] ?? 0)
+    );
+    $decision['verdict'] = empty($decision['abuse']) ? 'deliver' : 'abuse';
+    return $decision;
+}
+
+// Ergebnis an das Whitelist-Urteil anpassen. Bei "deliver" addiert der
+// Filter nichts - der Wert, den er sonst vergeben haette, bleibt als
+// ai_score_raw im Log.
+function applyWhitelistDecision(array $result, $decision) {
+    if ($decision === null) {
+        return $result;
+    }
+    $result['whitelist'] = $decision;
+    if ($decision['verdict'] === 'deliver') {
+        $result['ai_score_raw'] = round(floatval($result['ai_score_raw'] ?? $result['score'] ?? 0), 2);
+        $result['score'] = 0.0;
+        $result['reason'] = 'whitelist ' . $decision['entry'] . ': ' . ($result['reason'] ?? '');
+    }
+    return $result;
+}
+
 // ---------------------------------------------------------------------
 //  Object-Storage-Hoster. Landingpages dort sind bei Bulk-Versendern
 //  beliebt, weil die Domain reputabel ist und auf keiner Blockliste steht
@@ -5143,14 +5319,23 @@ function neutralResponse($reason) {
     ];
 }
 
-function respondSuccess($score, $action, $reason, $requestId) {
+function respondSuccess($score, $action, $reason, $requestId, $whitelist = null) {
     header('Content-Type: application/json');
-    echo json_encode([
+    $response = [
         'score' => round($score, 2),
         'action' => $action,
         'reason' => $reason,
         'request_id' => $requestId,
-    ]);
+    ];
+    // Nur bei Whitelist-Absendern. Das Lua-Modul liest daraus, ob es die
+    // Zustellung erzwingt.
+    if ($whitelist !== null) {
+        $response['whitelist'] = [
+            'verdict' => $whitelist['verdict'],
+            'abuse'   => $whitelist['abuse'],
+        ];
+    }
+    echo json_encode($response);
     exit;
 }
 
@@ -5186,7 +5371,10 @@ function logStats($requestId, $data) {
         'ai_score' => $aiScore,
         'total_score' => $totalScore,
         'ai_score_raw' => isset($data['ai_score_raw']) ? round(floatval($data['ai_score_raw']), 2) : $aiScore,
-        'rejected' => AI_MAY_REJECT && $totalScore >= REJECT_THRESHOLD,
+        // Eine Whitelist-Zustellung setzt die Aktion fest auf "no action" -
+        // auch bei einem Rspamd-Score ueber der Schwelle.
+        'rejected' => AI_MAY_REJECT && $totalScore >= REJECT_THRESHOLD
+            && ($data['whitelist']['verdict'] ?? '') !== 'deliver',
         'ai_action' => $data['ai_action'] ?? 'add',
         'category' => $data['category'] ?? 'unknown',
         // Ohne die Confidence laesst sich im Nachhinein nicht beurteilen,
@@ -5263,6 +5451,16 @@ function logStats($requestId, $data) {
         // Sperre fuer Reject-Pfade und Junk-Floor zugleich.
         'real_conversation' => !empty($data['real_conversation']),
     ];
+
+    // Nur bei Absendern, auf die ein Whitelist-Eintrag passt. Eine
+    // Adresse als Eintrag ist personenbezogen und wird gekuerzt wie
+    // "from"; eine Domain bleibt stehen.
+    if (!empty($data['whitelist'])) {
+        $wlEntry = (string)$data['whitelist']['entry'];
+        $entry['whitelist'] = strpos($wlEntry, '@') !== false ? anonymizeAddress($wlEntry) : $wlEntry;
+        $entry['whitelist_verdict'] = (string)$data['whitelist']['verdict'];
+        $entry['whitelist_abuse'] = normalizeStringList($data['whitelist']['abuse'] ?? []);
+    }
 
     // Betreff: siehe LOG_SUBJECT, standardmaessig an.
     if (LOG_SUBJECT) {

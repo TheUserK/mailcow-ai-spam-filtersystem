@@ -20,11 +20,14 @@ ai_filter_settings = {
   -- Log-only mode: log what the AI would have added but don't apply the score
   log_only_mode = false,
 
-  -- Whitelisted sender domains (skip AI check entirely, saves an API call)
+  -- Skip the AI check for these senders (saves an API call). This is NOT a
+  -- delivery promise: Rspamd's own score still decides, and the AI check is
+  -- simply left out. For senders that must always reach the inbox use
+  -- ai-filter-whitelist.sh instead - a sender listed there wins over these
+  -- two lists.
   -- Example: whitelist_domains = {'example.com', 'trusted.de'},
   whitelist_domains = {},
 
-  -- Whitelisted sender addresses (skip AI check entirely, saves an API call)
   -- Example: whitelist_senders = {'noreply@bank.de', 'alerts@monitor.local'},
   whitelist_senders = {},
 }

@@ -328,6 +328,32 @@ BODY=$(
         "$(printf 'Kein Score-Rabatt: nur erwartbare From-/Markenabweichung entwertet. Passen Plattform und Mailtyp?')" \
         '(.delegated_sender // "") != ""' && FOUND=1
 
+    # 0f. Whitelist (ai-filter-whitelist.sh). Ein Eintrag verspricht
+    #     Zustellung; jede Stelle, an der das Versprechen gebrochen wurde
+    #     oder gar nicht greifen konnte, gehoert angesehen.
+    #
+    #     Ausgesetzt: starke Hinweise auf ein missbrauchtes Konto. Stimmt
+    #     das, ist beim Absender ein Postfach gekapert - Bescheid geben.
+    render_group "Whitelist ausgesetzt: Konto vermutlich missbraucht" \
+        "$(printf 'Freigegebener Absender, aber starke Hinweise auf ein gekapertes Konto - normal bewertet.')" \
+        '(.whitelist_verdict // "") == "abuse"' && FOUND=1
+
+    #     Eintrag passt zur Adresse, aber der Absender hat sich nicht
+    #     ausgewiesen. Entweder eine Faelschung - oder der Absender
+    #     verschickt ueber einen Dienst ohne DKIM/SPF fuer seine Domain, und
+    #     die freigegebene Post landet trotzdem im Junk. Genau die Frage,
+    #     mit der sich ein Kunde meldet.
+    render_group "Whitelist greift nicht: Absender nicht authentifiziert" \
+        "$(printf 'Eintrag passt, aber weder DMARC noch DKIM/SPF bestaetigen die Domain - normal bewertet.')" \
+        '(.whitelist_verdict // "") == "auth-failed"' && FOUND=1
+
+    #     Zugestellt, obwohl die KI Phishing oder Betrug sah - nur ohne
+    #     zweiten Beleg. Hier faellt auf, welches Signal fuer gekaperte
+    #     Konten noch fehlt.
+    render_group "Whitelist hat zugestellt, KI sah Betrug" \
+        "$(printf 'Kein zweiter Beleg, deshalb zugestellt. Stimmt die Einschaetzung der KI, fehlt ein Signal.')" \
+        '(.whitelist_verdict // "") == "deliver" and (.category == "fraud" or .category == "phishing")' && FOUND=1
+
     # 7. Betrug erkannt, aber kein Beleg - also zugestellt.
     #
     # Das ist die wichtigste Gruppe fuer die Weiterentwicklung: Die KI ist
@@ -343,7 +369,8 @@ BODY=$(
         "$(printf 'Die KI ist sicher, es fehlt aber ein struktureller Beleg - die Mail wurde zugestellt.')" \
         '(.category == "fraud" or .category == "phishing")
          and ((.evidence // []) | length) == 0
-         and ((.rejected // false) | not)' && FOUND=1
+         and ((.rejected // false) | not)
+         and ((.whitelist_verdict // "") != "deliver")' && FOUND=1
 
     # 8. Keine Logzeilen-Gruppe, sondern eine Konfigurationsluecke.
     render_missing_context && FOUND=1
@@ -370,8 +397,11 @@ Die Zahl ist der GESAMTSCORE (Rspamd + KI), ab 15 wird abgewiesen.
   ABGEWIESEN   die Mail wurde am Server abgelehnt, sie kam nie an.
   freigegeben  sie haette abgewiesen werden duerfen, blieb aber unter der
                Schwelle - sie wurde ZUGESTELLT (meist in den Junk-Ordner).
+  Ausnahme \"Whitelist hat zugestellt\": Dort wurde unabhaengig vom Score
+  in den Posteingang zugestellt.
 
   ai-filter-log.sh -n 200 -F <absender>     Umfeld ansehen
+  ai-filter-whitelist.sh check <absender>   Whitelist-Urteile eines Absenders
   ai-filter-report.sh --disable             diesen Report abstellen
 "
 

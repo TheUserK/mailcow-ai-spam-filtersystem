@@ -191,7 +191,8 @@ fi
 # meldet der Healthcheck die eigene Erweiterung als Fremdfilter. Genau das
 # passierte am 30.08. mit AI_FILTER_FISHY_TLD, dem Punktaufschlag fuer
 # Wegwerf-Topleveldomains.
-OWN_SYMBOLS='^AI_(CONTENT_(SCORE|FILTER)|FILTER_FISHY_TLD)$'
+# Seit 11.10. auch AI_WHITELIST (ai-filter-whitelist.sh).
+OWN_SYMBOLS='^AI_(CONTENT_(SCORE|FILTER)|FILTER_FISHY_TLD|WHITELIST)$'
 FOREIGN_AI=$($COMPOSE_CMD exec -T rspamd-mailcow rspamc counters 2>/dev/null \
     | grep -oE '\b[A-Z0-9_]*AI_[A-Z0-9_]*\b' | sort -u \
     | grep -vE "$OWN_SYMBOLS" | tr '\n' ' ')
@@ -211,6 +212,20 @@ if [[ -f "data/conf/rspamd/local.d/groups.conf" ]]; then
     else
         echo -e "${YELLOW}[WARN]${NC} ai_filter group missing in groups.conf"
     fi
+fi
+
+# 8b. Fishy-TLD list where Rspamd can see it, and no leftover multimap rule.
+# Bis 11.10. lag die Liste in data/conf/rspamd/, das mailcow nicht in den
+# Container haengt - die Regel hat nie gegriffen, und nur Rspamds Log
+# sagte es ("map file is not found").
+if [[ -f "data/conf/rspamd/custom/ai-filter-tlds.map" ]]; then
+    echo -e "${GREEN}[OK]${NC} Fishy-TLD list present (custom/ai-filter-tlds.map)"
+else
+    echo -e "${YELLOW}[WARN]${NC} custom/ai-filter-tlds.map missing - fishy-TLD scoring inactive (install.sh --upgrade restores it)"
+fi
+if grep -qs "AI_FILTER_FISHY_TLD" data/conf/rspamd/local.d/multimap.conf; then
+    echo -e "${YELLOW}[WARN]${NC} Old AI_FILTER_FISHY_TLD rule still in mailcow's local.d/multimap.conf"
+    echo "       It breaks mailcow updates on upstream changes. install.sh --upgrade removes it."
 fi
 
 # 9. Is log rotation actually happening?

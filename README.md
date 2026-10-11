@@ -46,6 +46,7 @@ AI-powered spam filter for Mailcow using IONOS AI Model Hub. Detects sophisticat
 - **Additive scoring** - The AI and the local heuristics only ever add a graduated, signed score (positive = spam, negative = ham) to Rspamd's own metric; Rspamd's own thresholds make the final call. The score a category may contribute is capped as a *total*, so protected categories - transactional mail, personal mail, solicited newsletters - cannot be rejected no matter how badly the AI misjudges them.
 - **Two paths to rejection, both gated** - Either a structural signal independent of the model agrees (brand impersonation, a hijacked reply-to, a dangerous attachment, a fabricated ticket number, a link to the real brand domain from an unrelated sender, and others - eleven classes in total), or the model itself is very confident (≥90%) *and* Rspamd's own score clears a real bar on its own (the AI's contribution alone is capped well under the reject threshold, so Rspamd has to agree independently either way). Both paths additionally require: no trusted-sender match, no reply to an existing thread, no verified brand sender.
 - **Cases the filter is unsure about get reported, not just logged** - `ai-filter-report.sh` collects contradictions (a phishing verdict on a clean sender, structural evidence on a mail that scored negative, ...) and mails them on weekdays. Newly added evidence classes start on probation - counted, reported, but unable to reject on their own until proven.
+- **A whitelist that still notices a hijacked account** - `ai-filter-whitelist.sh add supplier.example` promises delivery: mail from that sender reaches the inbox even when Rspamd or the AI call it spam. Unlike mailcow's own whitelist, the sender has to authenticate for that domain (DMARC, or aligned DKIM/SPF), and the promise is broken only by strong signs that the account itself is being abused - a virus, an executable attachment, a link on a phishing/malware list, or a confident phishing/fraud verdict backed by a structural signal such as a hijacked reply-to. The model alone never breaks it.
 - **Trusted sender profiles** - Known shippers, marketplaces, banks and telecoms get a safe local auto-pass (no AI call, no cost) when auth is strong and headers/links align - extendable via `trusted_sender_profiles.json`.
 - **Uses Rspamd's own URL reputation** - Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank and the fresh-domain zone are queried by stock mailcow anyway; their results are folded into the analysis as risk flags. No extra service, no additional lookups, no new dependency.
 - **Brand-impersonation detection, two mechanisms** - A short hand-curated list of real domains per brand catches typosquats and foreign-domain claims; a separately generated list of several thousand brand names (from the Majestic Million, see below) catches the model's own claimed-brand text against a domain that has nothing to do with it. Federated brand names (Sparkasse, Volksbank, Sparda - hundreds of independently run banks sharing one name) are deliberately excluded from the single-domain check, which is structurally wrong for that shape.
@@ -198,6 +199,8 @@ ai-filter-brands.sh --status      # Brand-domain list: size, age, last update
 ai-filter-brands.sh               # Regenerate it (downloads the Majestic Million, ~80 MB)
 ai-filter-context.sh --status     # What your own domains are classified as
 ai-filter-context.sh              # Classify domains that have no entry yet
+ai-filter-whitelist.sh list       # Senders that are always delivered
+ai-filter-whitelist.sh check ADDR # Does an entry apply, and what happened to the last mails
 ai-filter-rank.sh --status        # Domain-rank database: size, age
 ai-filter-rank.sh --show DOMAIN   # Look up one domain's rank
 install.sh --check                # Same health check
@@ -256,11 +259,20 @@ ai-filter-brands.sh --debug      # read/kept/dropped counts, for troubleshooting
 An install with fewer than 1000 entries is treated as damaged by `install.sh
 --upgrade` and rebuilt automatically.
 
-`AI_FILTER_FISHY_TLD` (Rspamd multimap, weight 2.5) adds a small score bump
-for sender domains on top-level domains that are frequently abused for spam
-(`.shop`, `.top`, `.icu`, ...). The list is yours to edit:
-`data/conf/rspamd/ai-filter-tlds.map`. Never enough on its own to change the
-outcome.
+`AI_FILTER_FISHY_TLD` (weight 2.5, checked in the filter's own Lua module)
+adds a small score bump for sender domains on top-level domains that are
+frequently abused for spam (`.shop`, `.top`, `.icu`, ...). The list is yours
+to edit: `data/conf/rspamd/custom/ai-filter-tlds.map`, re-read within a
+minute. Never enough on its own to change the outcome.
+
+Up to 11.10. this was a multimap rule appended to mailcow's own
+`local.d/multimap.conf`, pointing at a map in `data/conf/rspamd/` - a folder
+mailcow does not mount into the container, so Rspamd logged "map file is not
+found" and the rule never fired. Editing a file from mailcow's repository
+also made `update.sh` carry a local commit that could end in a merge
+conflict. `install.sh --upgrade` moves the map to `custom/` (your additions
+included) and removes the old rule from `multimap.conf`, leaving that file as
+mailcow shipped it (a backup is kept next to it).
 
 Greylisting (`greylisting.conf`, threshold 4.0) delays first-contact mail
 that Rspamd already finds middling by a few minutes - long enough that most
@@ -342,6 +354,55 @@ established even when its mailbox is compromised - so this is prompt
 context for the model's own judgment, not a code-level exemption from
 anything else the filter checks.
 
+### Senders that must always arrive (whitelist)
+
+Putting a sender on mailcow's own whitelist switches filtering off for it
+completely - including the day its mailbox gets hijacked and sends "our bank
+details have changed, please pay by Friday". `ai-filter-whitelist.sh` keeps
+its own list with a different promise: **delivered, unless there are strong
+signs the account is being abused.**
+
+```bash
+ai-filter-whitelist.sh add supplier.example "main supplier"   # domain incl. subdomains
+ai-filter-whitelist.sh add jane.doe@gmail.example              # a single address
+ai-filter-whitelist.sh remove supplier.example
+ai-filter-whitelist.sh list
+ai-filter-whitelist.sh check invoices@supplier.example         # applies? last verdicts?
+ai-filter-whitelist.sh mailcow [--import]                      # show / copy mailcow's list
+```
+
+- **Delivered means delivered.** The filter forces Rspamd's action to "no
+  action": no junk folder, no greylisting, no rejection - regardless of
+  Rspamd's score or a lower per-mailbox threshold. A virus scanner or another
+  module that has already set an action keeps it.
+- **The sender has to prove who it is.** The entry applies only if the From
+  domain passes DMARC, or - for domains without a DMARC policy - carries an
+  aligned DKIM signature or SPF pass. A forged `From: supplier.example` gets
+  normal filtering.
+- **What breaks the promise.** On its own: a virus, an executable attachment
+  (`.exe`, `.js`, `.iso`, ... - not an `Invoice.zip`), a link on a
+  phishing/malware list. Otherwise only a phishing/fraud verdict with at least
+  90 % confidence **plus** a structural signal: reply-to redirected to an
+  unrelated or freemail address, a link to a free-hosting site, cloud-storage
+  links only, a URL shortener, a fresh or blocklisted link domain, brand
+  impersonation. A "spam" or "marketing" verdict never counts - the supplier's
+  newsletter is whitelisted as it is.
+- **The AI keeps checking**, also above Rspamd's reject threshold, which is
+  usually exactly the false positive the entry is for. If the AI provider
+  fails or the budget runs out, the mail is delivered unless Rspamd itself
+  found a virus or a phishing link.
+- Whole freemail domains are refused (`gmail.com` would whitelist every Gmail
+  account), and so are your own mailcow domains. The list applies to all
+  mailboxes and takes effect within a minute, no restart.
+
+Every suspended promise, every entry that matched an unauthenticated sender,
+and every delivered mail the AI considered fraud shows up in the daily
+contradiction report below. As long as a sender is also on mailcow's own
+whitelist, mailcow wins - `ai-filter-whitelist.sh mailcow` lists those
+entries, `--import` copies them (mailcow's list stays untouched).
+
+Details: [CONFIGURATION.md](docs/CONFIGURATION.md#sender-whitelist-ai-filter-whitelistsh).
+
 ### The contradiction report
 
 Every mistake this filter has had was found the same way: somebody read a log
@@ -418,7 +479,7 @@ What the upgrade replaces, and what it leaves alone:
 | | |
 |---|---|
 | Replaced | `ai-mail-checker.php` (your API key is read out first and put back), `router.php`, `Dockerfile`, `ai-content-filter.lua`, the scripts in `/usr/local/bin` |
-| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `business_context.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `domain_ranks.sqlite` (rebuilt only if under 500,000 rows), `ai-filter-tlds.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
+| Kept | `ai-filter-settings.lua`, `trusted_sender_profiles.json`, `business_context.json`, `brand_domains.txt` (rebuilt only if under 1000 entries), `domain_ranks.sqlite` (rebuilt only if under 500,000 rows), `ai-filter-tlds.map`, `ai-filter-whitelist.map`, `greylisting.conf`, your `groups.conf` and `rspamd.local.lua` entries |
 | Offered | `docker-compose.override.yml` - only updated after you confirm, and only if `ai-checker` is the sole service in it. A backup is written either way. If the file defines other services, the installer prints what to merge and changes nothing |
 
 The override matters: it carries the build context that brings `pdo_mysql`
@@ -448,7 +509,9 @@ IONOS (Frankfurt/Berlin):
 | Technical signals | Rspamd score, SPF/DKIM/DMARC results, risk/trust flags |
 
 Most mail never gets that far - internal mail, trusted-sender auto-passes and
-a decisive Rspamd score all skip the AI call entirely.
+a decisive Rspamd score all skip the AI call entirely. One exception: mail
+from a sender on `ai-filter-whitelist.sh` is sent even when Rspamd's score is
+above the reject threshold, so the AI can check it for a hijacked account.
 
 **Outgoing mail from your own authenticated users is never analysed** and
 never reaches the AI provider.

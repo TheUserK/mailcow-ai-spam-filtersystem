@@ -3,9 +3,12 @@
 There is no `config.ini` in v3. Configuration is split across two files:
 
 1. **`/opt/mailcow-dockerized/data/ai-checker/ai-mail-checker.php`** - API key, budget, scoring caps (PHP constants near the top of the file)
-2. **`/opt/mailcow-dockerized/data/conf/rspamd/lua/ai-filter-settings.lua`** - when the AI gets called at all, log-only mode, sender whitelist
+2. **`/opt/mailcow-dockerized/data/conf/rspamd/lua/ai-filter-settings.lua`** - when the AI gets called at all, log-only mode, senders that skip the AI call
 
-Plus an optional **`trusted_sender_profiles.json`** for your own trusted senders.
+Plus an optional **`trusted_sender_profiles.json`** for your own trusted senders,
+and **`ai-filter-whitelist.map`** next to the settings for senders that are
+always delivered - managed with `ai-filter-whitelist.sh`, see
+[Sender whitelist](#sender-whitelist-ai-filter-whitelistsh).
 
 After changes to the PHP file, restart the container:
 ```bash
@@ -988,8 +991,8 @@ sudo ./install.sh --reinstall
 ```
 
 Kept: your API key (read out of the deployed script), `trusted_sender_profiles.json`,
-`brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`
-and `greylisting.conf`. Overwritten: `ai-filter-settings.lua`, the `ai_filter`
+`brand_domains.txt` (rebuilt only if under 1000 entries), `ai-filter-tlds.map`,
+`ai-filter-whitelist.map` and `greylisting.conf`. Overwritten: `ai-filter-settings.lua`, the `ai_filter`
 block in `groups.conf`, `docker-compose.override.yml`, and all PHP/Lua/script
 files. Every overwritten file is backed up first. Other groups in
 `groups.conf` and other services in the override file are not touched.
@@ -1152,6 +1155,89 @@ docker compose exec rspamd-mailcow rspamc counters | grep -iE 'blocked|_fail'
 #   any non-zero *_BLOCKED / *_FAIL counter means your resolver is being refused
 ```
 
+## Sender whitelist (ai-filter-whitelist.sh)
+
+`/opt/mailcow-dockerized/data/conf/rspamd/lua/ai-filter-whitelist.map`,
+managed with `ai-filter-whitelist.sh`. One entry per line: a domain (also
+covers its subdomains) or a single address; everything after `#` is a comment.
+The Lua module re-reads the file every 60 seconds - no restart.
+
+An entry is a **delivery promise**. When it applies, the Lua module sets
+Rspamd's action to `no action` (`task:set_pre_result`), so neither Rspamd's
+own score, nor the AI, nor a lower per-mailbox threshold can move the mail to
+junk, greylist or reject it. The symbol `AI_WHITELIST` (weight 0) marks such
+mail. If another module has already set an action (antivirus, ratelimit), it
+is left alone.
+
+### When an entry applies
+
+1. The **From header** matches: same address, or the domain equals the entry
+   or is a subdomain of it.
+2. The sender is **authenticated for that domain**: `DMARC_POLICY_ALLOW`; a
+   DMARC failure rules it out. Without a DMARC policy, an `R_DKIM_ALLOW`
+   signature for the From domain (or a parent/sub domain of it) or
+   `R_SPF_ALLOW` with an envelope domain aligned the same way is enough.
+   Sibling subdomains do not count - stricter than DMARC's relaxed alignment.
+
+If 1 holds and 2 does not, the mail is filtered normally and logged as
+`whitelist_verdict: auth-failed`. Mail forwarded through a mailing list that
+breaks DKIM ends up here.
+
+### What breaks the promise
+
+`whitelistAbuse()` in the checker. Each of these alone:
+
+| Reason | Source |
+|---|---|
+| `virus` | `CLAM_VIRUS` |
+| `malicious-url` | phishing/malware lists only: `DBL_PHISH`, `DBL_MALWARE`, `DBL_BOTNET`, the `DBL_ABUSE_*` variants, `PH_SURBL_MULTI`, `MW_SURBL_MULTI`, `PHISHED_OPENPHISH`, `PHISHED_PHISHTANK` |
+| `dangerous-attachment` | executable extensions from `findDangerousAttachments()`; a suspiciously named ZIP does **not** count alone |
+
+Otherwise only the combination `ai-<category>+<signals>`: category `phishing`
+or `fraud` with confidence >= `AI_CONFIDENT_CONFIDENCE` (0.90) **and** at least
+one of `hijacked-reply-to`, `reply-to-unrelated-domain`,
+`reply-to-freemail-swap`, `brand-impersonation`, `brand-linked-not-sender`,
+`brand-claim-vs-known-domain`, `free-hosting-link`,
+`cloud-storage-only-links`, `url-on-blocklist`, `url-shortener`,
+`url-fresh-domain`, `zip-suspicious-name` (`whitelistAbuseCompanions()`).
+
+Deliberately left out: everything that means "we don't know this sender"
+(`fake-thread`, `role-name-on-freemail`, `undisclosed-recipient`,
+`rspamd-concurs`, ...) - this sender we do know, and for it a high Rspamd
+score is the false positive rather than the evidence. `brand-claim-mismatch`
+comes from the model's own output and would not be a second source.
+Probation (`probationEvidence()`) does not apply here: these signals only
+suspend the promise, the normal rules then decide.
+
+When the promise is suspended, the mail is scored exactly as if the sender
+were not on the list - junk floor, reject paths and their gates included.
+
+### Without a verdict from the checker
+
+Timeout, HTTP error, unparsable answer or an exhausted budget: the mail is
+delivered unless Rspamd itself has `virus` or `malicious-url`. A provider
+outage must not cost whitelisted mail. The AI is also called above
+`skip_score_above` for whitelisted senders - that score is usually the very
+false positive the entry is for.
+
+### Log and report
+
+`stats.log` gets `whitelist` (the entry; an address is shortened like
+`from`), `whitelist_verdict` (`deliver`, `abuse`, `auth-failed`) and
+`whitelist_abuse`. On `deliver` the logged `ai_score` is 0 and `ai_score_raw`
+holds what the filter would have added. `ai-filter-report.sh` has three
+groups: promise suspended, entry matched an unauthenticated sender, and
+delivered although the AI saw fraud/phishing.
+
+### mailcow's own whitelist
+
+Entries in mailcow's spam filter whitelist get a huge negative Rspamd score;
+such mail falls below `skip_score_below` and never reaches this filter.
+`ai-filter-whitelist.sh mailcow` lists them (read-only, table `filterconf`),
+`--import` copies them here. mailcow's list is never changed - delete the
+entries in the mailcow UI after importing, otherwise mailcow still wins.
+Note that mailcow entries are per mailbox/domain, ours apply server-wide.
+
 ## ai-filter-settings.lua
 
 `/opt/mailcow-dockerized/data/conf/rspamd/lua/ai-filter-settings.lua`
@@ -1163,8 +1249,8 @@ docker compose exec rspamd-mailcow rspamc counters | grep -iE 'blocked|_fail'
 | `skip_score_below` | `-10.0` | Skip the AI call if Rspamd's score is already this low |
 | `http_timeout` | `30.0` | HTTP timeout for the checker call |
 | `log_only_mode` | `false` | Still calls the checker and logs the result, but never applies the score |
-| `whitelist_domains` | `{}` | Sender domains that skip the AI call entirely (Lua table) |
-| `whitelist_senders` | `{}` | Sender addresses that skip the AI call entirely (Lua table) |
+| `whitelist_domains` | `{}` | Sender domains that skip the AI call entirely (Lua table) - no delivery promise |
+| `whitelist_senders` | `{}` | Sender addresses that skip the AI call entirely (Lua table) - no delivery promise |
 
 Example:
 ```lua
@@ -1176,6 +1262,9 @@ whitelist_senders = {'noreply@bank.de', 'cron@server.local'},
 trusted-sender/impersonation checks. Prefer `trusted_sender_profiles.json`
 for anything where you still want brand-impersonation protection; use the
 Lua whitelist only for sources you fully trust and want to save API calls on.
+These two lists do not promise delivery - Rspamd's own score still decides.
+For that, use [`ai-filter-whitelist.sh`](#sender-whitelist-ai-filter-whitelistsh);
+a sender on that list ignores these two.
 
 ## Performance / cost tuning
 

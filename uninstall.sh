@@ -59,6 +59,13 @@ if [[ -f "data/conf/rspamd/rspamd.conf.local" ]]; then
 fi
 rm -f data/conf/rspamd/lua/ai-content-filter.lua
 rm -f data/conf/rspamd/lua/ai-filter-settings.lua
+rm -f data/conf/rspamd/lua/ai-filter-whitelist.map
+rm -f data/conf/rspamd/custom/ai-filter-tlds.map data/conf/rspamd/ai-filter-tlds.map
+# Aeltere Fassungen hatten die TLD-Regel an mailcows multimap.conf angehaengt.
+if grep -qs "AI_FILTER_FISHY_TLD" data/conf/rspamd/local.d/multimap.conf; then
+    sed -i '/^# Punktaufschlag fuer Absender auf Wegwerf-Topleveldomains/,/^AI_FILTER_FISHY_TLD[[:space:]]*{/{/^AI_FILTER_FISHY_TLD/!d}' data/conf/rspamd/local.d/multimap.conf
+    sed -i '/^AI_FILTER_FISHY_TLD[[:space:]]*{/,/^}/d' data/conf/rspamd/local.d/multimap.conf
+fi
 echo -e "${GREEN}[OK]${NC} Lua filter files removed"
 
 # Clean groups.conf (v2 and v1)

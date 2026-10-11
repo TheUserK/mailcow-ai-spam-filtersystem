@@ -78,6 +78,14 @@ threshold. Its claimed pharmacy must match the sole external merchant domain.
 Matches are stored as `delegated_sender`; risky URLs, attachments, missing
 authentication or a topology mismatch disable the exception.
 
+The **sender whitelist** (`ai-filter-whitelist.sh`) is the one place where
+the filter does set an action: for an authenticated sender on the list, the
+Lua module forces `no action` via `set_pre_result`, independent of every
+score. The checker still analyses the mail and only answers whether there are
+strong signs the account is abused (`whitelistAbuse()`); if so, the
+whitelist steps aside and everything above applies unchanged. See
+[CONFIGURATION.md](CONFIGURATION.md#sender-whitelist-ai-filter-whitelistsh).
+
 Either way, no trusted-sender match and no reply to an existing thread (a
 forgeable `In-Reply-To` header is not enough by itself - see
 `partOfRealConversation()`) are required. A single wrong verdict therefore
@@ -181,8 +189,8 @@ Incoming Email
 - Adds the returned score directly to the `AI_CONTENT_SCORE` symbol (no more weight division or forced reject - the number the checker returns *is* the Rspamd score delta)
 - Supports log-only mode (calls the checker, logs what it would have added, but doesn't apply it)
 
-### 4. Two independent Rspamd modules, not the checker
-- `AI_FILTER_FISHY_TLD` (multimap, weight 2.5): sender domain on an abused TLD (`.shop`, `.top`, `.icu`, ...), list at `data/conf/rspamd/ai-filter-tlds.map`. Never blocks alone
+### 4. Two independent Rspamd checks, not the checker
+- `AI_FILTER_FISHY_TLD` (registered by `ai-content-filter.lua`, weight 2.5): sender domain on an abused TLD (`.shop`, `.top`, `.icu`, ...), list at `data/conf/rspamd/custom/ai-filter-tlds.map`. Never blocks alone. Deliberately not a multimap rule: that would mean editing mailcow's tracked `local.d/multimap.conf`
 - Greylisting (`data/conf/rspamd/local.d/greylisting.conf`, threshold 4.0): delays first-contact mail Rspamd already finds middling by a few minutes
 
 ### 5. AI Analysis
@@ -210,11 +218,12 @@ Incoming Email
 |   |   +-- rspamd.conf.local       # Two-line section enabling the module above (tracked mailcow stub)
 |   |   +-- lua/
 |   |   |   +-- ai-filter-settings.lua  # Filter settings, loaded via loadfile()
+|   |   |   +-- ai-filter-whitelist.map # Sender whitelist, managed with ai-filter-whitelist.sh
 |   |   +-- local.d/
 |   |   |   +-- groups.conf         # Symbol group definition
-|   |   |   +-- multimap.conf       # Fishy-TLD scoring entry
 |   |   |   +-- greylisting.conf    # Greylisting settings
-|   |   +-- ai-filter-tlds.map      # Fishy-TLD list, operator-editable
+|   |   +-- custom/
+|   |   |   +-- ai-filter-tlds.map  # Fishy-TLD list, operator-editable
 |   +-- logs/ai-checker/
 |       +-- stats.log               # Analysis results
 |       +-- errors.log              # Error events
