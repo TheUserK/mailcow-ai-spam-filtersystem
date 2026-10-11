@@ -778,7 +778,7 @@ instead reads only the handful of disk pages a single query touches, and the
 OS page cache is shared across all 4 workers automatically since they all
 read the same file. Measured: near-zero additional PHP memory per lookup,
 0.2-1.2 ms per query. `pdo_sqlite` is added in the Dockerfile for this
-(the official `php:8.4-cli` image does not ship it, same situation as
+(the official `php:8-cli` image does not ship it, same situation as
 `pdo_mysql`).
 
 ```bash

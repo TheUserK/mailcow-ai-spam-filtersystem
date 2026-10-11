@@ -2631,7 +2631,10 @@ PROMPT;
         $result   = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlErr  = curl_error($ch);
-        curl_close($ch);
+        // Kein curl_close(): seit PHP 8.0 wirkungslos, ab 8.5 als veraltet
+        // gemeldet - bei jedem KI-Aufruf eine Zeile im Error-Log. Das
+        // Handle wird mit der Variable freigegeben.
+        unset($ch);
 
         if ($httpCode === 200) {
             recordApiLatency(microtime(true) - $started);

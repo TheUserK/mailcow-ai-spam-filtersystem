@@ -199,6 +199,7 @@ ai-filter-brands.sh --status      # Brand-domain list: size, age, last update
 ai-filter-brands.sh               # Regenerate it (downloads the Majestic Million, ~80 MB)
 ai-filter-context.sh --status     # What your own domains are classified as
 ai-filter-context.sh              # Classify domains that have no entry yet
+ai-filter-update-image.sh --status  # PHP version and age of the ai-checker image
 ai-filter-whitelist.sh list       # Senders that are always delivered
 ai-filter-whitelist.sh check ADDR # Does an entry apply, and what happened to the last mails
 ai-filter-rank.sh --status        # Domain-rank database: size, age
@@ -429,6 +430,34 @@ Mail is injected straight into mailcow's Postfix container, so it needs no
 mailbox, no credentials and no SMTP login. Point it at an address on a
 *different* server than the one it watches: if delivery breaks, you want the
 report about it to still arrive.
+
+## Keeping the ai-checker container up to date
+
+The container is built locally from `php:8-cli`, so mailcow's `update.sh`
+never touches it, and a plain `up --build` reuses the cached base image -
+it would stay on the PHP and Debian state of the first install forever.
+
+`ai-filter-update-image.sh` runs every Sunday at 03:30 (cron, set up by the
+installer) and rebuilds with a fresh base image. `php:8-cli` follows every
+8.x release (8.5, 8.6, ...) including patch and Debian security updates; it
+deliberately does not follow `php:cli`, which would one day jump to PHP 9
+unattended. The switch only happens if the new image proves itself:
+
+1. **Build.** If that fails, the running container stays untouched.
+2. **Check before switching:** `pdo_mysql`, `pdo_sqlite`, `curl`, `json`,
+   `mbstring` present, and the checker itself starts under the new PHP.
+3. **Switch and wait for "healthy".** If it does not get there, the previous
+   image is put back (kept as `mailcow-ai-checker:rollback`).
+
+Failures go by mail to the address of `ai-filter-report.sh`; a successful
+update stays silent and is only logged.
+
+```bash
+ai-filter-update-image.sh            # update now
+ai-filter-update-image.sh --status   # PHP version, image age, last runs
+```
+
+`ai-filter-healthcheck.sh` warns once the image is older than three weeks.
 
 ## Mailcow updates
 

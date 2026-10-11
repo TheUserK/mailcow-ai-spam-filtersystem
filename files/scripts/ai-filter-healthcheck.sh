@@ -155,6 +155,23 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
+# 5b. Is the image being kept up to date?
+# Der Container wird lokal gebaut; ohne ai-filter-update-image.sh (Cron,
+# sonntags) bliebe er fuer immer auf dem PHP- und Debian-Stand des ersten
+# Installs. Nach drei Wochen ist mindestens ein Lauf ausgefallen.
+IMG_ID=$(docker inspect --format '{{.Image}}' mailcow-ai-checker 2>/dev/null)
+if [[ -n "$IMG_ID" ]]; then
+    IMG_CREATED=$(docker image inspect --format '{{.Created}}' "$IMG_ID" 2>/dev/null)
+    IMG_AGE=$(( ( $(date +%s) - $(date -d "$IMG_CREATED" +%s 2>/dev/null || date +%s) ) / 86400 ))
+    IMG_PHP=$(docker exec mailcow-ai-checker php -r 'echo PHP_VERSION;' 2>/dev/null)
+    if [[ $IMG_AGE -gt 21 ]]; then
+        echo -e "${YELLOW}[WARN]${NC} ai-checker image is $IMG_AGE days old (PHP ${IMG_PHP:-?}) - no security updates since"
+        echo "       Update: ai-filter-update-image.sh   Last runs: ai-filter-update-image.sh --status"
+    else
+        echo -e "${GREEN}[OK]${NC} ai-checker image $IMG_AGE days old (PHP ${IMG_PHP:-?})"
+    fi
+fi
+
 # 6. Check rspamd filter loaded
 # Ask rspamd what it actually has registered instead of searching the log for
 # an init line. A log line only proves the filter loaded at some point - it

@@ -574,6 +574,17 @@ echo -e "${GREEN}[OK]${NC} Daily report scheduled (weekdays 08:00)"
 # diesem Server und wird bewusst NICHT mit dem Projekt ausgeliefert: Die
 # Quelle steht unter CC BY 3.0, und wer nichts weitergibt, muss auch
 # nichts nennen.
+# Container-Image aktuell halten: PHP 8.x samt Patches und Debian-Updates.
+# Sonntags 3:30, vor der Markenliste. Bei einem kaputten Build laeuft der
+# alte Container weiter, ein kranker neuer wird zurueckgedreht - beides
+# meldet das Skript per Mail an die Report-Adresse.
+cat > /etc/cron.d/ai-filter-image <<'CRON'
+# ai-checker-Image neu bauen (frisches php:8-cli), sonntags um 3:30.
+# Von Hand: ai-filter-update-image.sh    Stand: ai-filter-update-image.sh --status
+30 3 * * 0 root /usr/local/bin/ai-filter-update-image.sh --cron >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/ai-filter-image
+
 cat > /etc/cron.d/ai-filter-brands <<'CRON'
 # Marken-Domains fuer die Impersonation-Erkennung, sonntags um 4 Uhr.
 # Von Hand: ai-filter-brands.sh          Stand: ai-filter-brands.sh --status
@@ -700,7 +711,10 @@ echo "Rspamd untouched, so the filter would stay inactive."
 read -p "Start ai-checker and restart Rspamd now? (y/N): " start_containers
 
 if [[ $start_containers =~ ^[Yy]$ ]]; then
-    $COMPOSE_CMD up -d --build ai-checker
+    # --pull: immer mit frischem Basis-Image bauen. Ohne das nimmt Docker
+    # das Image aus dem Cache, und PHP-Patches wie Debian-Sicherheitsupdates
+    # kommen nie an - der Container blieb auf dem Stand des ersten Installs.
+    $COMPOSE_CMD build --pull ai-checker && $COMPOSE_CMD up -d ai-checker
     sleep 5
 
     if $COMPOSE_CMD ps 2>/dev/null | grep -q "ai-checker.*Up\|ai-checker.*running"; then
@@ -735,7 +749,7 @@ if [[ $start_containers =~ ^[Yy]$ ]]; then
     fi
 else
     echo -e "${YELLOW}[INFO]${NC} Nothing started. The filter stays INACTIVE until you run:"
-    echo "         $COMPOSE_CMD up -d --build ai-checker"
+    echo "         $COMPOSE_CMD build --pull ai-checker && $COMPOSE_CMD up -d ai-checker"
     echo "         $COMPOSE_CMD restart rspamd-mailcow"
 fi
 
@@ -758,6 +772,7 @@ echo "  ai-filter-model.sh     Show or change the model / AI provider"
 echo "  ai-filter-report.sh    Cases where the filter contradicts itself"
 echo "  ai-filter-context.sh   Recipient context; --hint sets what only you know"
 echo "  ai-filter-whitelist.sh Senders that are always delivered unless the account is abused"
+echo "  ai-filter-update-image.sh  Rebuild the ai-checker image (weekly via cron, with rollback)"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ai-checker"
 echo ""

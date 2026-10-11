@@ -156,7 +156,7 @@ Incoming Email
 ## Components
 
 ### 1. Docker Container (ai-checker)
-- **Image:** built from `php:8.4-cli` + `pdo_mysql` (the official image does not ship it, and the internal-mail lookup needs it)
+- **Image:** built from `php:8-cli` + `pdo_mysql`/`pdo_sqlite` (the official image does not ship them). Rebuilt weekly with a fresh base image by `ai-filter-update-image.sh`, which only switches after a pre-check and a healthy start and rolls back otherwise
 - **Network:** mailcow-network (internal), plus reaches the mailcow `mysql` container for internal-mail detection
 - **Health:** HTTP /health endpoint
 - **Resources:** ~50MB RAM, minimal CPU

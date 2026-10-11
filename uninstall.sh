@@ -108,7 +108,8 @@ rm -f /usr/local/bin/ai-filter-*.sh
 rm -f /etc/logrotate.d/ai-filter
 # Ohne das laufen die Cron-Eintraege weiter und rufen geloeschte Skripte
 # auf - taeglich eine Fehlermail an root, ohne erkennbaren Absender.
-rm -f /etc/cron.d/ai-filter-report /etc/cron.d/ai-filter-brands /etc/cron.d/ai-filter-context /etc/cron.d/ai-filter-rank
+rm -f /etc/cron.d/ai-filter-report /etc/cron.d/ai-filter-brands /etc/cron.d/ai-filter-context /etc/cron.d/ai-filter-rank /etc/cron.d/ai-filter-image
+docker image rm mailcow-ai-checker:rollback >/dev/null 2>&1 || true
 echo -e "${GREEN}[OK]${NC} Scripts and cron entries removed"
 
 read -p "Restart Rspamd? (y/N): " restart
