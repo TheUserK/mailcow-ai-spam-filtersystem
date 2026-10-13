@@ -167,5 +167,9 @@ if [[ "$FOLLOW" == "true" ]]; then
     # Mitlaufen geht nur auf der aktiven Datei - rotierte sind abgeschlossen.
     tail -n "$COUNT" -f "$LOG" | render
 else
-    printf '%s\n' "${LOG_FILES[@]}" | read_logs | tail -n "$COUNT" | render
+    # Erst filtern, dann abschneiden. Umgekehrt (bis 13.10.) sah
+    # "-n 5 -F absender" nur die letzten 5 Mails ueberhaupt durch und fand
+    # den Absender fast nie.
+    printf '%s\n' "${LOG_FILES[@]}" | read_logs \
+        | jq -c "select($FILTER)" 2>/dev/null | tail -n "$COUNT" | render
 fi
