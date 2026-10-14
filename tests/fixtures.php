@@ -1378,6 +1378,57 @@ function fixtures() {
         ],
     ]);
 
+    // Rspamds PHISHING: Linktext zeigt eine andere Domain als das Ziel.
+    // Am 12.10. abgewiesen: Seminar-Einladung einer Kammer, Text mit der
+    // eigenen Kurzdomain, Ziel die eigene Langdomain. Domains erfunden.
+    $cases['linktext-eigene-domain'] = array_replace_recursive($base, [
+        'from' => 'seminare@kammer-k.example', 'from_email' => 'seminare@kammer-k.example',
+        'from_display_name' => 'Kammer Seminare',
+        'to' => 'kanzlei@example.org',
+        'subject' => 'Seminarangebot Mietrecht am 09.11.',
+        'body' => 'Anmeldung unter www.kammer-k.example/seminare',
+        'rspamd_score' => 7.24,
+        'urls' => ['https://www.kammer-langname.example/seminare'],
+        'url_domains' => ['www.kammer-langname.example'],
+        'signals' => ['url_text_mismatch' => true],
+        'link_mismatches' => ['kammer-k.example->kammer-langname.example'],
+        '_analysis' => ['category' => 'legitimate', 'claimed_brand' => '', 'red_flags' => []],
+        '_expect' => ['evidence' => []],
+    ]);
+    // Klassisches Phishing: Text zeigt eine fremde Marke, Ziel woanders.
+    // Zaehlt weiter als Blocklisten-Treffer.
+    $cases['linktext-fremde-marke'] = array_replace_recursive($cases['linktext-eigene-domain'], [
+        'from' => 'service@kundenkonto-hilfe.example', 'from_email' => 'service@kundenkonto-hilfe.example',
+        'subject' => 'Ihr Konto wurde eingeschraenkt',
+        'body' => 'Bitte bestaetigen Sie Ihre Daten unter www.paypal.com',
+        'urls' => ['https://konto-check.example/login'], 'url_domains' => ['konto-check.example'],
+        'link_mismatches' => ['paypal.com->konto-check.example'],
+        '_expect' => ['evidence' => ['url-on-blocklist']],
+    ]);
+    // Eigene Domain im Text, aber ohne DMARC: zaehlt weiter.
+    $cases['linktext-eigene-domain-ohne-dmarc'] = array_replace_recursive($cases['linktext-eigene-domain'], [
+        'auth' => ['dmarc' => 'unknown'],
+        '_expect' => ['evidence' => ['url-on-blocklist']],
+    ]);
+    // Rspamd lieferte keine Paare: im Zweifel zaehlt es.
+    $cases['linktext-ohne-paare'] = array_replace_recursive($cases['linktext-eigene-domain'], [
+        '_expect' => ['evidence' => ['url-on-blocklist']],
+    ]);
+    $cases['linktext-ohne-paare']['link_mismatches'] = [];
+    // Aeltere Lua-Fassung: der Befund steckt schon in url_phishing.
+    $cases['linktext-altes-lua'] = array_replace_recursive($cases['linktext-eigene-domain'], [
+        'signals' => ['url_phishing' => true, 'url_text_mismatch' => false],
+        '_expect' => ['evidence' => ['url-on-blocklist']],
+    ]);
+    // Ein Paar eigen, eines fremd: zaehlt.
+    $cases['linktext-gemischt'] = array_replace_recursive($cases['linktext-eigene-domain'], [
+        '_expect' => ['evidence' => ['url-on-blocklist']],
+    ]);
+    $cases['linktext-gemischt']['link_mismatches'] = [
+        'kammer-k.example->kammer-langname.example',
+        'bank-beispiel.example->kammer-langname.example',
+    ];
+
     // Umlaut im Namen, Umschrift in der Domain. Am 12.10. stand eine echte
     // Zahnarzt-Erinnerung mit "brand-claim-mismatch" im Log, weil "ue" in
     // der Domain den Umlaut im Namen nicht wiedererkannte. Namen erfunden.

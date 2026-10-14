@@ -1137,9 +1137,21 @@ configure.
 | Flag | Meaning | Weight in the decision |
 |---|---|---|
 | `url-blacklisted` | Link domain on a malware/spam blocklist | Strong. Also blocks the trusted-sender auto-pass |
-| `url-known-phishing` | Link on OpenPhish/PhishTank, or Rspamd's phishing module fired | Strong. Also blocks the auto-pass |
+| `url-known-phishing` | Link on OpenPhish/PhishTank, or Rspamd's phishing module fired (link text shows a different domain than the target) - see below | Strong. Also blocks the auto-pass |
 | `url-fresh-domain` | Link domain is only days old | Weak on its own - every legitimate domain is new once. Strong **combined** with a claimed brand, a login prompt or a payment request |
 | `url-suspect-listing` | Weak listing (grey/redirector) | Hint only |
+
+Rspamd's `PHISHING` symbol only says that a link's text shows a different
+domain than its target. That is the classic phishing trick ("paypal.com" in
+the text, something else behind it), but also everyday tracking and
+redirects. It counts like a blocklist hit, with one exception
+(`linkTextMismatchCounts()`): the sender passes DMARC and every
+text/target pair reported by Rspamd contains the sender's own registrable
+domain - an organisation showing its own short domain and linking to its own
+long one is not impersonating anyone. Without DMARC, without the pairs, or as
+soon as one pair does not involve the sender's domain, it still counts. Since
+14.10.; before that a bar association's seminar invitation was rejected over
+`PHISHING(rak-m.de->rak-muenchen.de)`.
 
 The point is the combination. A blocklist cannot know that the sender claims
 to be PayPal; the brand check cannot know that the linked domain was

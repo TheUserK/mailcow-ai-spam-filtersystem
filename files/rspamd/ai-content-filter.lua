@@ -121,11 +121,33 @@ local fresh_domain_symbols = {
   'SEM_URIBL_FRESH15', 'SEM_URIBL_FRESH15_UNKNOWN',
 }
 
--- Rspamd's own phishing module: link text does not match link target, or the
--- URL is on OpenPhish/PhishTank.
+-- Phishing-Feeds: die URL steht auf OpenPhish/PhishTank oder traegt das
+-- Muster gekaperter WordPress-Seiten.
+--
+-- Rspamds "PHISHING" (Linktext zeigt eine andere Domain als das Linkziel)
+-- stand bis 14.10. ebenfalls hier und wurde damit zum Blocklisten-Treffer.
+-- Am 12.10. wies das eine echte Seminar-Einladung einer Rechtsanwaltskammer
+-- ab: Linktext mit der eigenen Kurzdomain, Ziel die eigene Langdomain -
+-- "PHISHING(rak-m.de->rak-muenchen.de)". Jetzt getrennt uebergeben, mit den
+-- Domain-Paaren; der Checker entscheidet, ob es zaehlt.
 local phishing_symbols = {
-  'PHISHING', 'PHISHED_OPENPHISH', 'PHISHED_PHISHTANK', 'HACKED_WP_PHISHING',
+  'PHISHED_OPENPHISH', 'PHISHED_PHISHTANK', 'HACKED_WP_PHISHING',
 }
+
+-- Die Domain-Paare aus Rspamds PHISHING, z.B. "text.de->ziel.de".
+local function link_text_mismatches(task)
+  local pairs_out = {}
+  local res = task:get_symbol('PHISHING')
+  if not res then
+    return false, pairs_out
+  end
+  for _, r in ipairs(res) do
+    for _, opt in ipairs(r.options or {}) do
+      table.insert(pairs_out, tostring(opt))
+    end
+  end
+  return true, pairs_out
+end
 
 -- Die ABSENDERADRESSE selbst steht auf einer Blockliste bekannter
 -- Spamversender. Am 15.09. kam Kaltakquise von einer outlook.com-Adresse,
@@ -672,6 +694,7 @@ rspamd_config:register_symbol({
     local url_suspect     = any_symbol(task, uribl_suspect_symbols)
     local url_fresh       = any_symbol(task, fresh_domain_symbols)
     local url_phishing    = any_symbol(task, phishing_symbols)
+    local url_text_mismatch, link_mismatches = link_text_mismatches(task)
 
     -- Adressgenaue Absender-Blockliste (siehe sender_blocklist_symbols).
     local sender_blocklisted = any_symbol(task, sender_blocklist_symbols)
@@ -721,6 +744,7 @@ rspamd_config:register_symbol({
         url_suspect = url_suspect,
         url_fresh_domain = url_fresh,
         url_phishing = url_phishing,
+        url_text_mismatch = url_text_mismatch,
         sender_blocklisted = sender_blocklisted,
         url_malicious = any_symbol(task, malicious_url_symbols),
         virus = any_symbol(task, virus_symbols),
@@ -735,6 +759,7 @@ rspamd_config:register_symbol({
         link_count = #urls,
         attachment_count = #attachments,
       },
+      link_mismatches = link_mismatches,
       -- nil, wenn kein Eintrag passt - dann fehlt der Schluessel ganz.
       whitelist = wl,
     }

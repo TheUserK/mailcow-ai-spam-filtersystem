@@ -525,7 +525,16 @@ function prepareMailContext(array $data) {
             'url_blacklisted' => !empty($signals['url_blacklisted']),
             'url_suspect' => !empty($signals['url_suspect']),
             'url_fresh_domain' => !empty($signals['url_fresh_domain']),
-            'url_phishing' => !empty($signals['url_phishing']),
+            // Phishing-Feeds ODER ein Linktext, der auf eine fremde Domain
+            // zeigt - siehe linkTextMismatchCounts(). Aeltere Lua-Fassungen
+            // schicken den Linktext-Befund schon in url_phishing mit.
+            'url_phishing' => !empty($signals['url_phishing'])
+                || linkTextMismatchCounts(
+                    !empty($signals['url_text_mismatch']),
+                    normalizeStringList($data['link_mismatches'] ?? []),
+                    $fromDomain,
+                    normalizeTriState($auth['dmarc'] ?? 'unknown')
+                ),
             // Die Absenderadresse selbst steht auf einer Blockliste
             // (MSBL EBL). Adressgenau, deshalb auch bei Freemail
             // aussagekraeftig - siehe sender_blocklist_symbols im Lua-Modul.
@@ -4219,6 +4228,56 @@ function probationEvidence() {
 //  DKIM/SPF passend zur From-Domain), prueft das Lua-Modul. Hier kommt nur
 //  an, was dort schon zugeordnet ist.
 // =====================================================================
+
+// ---------------------------------------------------------------------
+//  Linktext zeigt eine andere Domain als das Linkziel (Rspamd: PHISHING).
+//
+//  Das ist DAS klassische Phishing-Muster - "paypal.com" im Text, eine
+//  fremde Seite dahinter. Es ist aber auch Alltag: Tracking-Links,
+//  Weiterleitungen, Kurz- und Langdomain derselben Organisation. Am 12.10.
+//  wurde eine echte Seminar-Einladung einer Rechtsanwaltskammer
+//  abgewiesen, weil "PHISHING(rak-m.de->rak-muenchen.de)" als
+//  Blocklisten-Treffer zaehlte.
+//
+//  Nicht gezaehlt wird genau ein Fall: Der Absender ist per DMARC
+//  beglaubigt, und in JEDEM Paar ist eine Seite seine eigene Domain. Wer
+//  im Text seine eigene Domain zeigt oder auf seine eigene Domain
+//  verlinkt, gibt sich nicht als jemand anderes aus. (Rspamd schreibt das
+//  Paar als "Text->Ziel"; geprueft werden bewusst beide Seiten, damit es
+//  auf die Reihenfolge nicht ankommt - beide Faelle sind harmlos.)
+//
+//  Alles andere zaehlt weiter wie ein Blocklisten-Treffer: ohne DMARC,
+//  ohne Domain-Paare, oder sobald ein Paar die eigene Domain gar nicht
+//  enthaelt. Was dadurch wegfaellt, ist ein gekapertes Konto, das im Text
+//  seine eigene Domain zeigt - das wird nicht mehr abgewiesen, landet bei
+//  einem Phishing-Urteil aber weiter im Junk.
+// ---------------------------------------------------------------------
+function linkTextMismatchCounts($mismatch, array $pairs, $fromDomain, $dmarc) {
+    if (!$mismatch) {
+        return false;
+    }
+    $own = registrableDomain($fromDomain);
+    if ($dmarc !== 'pass' || $own === '' || empty($pairs)) {
+        return true;
+    }
+    foreach ($pairs as $pair) {
+        $sides = array_map('trim', explode('->', $pair, 2));
+        if (count($sides) !== 2) {
+            return true;
+        }
+        $mine = false;
+        foreach ($sides as $side) {
+            $side = normalizeHost($side);
+            if ($side !== '' && registrableDomain($side) === $own) {
+                $mine = true;
+            }
+        }
+        if (!$mine) {
+            return true;
+        }
+    }
+    return false;
+}
 
 function normalizeWhitelistMatch($value) {
     if (!is_array($value) || cleanTextValue($value['entry'] ?? '') === '') {
