@@ -4966,12 +4966,20 @@ function claimedBrandMismatch(array $mail, array $analysis, $delegatedSender = '
     // freikaufen kann.
     $orgDomain = brandToken(implode('', organisationalLabels($domain)));
     if ($orgDomain !== '') {
-        if (mb_strpos($orgDomain, $token) !== false) {
-            return false;
-        }
+        // Umlaute in allen ueblichen Domain-Schreibweisen: Eine Praxis
+        // "Dr. Mueller" (im Namen mit Umlaut) versendet aus dr-mueller.de
+        // oder dr-muller.de. Am 12.10. stand so eine echte
+        // Zahnarzt-Erinnerung mit "brand-claim-mismatch" im Log, weil der
+        // Abgleich den Umlaut im Namen nicht auf "ue" abbilden konnte.
+        $candidates = [$token];
         foreach (significantBrandWords($analysis['claimed_brand'] ?? '') as $word) {
-            if (mb_strpos($orgDomain, $word) !== false) {
-                return false;
+            $candidates[] = $word;
+        }
+        foreach ($candidates as $candidate) {
+            foreach (umlautSpellings($candidate) as $spelling) {
+                if (mb_strpos($orgDomain, $spelling) !== false) {
+                    return false;
+                }
             }
         }
     }
@@ -4998,6 +5006,18 @@ function claimedBrandMismatch(array $mail, array $analysis, $delegatedSender = '
     // Der Beleg bleibt schwach, traegt also weiterhin keine Ablehnung
     // allein - er kostet hoechstens eine Zeile im Report.
     return true;
+}
+
+// Wie ein Wort mit Umlaut in einer Domain auftauchen kann: unveraendert
+// (IDN), mit ae/oe/ue/ss oder ganz ohne ("mueller", "muller").
+function umlautSpellings($word) {
+    $word = (string)$word;
+    $spellings = [
+        $word,
+        strtr($word, ['ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss']),
+        strtr($word, ['ä' => 'a', 'ö' => 'o', 'ü' => 'u', 'ß' => 'ss']),
+    ];
+    return array_values(array_unique($spellings));
 }
 
 // Zerlegt eine Markenbehauptung in ihre aussagekraeftigen Woerter.

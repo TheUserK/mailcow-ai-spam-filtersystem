@@ -1378,6 +1378,30 @@ function fixtures() {
         ],
     ]);
 
+    // Umlaut im Namen, Umschrift in der Domain. Am 12.10. stand eine echte
+    // Zahnarzt-Erinnerung mit "brand-claim-mismatch" im Log, weil "ue" in
+    // der Domain den Umlaut im Namen nicht wiedererkannte. Namen erfunden.
+    $cases['umlaut-praxis-ue'] = array_replace_recursive($base, [
+        'from' => 'info@dr-oeztuerk-beispiel.de', 'from_email' => 'info@dr-oeztuerk-beispiel.de',
+        'from_display_name' => 'Zahnarztpraxis Dr. Öztürk',
+        'to' => 'empfaenger@example.org',
+        'subject' => 'Ihre Zahnvorsorge bei Dr. Bärbel Öztürk',
+        'body' => 'Ihr naechster Vorsorgetermin steht an. Bitte vereinbaren Sie einen Termin.',
+        'rspamd_score' => 2.0,
+        '_analysis' => ['category' => 'personal', 'claimed_brand' => 'Zahnarztpraxis Dr. Bärbel Öztürk', 'red_flags' => []],
+        '_expect' => ['evidence' => []],
+    ]);
+    // Dieselbe Praxis mit Domain ganz ohne Umlaut-Umschrift.
+    $cases['umlaut-praxis-ohne'] = array_replace_recursive($cases['umlaut-praxis-ue'], [
+        'from' => 'info@dr-ozturk-beispiel.de', 'from_email' => 'info@dr-ozturk-beispiel.de',
+    ]);
+    // Gegenprobe: dieselbe Behauptung aus einer fremden Domain bleibt
+    // eine Abweichung.
+    $cases['umlaut-praxis-fremde-domain'] = array_replace_recursive($cases['umlaut-praxis-ue'], [
+        'from' => 'termin@vorsorge-erinnerung.example', 'from_email' => 'termin@vorsorge-erinnerung.example',
+        '_expect' => ['evidence' => ['brand-claim-mismatch']],
+    ]);
+
     // =================================================================
     //  Whitelist (ai-filter-whitelist.sh). Alle Absender erfunden.
     //
