@@ -2008,7 +2008,7 @@ function runFixtures() {
     // reject_rule_confidence: der Schluessel stand am Aufruf, der
     // Rueckgabewert kannte ihn nicht, das Logfeld blieb still null.
     preg_match_all('/\$result\[\'([a-z_]+)\'\]/', $src, $m3);
-    $ret = substr($src, strpos($src, 'function analyzeWithAI('));
+    $ret = substr($src, strpos($src, 'function scoreAiAnalysis('));
     $ret = substr($ret, strpos($ret, "\n    return ["));
     $ret = substr($ret, 0, strpos($ret, "\n    ];"));
     preg_match_all('/^\s*\'([a-z_]+)\'\s*=>/m', $ret, $m4);
@@ -2100,6 +2100,113 @@ function runFixtures() {
         'expert' => $brands['expert'] ?? [],
         'hetzner' => $brands['hetzner'] ?? [],
     ];
+
+    // Synthetic responses exercise the production scoring path, not a copy
+    // of its equations. All addresses and brands here are fictional.
+    $synthetic = [
+        'from' => 'billing@unrelated.test',
+        'from_email' => 'billing@unrelated.test',
+        'to' => 'recipient@example.com',
+        'subject' => 'Invoice notice INV-DEMO',
+        'body' => 'Your invoice is available using the link.',
+        'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+        'rspamd_score' => 5.12,
+        'urls' => ['https://examplebrand.test/', 'https://bit.ly/demo'],
+        'url_domains' => ['examplebrand.test', 'bit.ly'],
+        'signals' => ['has_list_unsubscribe' => true],
+        'headers' => ['to_header' => 'recipient@example.com',
+                      'list_unsubscribe' => '<https://unrelated.test/unsubscribe>'],
+    ];
+    $model = ['category' => 'transactional', 'spam_probability' => 0.35,
+        'confidence' => 0.8, 'claimed_brand' => 'Examplebrand',
+        'red_flags' => [], 'reasoning' => 'Synthetic response',
+        'reject_rule_match' => false, 'reject_rule_confidence' => 0.0];
+    $scoreCase = function ($input, $response) {
+        $mail = prepareMailContext($input);
+        return scoreAiAnalysis($mail, analyzeLocally($mail, 'synthetic'), $response, 'synthetic');
+    };
+    $checkScore = function ($condition, $name) {
+        if (!$condition) {
+            throw new RuntimeException('scoring regression: ' . $name);
+        }
+    };
+    foreach ([5.12, 5.123456, -2.123456] as $rspamd) {
+        $input = array_replace($synthetic, ['rspamd_score' => $rspamd]);
+        $result = $scoreCase($input, $model);
+        $checkScore(in_array('brand-linked-not-sender', $result['evidence'], true), 'brand evidence');
+        $checkScore($result['score'] >= 0 && $rspamd + $result['score'] >= JUNK_FLOOR,
+            'misclassified invoice reaches junk including fractional scores');
+        $checkScore(!$result['reject_eligible'], 'fallback cannot reject');
+    }
+    $input = array_replace($synthetic, ['subject' => 'A link for your review']);
+    $result = $scoreCase($input, $model);
+    $checkScore($result['score'] === 0.0, 'brand conflict removes ham credit without invoice floor');
+
+    $input = array_replace($synthetic, [
+        'from' => 'billing@examplebrand.test', 'from_email' => 'billing@examplebrand.test',
+        'urls' => ['https://examplebrand.test/invoice'],
+        'url_domains' => ['examplebrand.test'],
+    ]);
+    $result = $scoreCase($input, $model);
+    $checkScore($result['score'] < 0, 'aligned genuine invoice keeps ham credit');
+
+    $input = array_replace($synthetic, [
+        'urls' => ['https://examplebrand.test/'],
+        'url_domains' => ['examplebrand.test'],
+        'signals' => [], 'headers' => ['to_header' => 'recipient@example.com'],
+    ]);
+    $result = $scoreCase($input, $model);
+    $checkScore($result['score'] === 0.0, 'brand conflict without shortener gets no invoice floor');
+
+    $input = array_replace($synthetic, ['in_reply_to' => '<demo@example.com>']);
+    $result = $scoreCase($input, $model);
+    $checkScore($result['real_conversation'] && $result['score'] === 0.0,
+        'real conversation avoids invoice floor');
+
+    // A claim-only mismatch is deliberately not independent reject evidence.
+    $input = array_replace($synthetic, [
+        'urls' => ['https://unrelated.test/payment'],
+        'url_domains' => ['unrelated.test'],
+        'signals' => [], 'headers' => ['to_header' => 'recipient@example.com'],
+    ]);
+    $phishing = array_replace($model, ['category' => 'phishing',
+        'spam_probability' => 0.95, 'confidence' => 0.9]);
+    foreach ([4.12, 5.49, 5.5, 5.51] as $rspamd) {
+        $input['rspamd_score'] = $rspamd;
+        $result = $scoreCase($input, $phishing);
+        $reachable = $rspamd >= 5.5;
+        $checkScore($result['reject_eligible'] === $reachable, 'reject budget boundary');
+        $checkScore($result['reject_path'] === ($reachable ? 'ai-confident' : ''), 'reject path');
+        $checkScore($rspamd + $result['score'] >= JUNK_FLOOR, 'phishing reaches junk');
+        if ($reachable) {
+            $checkScore($rspamd + $result['score'] >= REJECT_THRESHOLD, 'eligible score reaches reject');
+        }
+    }
+    // A case-management reply without thread headers must not gain the
+    // structural reject floor from its subject alone.
+    $input = array_replace($synthetic, [
+        'from' => 'notifications@case-service.test',
+        'from_email' => 'notifications@case-service.test',
+        'subject' => 'Re: AW: Matter DEMO-A / DEMO-B, reference DEMO-42',
+        'body' => 'Please find our response concerning the matter attached.',
+        'rspamd_score' => 6.11,
+        'urls' => ['https://case-service.test/'],
+        'url_domains' => ['case-service.test'],
+        'signals' => [], 'headers' => ['to_header' => 'recipient@example.com'],
+    ]);
+    $response = array_replace($model, ['category' => 'spam', 'confidence' => 0.9,
+        'spam_probability' => 0.85, 'claimed_brand' => 'Case Service']);
+    $result = $scoreCase($input, $response);
+    $checkScore(in_array('fake-thread', $result['evidence'], true), 'thread hint retained');
+    $checkScore(!in_array('fake-thread', strongEvidence($result['evidence']), true),
+        'missing headers are not strong rejection evidence');
+    $checkScore(!$result['reject_eligible'] && $result['reject_path'] === ''
+        && $input['rspamd_score'] + $result['score'] < REJECT_THRESHOLD,
+        'misclassified case-management reply avoids evidence reject');
+    $checkScore(in_array('url-on-blocklist', strongEvidence(['fake-thread', 'url-on-blocklist']), true),
+        'independent attack evidence still works');
+
+    $out['_synthetic_scoring'] = 'passed';
 
     return $out;
 }

@@ -23,7 +23,7 @@ end=$(grep -n '^//  MAIL-KONTEXT$' "$src" | cut -d: -f1)
 # und ein leeres Ergebnis laesst partOfRealConversation() vorsichtshalber
 # alles als echte Konversation gelten - dann pruefen die Faelle nichts mehr.
 # Also die Domains der Pruefmails fest einsetzen.
-perl -0pi -e 's/(function getLocalDomains\(\) \{)/$1\n    return ["moving-pictures.de", "karrerlabs.de", "karrer.info"];/' "$tmp/lib.php"
+perl -0pi -e 's/(function getLocalDomains\(\) \{)/$1\n    return ["example.com", "moving-pictures.de", "karrerlabs.de", "karrer.info"];/' "$tmp/lib.php"
 php -l "$tmp/lib.php" >/dev/null
 
 # Die Markenliste liegt im Betrieb neben dem Checker. Fuer den Testlauf

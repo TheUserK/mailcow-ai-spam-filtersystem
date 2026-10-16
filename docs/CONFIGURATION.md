@@ -117,7 +117,6 @@ their own (minus anything currently on probation, see below):
 | `hijacked-reply-to` | the reply is meant to go to a stranger's freemail account, from a non-freemail sender |
 | `operator-reject-rule` | the operator wrote a reject rule for this recipient and the model confirms the mail matches it. Lifts the category lock; the only config that rejects |
 | `reply-to-unrelated-domain` | same pattern, but the reply mailbox sits at a provider the freemail detection doesn't know. Requires DMARC pass, a non-freemail sender, no list headers, and a Reply-To domain unrelated to the sender's. **On probation** |
-| `fake-thread` | a Re:/AW: subject or a quoted-reply body with no In-Reply-To/References header |
 | `fake-thread-foreign-ref` | the same claim one step subtler: the header *is* there, but it points at no Message-ID of ours. Cold outreach replying to its own earlier mail. Armed since 25.09. (on probation 16.-25.09., hit only cold outreach, no false positive); still needs a rejectable category to reject, so a genuine reply categorised `personal` stays protected |
 | `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
 | `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
@@ -127,7 +126,9 @@ their own (minus anything currently on probation, see below):
 | `brand-claim-vs-known-domain` | the model's claimed brand matches a domain in the generated Majestic-Million brand list, and the sender doesn't |
 
 Everything not in that table is **weak**: it feeds the score and the prompt,
-but cannot carry a rejection on its own. `url-shortener` is one of them, and
+but cannot carry a rejection on its own. `fake-thread` is a weak hint:
+missing thread headers do not prove a fabricated conversation.
+`url-shortener` is another weak hint, and
 since 16.09. it covers more than the classic shorteners:
 
 - `search.app` and `share.google` as sender domains
@@ -1306,3 +1307,37 @@ mail (order confirmations, shipping notices, ...) gets a local auto-pass.
 - Lower `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS` if too aggressive, raise them if too much gets through
 - Add your legitimate high-volume senders to `trusted_sender_profiles.json` to reduce noise and API cost
 - Tune Rspamd's own action thresholds - they now fully control the final decision
+
+
+### Conflicting invoice identity and hidden links
+
+A model classification of `transactional` does not override a detected
+`brand-linked-not-sender` or `brand-claim-vs-known-domain` conflict: these
+signals suppress negative AI points. If the subject also identifies an
+invoice (`Rechnung…` or `invoice…`) and a URL shortener is present, the
+combined score is raised to `JUNK_FLOOR`, including when the model mislabels
+the message as legitimate. This local floor does not itself authorize a
+reject. Verified brands, matched sender profiles, and real conversations
+are excluded from the invoice floor. The model category stays visible and
+the returned reason identifies the local floor.
+
+The `ai-confident` path qualifies only when Rspamd's score plus the category
+point budget can reach `AI_CONFIDENT_TOTAL`. Below that boundary,
+`reject_eligible` is false and `reject_path` is empty; the normal phishing
+junk floor still applies. This does not increase the model's reject budget.
+
+
+### Replies without thread headers
+
+`fake-thread` remains a diagnostic hint for reply-like subjects or quoted
+messages with missing `In-Reply-To` and `References`. Missing headers do
+not prove that the conversation is fabricated; manually composed replies
+and case-management systems can omit them. This hint is no longer strong
+rejection evidence. Independent evidence and the guarded AI-confident path
+still apply. A model spam classification may still place such mail in junk;
+this change does not declare the message legitimate.
+
+The prompt also distinguishes ordinary disputes and payment claims sent to
+an adviser from attacks against the recipient. A company mentioned in a
+case is not necessarily the claimed sender, and a private email provider
+alone does not establish impersonation.

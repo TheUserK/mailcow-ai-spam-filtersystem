@@ -2027,6 +2027,17 @@ stehen weiter unten ausdruecklich als legitim:
 - Potenz-/Abnehm-/Medikamenten-Werbung
 - Paket-Scams mit fremden Link-Domains oder Gebuehrenforderung
 
+Beruecksichtige den Empfaenger-Kontext bei der Plausibilitaet: Bei einer
+beratenden oder vertretenden Stelle gehoeren Forderungen, Mahnungen und
+Streitigkeiten zum normalen Schriftverkehr. Eine Forderung kann zur
+Pruefung, Vertretung oder Information geschickt werden; sie richtet sich
+nicht automatisch gegen den Postfachinhaber. Ein Firmenname im Vorgang
+ist nicht automatisch eine behauptete Absenderidentitaet. Privatpersonen
+und kleine Betriebe schreiben auch geschaeftlich von Freemail-Adressen.
+Freemail plus Firmenname oder Geldforderung allein belegt keinen Betrug.
+Das gibt keinen pauschalen Vertrauensbonus: konkrete Identitaetsfaelschung,
+gefaehrliche Links, Anhaenge oder umgeleitete Zahlungswege weiter pruefen.
+
 Als legitim einstufen:
 - normale Geschaefts- und Privatmails
 - erwartete Newsletter mit List-Unsubscribe
@@ -2049,11 +2060,12 @@ Zu den Absender-Flags:
   ist ab der zweiten Mail "bekannt" - Kaltakquise und Betrug also auch.
   Behandle es hoechstens als leichten Hinweis. Eine echte Interaktion belegt
   ausschliesslich "reply-to-our-own-mail".
-- "fake-thread": Betreff beginnt mit "Re:"/"AW:" oder der Text zitiert eine
-  angebliche Vorgaengermail ("... wrote:", "... schrieb"), obwohl technisch
-  KEIN In-Reply-To/References existiert - es gibt also keinen echten
-  Vorgaenger. Typisch fuer Kaltakquise und Phishing, das Vertrauen ueber
-  einen erfundenen Gespraechsverlauf erschleicht. Starkes Warnsignal.
+- "fake-thread": Betreff oder Text behauptet eine Antwort, aber die
+  In-Reply-To/References-Header fehlen. Das beweist KEINEN erfundenen
+  Vorgaenger: Fallverwaltung, Ticketsysteme, kopierte Betreffzeilen und
+  manuell erstellte Antworten koennen diese Header verlieren. Nur ein
+  schwacher Hinweis; ohne weitere konkrete Angriffssignale kein Grund
+  fuer Spam oder Betrug. Pruefe Inhalt und Empfaenger-Kontext.
 - "thread-ref-not-ours": Die Mail traegt zwar einen In-Reply-To- oder
   References-Header, der zeigt aber auf keine Nachricht aus diesem Haus.
   Der Vorgaenger existiert also - nur hatte er mit dem Empfaenger nie zu
@@ -2553,15 +2565,14 @@ Es heisst "unentschieden", und unentschieden gibt es hier nicht - bist du
 unsicher, waehle die geschuetzte Kategorie und einen Wert knapp unter 0.5.
 
 Zahlen IMMER als Ziffern schreiben (0.9), niemals als Wort.
+"reasoning" muss Kategorie und Spamrisiko begruenden. Eine nicht passende
+Betreiber-Regel ist kein Echtheitsbeleg und keine Begruendung fuer Ham.
 "reasoning" kurz halten, hoechstens rund 150 Zeichen - das Feld dient der
 Nachvollziehbarkeit im Log, nicht der Herleitung.
 PROMPT;
 
     $prompt          = buildUserPrompt($mail, $localContext);
     $userPrompt      = $prompt['text'];
-    $hasOperatorHint = $prompt['operator_hint'];
-    $rejectRule      = $prompt['reject_rule'];
-    $rankContext     = $prompt['rank_context'];
 
     $payload = [
         'model' => AI_MODEL,
@@ -2731,6 +2742,16 @@ PROMPT;
         ]);
     }
 
+    return scoreAiAnalysis($mail, $localContext, $analysis, $requestId);
+}
+
+// Score a parsed model response separately from the provider request so the
+// actual decision path can be exercised without network calls or mail content.
+function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $requestId) {
+    $prompt = buildUserPrompt($mail, $localContext);
+    $hasOperatorHint = $prompt['operator_hint'];
+    $rejectRule = $prompt['reject_rule'];
+    $rankContext = $prompt['rank_context'];
     $category = cleanTextValue($analysis['category'] ?? 'unknown');
 
     $score = scoreFromAi(
@@ -2787,6 +2808,23 @@ PROMPT;
     $policy     = categoryPolicy($category);
     $confidence = floatval($analysis['confidence'] ?? 0.5);
     $evidence   = collectStructuralEvidence($mail, $localContext, $analysis);
+
+    // A claimed sender brand contradicted by the linked brand domain must
+    // never earn Ham credit, even if the model calls the mail transactional.
+    $brandConflict = count(array_intersect($evidence, [
+        'brand-linked-not-sender', 'brand-claim-vs-known-domain',
+    ])) > 0;
+    if ($brandConflict) {
+        $score = max($score, 0.0);
+    }
+    // Narrow, reversible fallback for a forged invoice with a hidden target.
+    // Keep the model category for diagnostics; this floor does not permit reject.
+    $suspiciousInvoice = $brandConflict
+        && in_array('url-shortener', $evidence, true)
+        && preg_match('/\b(rechnung\w*|invoice\w*)\b/iu', $mail['subject']) === 1
+        && empty($localContext['matched_profile'])
+        && empty($localContext['verified_brand'])
+        && !partOfRealConversation($mail);
 
     // Hat die Mail die Regel des Betreibers erfuellt?
     //
@@ -2917,6 +2955,8 @@ PROMPT;
         && $policy['may_reject']
         && $confidence >= AI_CONFIDENT_CONFIDENCE
         && $modelScore >= AI_CONFIDENT_SCORE
+        // Eligibility must be achievable within the model contribution budget.
+        && $mail['rspamd_score'] + $policy['points'] >= AI_CONFIDENT_TOTAL
         && $noTrustSignals
         && !$hasOperatorHint
         && !$authenticatedList
@@ -2931,6 +2971,10 @@ PROMPT;
     $ceiling = ($mayReject && AI_MAY_REJECT)
         ? MAX_TOTAL_REJECTABLE
         : $policy['max_total'];
+
+    if ($suspiciousInvoice) {
+        $ceiling = max($ceiling, MAX_TOTAL_DEFAULT);
+    }
 
     // Der Guard vergibt keinen Rabatt und aendert Rspamds eigenen Wert
     // nicht. Er deckelt nur einen positiven KI-Beitrag knapp unter Junk.
@@ -2993,7 +3037,7 @@ PROMPT;
         && !$realConversation
         && $transactionalGuard === '';
 
-    if ($junkFloorApplies) {
+    if ($junkFloorApplies || $suspiciousInvoice) {
         // KEIN min(..., policy['points']) hier - anders als beim
         // AI_CONFIDENT_TOTAL-Zweig oben ist der Deckel hier nicht Teil der
         // Absicherung, sondern hebelt sie aus. Am 08.09. verfehlte eine mit
@@ -3051,7 +3095,8 @@ PROMPT;
     return [
         'score'           => $score,
         'action'          => 'add',   // KI rejected nie — addiert nur
-        'reason'          => $category . ': ' . cleanTextValue($analysis['reasoning'] ?? ''),
+        'reason'          => $category . ': ' . cleanTextValue($analysis['reasoning'] ?? '')
+            . ($suspiciousInvoice ? ' [local invoice/brand/shortener junk floor]' : ''),
         'category'        => $category,
         'red_flags'       => normalizeStringList($analysis['red_flags'] ?? []),
         'analysis_source' => 'ai',
@@ -4038,10 +4083,10 @@ function foreignThreadReference(array $mail) {
 // ---------------------------------------------------------------------
 //  Behauptet die Mail, Teil eines laufenden Austauschs zu sein ("Re:",
 //  "AW:" im Betreff, ein zitiertes "... wrote:" / "... schrieb" im Text),
-//  obwohl In-Reply-To UND References beide leer sind? Dann gibt es
-//  technisch keinen Vorgaenger - der Bezug ist erfunden. Ein Klassiker
-//  bei Kaltakquise und Phishing, um Vertrauen vorzutaeuschen ("AW: Handy-
-//  vertrag ...", "On Fri, 26 June wrote: ..." ohne echten Thread).
+//  obwohl In-Reply-To UND References beide leer sind? Das ist ein Hinweis
+//  auf einen moeglicherweise erfundenen Bezug, kein Beweis: echte manuelle
+//  Antworten und Fallverwaltungssysteme koennen ohne diese Header senden.
+//  Der Befund bleibt sichtbar, traegt aber keine Ablehnung.
 //  "Fwd:"/"WG:" bleibt aussen vor: Weiterleitungen an einen neuen
 //  Empfaenger haben legitim kein In-Reply-To.
 // ---------------------------------------------------------------------
@@ -4127,7 +4172,8 @@ function strongEvidence(array $evidence) {
         // nur die enge Frage beantwortet, ob diese Mail darauf passt. Bewusst
         // NICHT auf Bewaehrung - eine Regel, die nicht abweist, waere keine.
         'operator-reject-rule',
-        'fake-thread',           // Re:/AW:/Zitat ohne In-Reply-To/References
+        // Missing thread headers alone do not establish a forged conversation.
+        // 'fake-thread' stays visible in evidence, but cannot support rejection.
         'fake-thread-foreign-ref', // Thread-Header vorhanden, zeigt aber auf nichts von uns
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
