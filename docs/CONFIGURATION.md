@@ -294,6 +294,17 @@ deliberately sorts exactly that kind of mail into `marketing` so it does *not*
 end up in junk. Nothing becomes rejectable by this - `may_reject` stays
 `false`, this is only about the folder.
 
+Since 18.10. an **established sender** is exempt from this `marketing` floor
+as well: exact sender domain in the Majestic list at global rank ≤ 100,000
+(`ESTABLISHED_DOMAIN_REJECT_GUARD_RANK`) plus strong authentication - the same
+yardstick the prompt uses for "advertising from an established company is not
+spam". On 16.10. an insurer's "new message in your online mailbox" portal
+notification landed in junk: the model gave it 0 points itself but picked
+`marketing` at exactly 0.80, and a portal notification never has an
+unsubscribe link. Cold outreach comes from domains that are not in that list,
+so it keeps the floor. The exemption only affects `marketing` without list
+headers; `spam`, `phishing` etc. are unaffected.
+
 **`marketing` vs. cold outreach - the line that is easy to blur.** On 16.09.
 a prompt paragraph meant to rescue retailer newsletters said that a
 `List-Unsubscribe` header plus strong auth plus links to the sender's own

@@ -2206,6 +2206,40 @@ function runFixtures() {
     $checkScore(in_array('url-on-blocklist', strongEvidence(['fake-thread', 'url-on-blocklist']), true),
         'independent attack evidence still works');
 
+    // 16.10.: Portal-Benachrichtigung eines etablierten Unternehmens, vom
+    // Modell als "marketing" (0 Punkte, Sicherheit 0.80) eingeordnet, ohne
+    // Abmeldeweg. Darf nicht ueber die Junk-Untergrenze in den Junk.
+    // Kaltakquise einer ungelisteten Domain bleibt dort, ebenso eine
+    // gelistete Domain ohne starke Authentifizierung.
+    $portal = [
+        'from' => 'noreply@tchibo.de', 'from_email' => 'noreply@tchibo.de',
+        'to' => 'recipient@example.com',
+        'subject' => 'Neue Nachricht in Ihrem Online-Postfach',
+        'body' => 'In Ihrem Kundenportal liegt eine neue Nachricht fuer Sie bereit.',
+        'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+        'rspamd_score' => 0.57,
+        'urls' => ['https://kunde.tchibo.de/postfach'], 'url_domains' => ['kunde.tchibo.de'],
+        'signals' => [], 'headers' => ['to_header' => 'recipient@example.com'],
+    ];
+    $marketing = array_replace($model, ['category' => 'marketing', 'spam_probability' => 0.2,
+        'confidence' => 0.8, 'claimed_brand' => 'Tchibo']);
+    $result = $scoreCase($portal, $marketing);
+    $checkScore($portal['rspamd_score'] + $result['score'] < JUNK_FLOOR,
+        'established sender marketing without unsubscribe stays out of junk floor');
+
+    $cold = array_replace($portal, [
+        'from' => 'vertrieb@werbeagentur-beispiel.de', 'from_email' => 'vertrieb@werbeagentur-beispiel.de',
+        'urls' => ['https://werbeagentur-beispiel.de/'], 'url_domains' => ['werbeagentur-beispiel.de'],
+    ]);
+    $result = $scoreCase($cold, array_replace($marketing, ['claimed_brand' => 'Werbeagentur']));
+    $checkScore($cold['rspamd_score'] + $result['score'] >= JUNK_FLOOR,
+        'unlisted cold outreach still reaches junk floor');
+
+    $weak = array_replace($portal, ['auth' => ['spf' => 'fail', 'dkim' => 'fail', 'dmarc' => 'fail']]);
+    $result = $scoreCase($weak, $marketing);
+    $checkScore($weak['rspamd_score'] + $result['score'] >= JUNK_FLOOR,
+        'listed domain without strong auth gets no established exemption');
+
     $out['_synthetic_scoring'] = 'passed';
 
     return $out;

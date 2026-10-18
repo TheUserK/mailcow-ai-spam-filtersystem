@@ -3026,9 +3026,19 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
     //
     // Abweisbar wird dadurch nichts: may_reject bleibt false, es geht
     // ausschliesslich um den Ordner.
+    //
+    // Etablierte Absender bleiben ebenfalls aussen vor. Am 16.10. landete
+    // "Neue Nachricht in Ihrem Online-Postfach" von ergo.de im Junk: Das
+    // Modell gab selbst 0 Punkte, waehlte aber "marketing" mit genau 0.80 -
+    // und eine Portal-Benachrichtigung hat nie einen Abmeldeweg. Der Floor
+    // hob auf 8. Derselbe Massstab wie im Prompt ("Werbung eines
+    // etablierten Unternehmens ist kein Spam") und bei der Reject-Bremse:
+    // globaler Rang bis 100.000 plus starke Authentifizierung. Kaltakquise
+    // kommt von Domains, die dort nicht stehen.
     $unsolicitedBulk = $category === 'marketing'
         && empty($mail['signals']['has_list_unsubscribe'])
-        && empty($mail['headers']['list_id']);
+        && empty($mail['headers']['list_id'])
+        && !establishedSender($mail, $localContext);
 
     $junkFloorApplies = ($policy['may_reject'] || $unsolicitedBulk)
         && $confidence >= 0.80
@@ -4209,6 +4219,18 @@ function establishedDomainRejectGuard(array $localContext, array $strongEvidence
 
     return count($strongEvidence) === 1
         && in_array('brand-impersonation', $strongEvidence, true);
+}
+
+// Etablierte, sauber authentifizierte Absenderdomain: exakt gelistet (keine
+// Subdomain-Vererbung, siehe senderGlobalRank()) und hoechstens auf Rang
+// ESTABLISHED_DOMAIN_REJECT_GUARD_RANK. Kein Ham-Pass - nimmt nur die
+// Junk-Untergrenze fuer abmeldelose Werbung weg.
+function establishedSender(array $mail, array $localContext) {
+    if (($localContext['auth_strength'] ?? '') !== 'strong') {
+        return false;
+    }
+    $rank = senderGlobalRank($mail['from_domain'] ?? '');
+    return $rank !== null && $rank <= ESTABLISHED_DOMAIN_REJECT_GUARD_RANK;
 }
 
 // ---------------------------------------------------------------------
