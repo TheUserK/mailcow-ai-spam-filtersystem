@@ -216,6 +216,10 @@ define('RSPAMD_CONCUR_SCORE', 10.0);
 // abgewiesen. Typosquats und alle anderen Evidenz-Kombinationen bleiben scharf.
 define('ESTABLISHED_DOMAIN_REJECT_GUARD_RANK', 100000);
 
+// Ab so vielen sichtbaren Empfaengern in To/Cc (ohne den Absender) gilt eine
+// Antwort als "Allen antworten" in einem Verteiler - siehe groupThreadReply().
+define('GROUP_THREAD_MIN_RECIPIENTS', 3);
+
 // Muss VOR dem Router stehen, nicht erst bei den Helferfunktionen weiter
 // unten in der Datei: define() laeuft nur, wenn die Zeile tatsaechlich
 // ausgefuehrt wird - anders als Funktionsdefinitionen wird es NICHT
@@ -1363,6 +1367,7 @@ function structuralSignals(array $mail, $verifiedBrand = '', $delegatedSender = 
         'no_disclosed_recipient' => noDisclosedRecipient($mail),
         'fake_thread'            => fakeThreadClaim($mail),
         'foreign_thread_ref'     => foreignThreadReference($mail),
+        'self_thread_ref'        => selfThreadReference($mail),
         'role_name_source'       => institutionalRoleSource($mail),
         'role_name_on_freemail'  => institutionalRoleSource($mail) !== '',
         'fabricated_ticket'      => fabricatedTicketClaim($mail),
@@ -3321,7 +3326,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if ($struct['fake_thread']) {
         $evidence[] = 'fake-thread';
     }
-    if (!empty($struct['foreign_thread_ref'])) {
+    if (!empty($struct['self_thread_ref'])) {
+        $evidence[] = 'fake-thread-self-ref';
+    } elseif (!empty($struct['foreign_thread_ref'])) {
         $evidence[] = 'fake-thread-foreign-ref';
     }
     if ($struct['role_name_on_freemail']) {
@@ -4087,7 +4094,52 @@ function foreignThreadReference(array $mail) {
     if (partOfRealConversation($mail)) {
         return false;   // der Bezug ist nachweisbar unserer
     }
+    // Antwort-an-alle in einer Rundmail: Der Thread gehoert dem Dritten,
+    // der die Rundmail geschickt hat - die fremde Message-ID ist dann der
+    // Normalfall, kein Indiz. Am 13./14.10. wurden so drei Antworten aus
+    // einem Vereinsverteiler abgewiesen, in dem die Empfaengerin nur eine
+    // von vielen war. Nicht einmal als Hinweis ans Modell weitergeben -
+    // genau der hat es dort zu "spam" gekippt.
+    if (groupThreadReply($mail)) {
+        return false;
+    }
     return threadClaimInSubjectOrBody($mail);
+}
+
+// Viele sichtbare Empfaenger in To/Cc: so sieht "Allen antworten" in einem
+// Verteiler aus. Kaltakquise mit erfundenem "Re:" adressiert einen
+// Empfaenger, nicht eine Gruppe. Der eigene Empfaenger muss dabei nicht
+// sichtbar sein - bei weitergeleiteter Post steht dort seine alte Adresse.
+function groupThreadReply(array $mail) {
+    $addresses = extractAddresses(
+        (string)($mail['headers']['to_header'] ?? '') . ','
+        . (string)($mail['headers']['cc_header'] ?? '')
+    );
+    $sender = strtolower(trim((string)($mail['from_email'] ?? '')));
+    $others = array_diff($addresses, [$sender]);
+    return count($others) >= GROUP_THREAD_MIN_RECIPIENTS;
+}
+
+// Verweist der fremde Thread-Bezug nur auf die EIGENE Domain des
+// Absenders? Das ist die Masche vom 15.09.: "Re:" auf die eigene, nie bei
+// uns angekommene Vorgaengermail. Nur dieser enge Fall darf eine Ablehnung
+// mittragen ("fake-thread-self-ref"); jeder andere fremde Bezug bleibt seit
+// 19.10. ein Indiz auf Bewaehrung.
+function selfThreadReference(array $mail) {
+    if (!foreignThreadReference($mail)) {
+        return false;
+    }
+    $sender = registrableDomain(normalizeHost($mail['from_domain'] ?? ''));
+    $refDomains = extractMessageIdDomains($mail['in_reply_to'] . ' ' . $mail['references']);
+    if ($sender === '' || empty($refDomains)) {
+        return false;
+    }
+    foreach ($refDomains as $domain) {
+        if (registrableDomain($domain) !== $sender) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------
@@ -4184,7 +4236,8 @@ function strongEvidence(array $evidence) {
         'operator-reject-rule',
         // Missing thread headers alone do not establish a forged conversation.
         // 'fake-thread' stays visible in evidence, but cannot support rejection.
-        'fake-thread-foreign-ref', // Thread-Header vorhanden, zeigt aber auf nichts von uns
+        'fake-thread-self-ref',  // "Re:" auf die eigene, nie bei uns angekommene Mail
+        'fake-thread-foreign-ref', // Thread-Header zeigt auf nichts von uns (auf Bewaehrung)
         'role-name-on-freemail', // "Support Service" aus einem Freemail-Postfach
         'free-hosting-link',     // Link auf eine kostenlose Baukasten-Plattform
         'rspamd-concurs',        // Rspamd kommt unabhaengig zum selben Schluss
@@ -4267,7 +4320,15 @@ function probationEvidence() {
         // den einen Fall, der die Klasse ausgeloest hat. Erst im Report
         // beobachten, dann scharf schalten.
         'sender-on-blocklist',
-        // 'fake-thread-foreign-ref' stand vom 16. bis 25.09. hier. In der
+        // Seit 19.10. wieder hier. Am 13./14.10. wurden drei Antworten aus
+        // einem Vereinsverteiler abgewiesen: Die Rundmail kam von einem
+        // Dritten, also zeigten alle Antworten legitim auf eine fremde
+        // Message-ID, und das Modell kippte bei drei von zehn auf "spam".
+        // Die Absicherung ueber die Kategorie hat also nicht gehalten.
+        // Scharf bleibt nur der enge Fall "fake-thread-self-ref" (Bezug
+        // auf die eigene Domain des Absenders, kein Verteiler).
+        'fake-thread-foreign-ref',
+        // 'fake-thread-foreign-ref' stand schon vom 16. bis 25.09. hier. In der
         // Zeit hat es an echter Post nur Kaltakquise aus Outlook-Postfaechern
         // getroffen - "Re: Complete price", "Re: Quick Ranking..??",
         // "Re: Search Suggestion" - und keinen einzigen Fehlalarm erzeugt.

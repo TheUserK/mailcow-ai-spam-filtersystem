@@ -127,6 +127,41 @@ function fixtures() {
         'signals' => ['freemail_from' => true],
     ]);
 
+    // 13./14.10.: "Allen antworten" in einem Vereinsverteiler. Die Rundmail
+    // kam von einem Dritten, die Antwort zeigt legitim auf dessen
+    // Message-ID. Das Modell sagte bei drei von zehn Antworten "spam" -
+    // trotzdem kein Beleg, nicht einmal auf Bewaehrung.
+    $cases['verteiler-antwort-an-alle'] = array_replace_recursive($base, [
+        'from' => 'mitglied-a@gmx.de', 'from_email' => 'mitglied-a@gmx.de',
+        'from_display_name' => 'Mitglied A',
+        'to' => 'empfaenger@example.com',
+        'subject' => 'Re: Beendigung Taetigkeit im Verein - Spende',
+        'body' => 'Danke fuer die Info, ich bin mit der Spende einverstanden.',
+        'rspamd_score' => 0.7,
+        'in_reply_to' => '<rundmail-1@verein-beispiel.de>',
+        'headers' => [
+            'to_header' => 'vorstand@verein-beispiel.de',
+            'cc_header' => 'empfaenger@example.com, mitglied-b@web.de, mitglied-c@beispiel.de',
+        ],
+        'signals' => ['freemail_from' => true],
+        '_analysis' => ['category' => 'spam', 'confidence' => 0.9],
+        '_expect' => ['evidence' => [], 'strong' => []],
+    ]);
+
+    // Fremder Bezug, der weder unserer noch der eigene des Absenders ist,
+    // ohne Verteiler: bleibt als Indiz sichtbar, traegt aber keine Ablehnung.
+    $cases['fremder-thread-bezug-dritter'] = array_replace_recursive($base, [
+        'from' => 'kontakt@agentur-beispiel.de', 'from_email' => 'kontakt@agentur-beispiel.de',
+        'from_display_name' => 'Agentur Beispiel',
+        'to' => 'info@moving-pictures.de',
+        'subject' => 'Re: Ihre Anfrage',
+        'body' => 'Wie besprochen anbei unser Angebot.',
+        'rspamd_score' => 2.0,
+        'in_reply_to' => '<vorgang-7@mailhost-dritter.example>',
+        '_analysis' => ['category' => 'spam', 'confidence' => 0.9],
+        '_expect' => ['evidence' => ['fake-thread-foreign-ref'], 'strong' => []],
+    ]);
+
     // Gegenprobe: Antwort auf eine Message-ID aus einer unserer Domains.
     // Muss still bleiben, sonst faengt der Beleg jede echte Antwort ein.
     $cases['echter-thread-bezug'] = array_replace_recursive($base, [

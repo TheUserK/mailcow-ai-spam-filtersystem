@@ -117,7 +117,8 @@ their own (minus anything currently on probation, see below):
 | `hijacked-reply-to` | the reply is meant to go to a stranger's freemail account, from a non-freemail sender |
 | `operator-reject-rule` | the operator wrote a reject rule for this recipient and the model confirms the mail matches it. Lifts the category lock; the only config that rejects |
 | `reply-to-unrelated-domain` | same pattern, but the reply mailbox sits at a provider the freemail detection doesn't know. Requires DMARC pass, a non-freemail sender, no list headers, and a Reply-To domain unrelated to the sender's. **On probation** |
-| `fake-thread-foreign-ref` | the same claim one step subtler: the header *is* there, but it points at no Message-ID of ours. Cold outreach replying to its own earlier mail. Armed since 25.09. (on probation 16.-25.09., hit only cold outreach, no false positive); still needs a rejectable category to reject, so a genuine reply categorised `personal` stays protected |
+| `fake-thread-self-ref` | the narrow case of the claim below: the thread header points only at the **sender's own** domain (registrable domain) - cold outreach replying to its own earlier mail that never reached us. Not raised for a reply-all in a distribution list. Strong; still needs a rejectable category |
+| `fake-thread-foreign-ref` | the thread header *is* there, but points at no Message-ID of ours and not at the sender's own domain either. **On probation again since 19.10.**: on 13./14.10. three reply-all answers in a club distribution list were rejected - the circular came from a third party, so every reply legitimately referenced a foreign Message-ID, and the model called three of ten replies `spam`. The category safeguard did not hold. A reply with at least `GROUP_THREAD_MIN_RECIPIENTS` (3) visible To/Cc addresses besides the sender counts as a group reply and raises neither this nor the self-ref class - not even as a hint to the model |
 | `role-name-on-freemail` | a claimed role ("Support Service") sent from a freemail address |
 | `free-hosting-link` | a link to a free website-builder/blog platform (blogspot, glitch.me, ...) |
 | `rspamd-concurs` | Rspamd's own score is already at or above `RSPAMD_CONCUR_SCORE` (10) - a fully independent second source agreeing |
@@ -153,9 +154,10 @@ external consultants, deliberately redirected replies), and one real hit is
 not a basis for an irreversible rejection - `sender-on-blocklist` (since
 16.09.), for the same reason: address-exact lists are reliable, but only one
 case has been seen so far, which is not a data basis.
-`fake-thread-foreign-ref` was on probation from 16.09. to 25.09. and was armed
-after hitting only cold outreach from freemail mailboxes, without a single
-false positive. Watch the report group "Beleg auf
+`fake-thread-foreign-ref` was on probation from 16.09. to 25.09., armed
+after hitting only cold outreach from freemail mailboxes, and put back on
+probation on 19.10. after three false rejects from a distribution-list thread;
+the narrow self-reference case lives on as the armed `fake-thread-self-ref`. Watch the report group "Beleg auf
 Bewaehrung hat gefeuert" and arm it by deleting the line once it has proven
 itself. Re-adding a name to `probationEvidence()` puts it back on probation -
 a one-line change either way.
