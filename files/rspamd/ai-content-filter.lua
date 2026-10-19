@@ -83,6 +83,30 @@ local function auth_status(task, allow_symbols, fail_symbols)
   return 'unknown'
 end
 
+-- Summe der Abzuege aus GELERNTEN Ham-Symbolen (Bayes, Fuzzy, Neural).
+-- Die stammen aus Benutzeraktionen - wer eine Mail aus dem Junk zurueck
+-- in den Posteingang schiebt, trainiert sie als Ham. Am 16.10. kam so eine
+-- Anwaltsnetzwerk-Werbung bei -11.75 an: BAYES_HAM -5.50 plus
+-- LOCAL_FUZZY_WHITE -4.34, offenbar nach einer frueher "geretteten"
+-- aehnlichen Mail. Ohne diese beiden waeren es -1.9 gewesen.
+local learned_ham_symbols = {
+  'BAYES_HAM', 'LOCAL_FUZZY_WHITE', 'FUZZY_WHITE',
+  'NEURAL_HAM', 'NEURAL_HAM_LONG', 'NEURAL_HAM_SHORT',
+}
+local function learned_ham_points(task)
+  local sum = 0.0
+  for _, sym in ipairs(learned_ham_symbols) do
+    local res = task:get_symbol(sym)
+    for _, r in ipairs(res or {}) do
+      local s = tonumber(r.score) or 0.0
+      if s < 0 then
+        sum = sum + s
+      end
+    end
+  end
+  return sum
+end
+
 -- True as soon as any one of the given symbols fired for this task.
 local function any_symbol(task, symbols)
   for _, sym in ipairs(symbols) do
@@ -507,8 +531,18 @@ rspamd_config:register_symbol({
     -- bei einem eingetragenen Absender gerade der Fehlalarm, gegen den die
     -- Whitelist schuetzen soll. Geprueft wird dann trotzdem - auf
     -- Missbrauch, nicht auf Spam.
-    if score < cfg.skip_score_below or (score >= cfg.skip_score_above and not wl_active) then
+    --
+    -- Die Untergrenze zaehlt OHNE gelernte Ham-Symbole (siehe
+    -- learned_ham_points). Falsch trainierte Post ist genau die, die die
+    -- KI gegenpruefen soll; Rspamds Score selbst bleibt unveraendert.
+    local learned = learned_ham_points(task)
+    if score - learned < cfg.skip_score_below
+        or (score >= cfg.skip_score_above and not wl_active) then
       return false
+    end
+    if score < cfg.skip_score_below then
+      rspamd_logger.infox(task, 'AI Filter: score %s below skip threshold only through learned ham (%s) - analysing anyway',
+        score, learned)
     end
 
     local from_addr = from_smtp_addr ~= '' and from_smtp_addr or from_mime_addr

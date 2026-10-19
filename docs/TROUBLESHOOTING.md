@@ -98,7 +98,7 @@ docker compose logs rspamd-mailcow | grep "AI Filter"
 - The mail is being re-delivered by your own sieve forwarding. It was analysed when it arrived; forwarding rewrites the envelope and breaks SPF/DKIM, so a second pass would judge the same message on worse evidence and bill a second API call for it
 - Both sender and recipient are on a local Mailcow domain (internal mail)
 - Sender matched a trusted-sender profile with strong auth and aligned headers/links (local auto-pass)
-- Rspamd score already outside the `skip_score_above`/`skip_score_below` range in `ai-filter-settings.lua`. This skip is **silent** - it writes nothing to the AI checker's log and nothing to Rspamd's, so a mail that vanished without a trace is the signature of this case. Check the delivered message's `X-Spamd-Result` header for the score that caused it
+- Rspamd score already outside the `skip_score_above`/`skip_score_below` range in `ai-filter-settings.lua` (for the lower bound without learned ham symbols such as `BAYES_HAM`/`LOCAL_FUZZY_WHITE`). This skip is **silent** - it writes nothing to the AI checker's log and nothing to Rspamd's, so a mail that vanished without a trace is the signature of this case. Check the delivered message's `X-Spamd-Result` header for the score that caused it
 - Sender is in the Lua-level whitelist (`whitelist_domains`/`whitelist_senders`)
 - Log-only mode is active (`log_only_mode = true` in `ai-filter-settings.lua`)
 - Budget exceeded - check `monthly_budget.json`

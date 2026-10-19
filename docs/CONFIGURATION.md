@@ -1270,7 +1270,7 @@ Note that mailcow entries are per mailbox/domain, ours apply server-wide.
 |---|---|---|
 | `checker_url` | `http://ai-checker:8080/ai-mail-checker.php` | Where Rspamd sends the mail context |
 | `skip_score_above` | `15.0` | Skip the AI call if Rspamd already rejects on its own score. Keep this **at** the reject threshold, never below - see below |
-| `skip_score_below` | `-10.0` | Skip the AI call if Rspamd's score is already this low |
+| `skip_score_below` | `-10.0` | Skip the AI call if Rspamd's score is already this low. Since 19.10. learned ham symbols (`BAYES_HAM`, `LOCAL_FUZZY_WHITE`, `FUZZY_WHITE`, `NEURAL_HAM*`) do not count towards this: they come from users moving mail out of junk, and mistrained mail is exactly what the AI should cross-check. On 16.10. a lawyers-network solicitation arrived at -11.75, of which -9.84 was learned ham. Rspamd's own score is unchanged; a skip-override is logged as `below skip threshold only through learned ham` |
 | `http_timeout` | `30.0` | HTTP timeout for the checker call |
 | `log_only_mode` | `false` | Still calls the checker and logs the result, but never applies the score |
 | `whitelist_domains` | `{}` | Sender domains that skip the AI call entirely (Lua table) - no delivery promise |
