@@ -2130,7 +2130,7 @@ function runFixtures() {
             throw new RuntimeException('scoring regression: ' . $name);
         }
     };
-    foreach ([5.12, 5.123456, -2.123456] as $rspamd) {
+    foreach ([5.12, 5.123456, -2.123456, -1.61] as $rspamd) {
         $input = array_replace($synthetic, ['rspamd_score' => $rspamd]);
         $result = $scoreCase($input, $model);
         $checkScore(in_array('brand-linked-not-sender', $result['evidence'], true), 'brand evidence');

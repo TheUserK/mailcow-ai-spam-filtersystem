@@ -2997,7 +2997,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         //
         // Aufgerundet aus demselben Grund wie beim Junk-Floor: der
         // Rueckgabewert wird auf zwei Stellen gerundet.
-        $needed = ceil((REJECT_FLOOR - $mail['rspamd_score']) * 100 - 1e-9) / 100;
+        $needed = pointsToReach(REJECT_FLOOR, $mail['rspamd_score']);
         $score = max($score, $needed);
     } elseif ($confidentReject) {
         // Nur so weit anheben, wie fuer die Schwelle noetig - und nie ueber
@@ -3075,7 +3075,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         //
         // Eine Untergrenze, die ihr eigenes Ziel um Rundungsreste verfehlt,
         // ist keine. Aufgerundet sind es 7.86 und damit 8.0076 - drueber.
-        $needed = ceil((JUNK_FLOOR - $mail['rspamd_score']) * 100 - 1e-9) / 100;
+        $needed = pointsToReach(JUNK_FLOOR, $mail['rspamd_score']);
         $score = max($score, $needed);
     }
 
@@ -4514,6 +4514,25 @@ function allUrlsAreCloudStorage(array $domains) {
 }
 
 // ---------------------------------------------------------------------
+//  Punkte, die zu Rspamds Score noch fehlen, damit die SUMME $target
+//  sicher erreicht - auf zwei Stellen aufgerundet, wie sie zurueckgehen.
+//
+//  Aufrunden allein reicht nicht. Am 18.10. landete Kaltakquise trotz
+//  Junk-Floor im Posteingang: Rspamd -1.61, gebraucht 9.61 - und in
+//  Gleitkomma ist -1.61 + 9.61 = 7.9999999999999991. Rspamd verglich das
+//  mit der Junk-Schwelle 8, entschied "greylist" statt "add header", und
+//  die Mail kam ohne Spam-Kopfzeile an. Im Log stand wie immer "8.00".
+//  Deshalb hier genau die Addition pruefen, die Rspamd auch macht.
+// ---------------------------------------------------------------------
+function pointsToReach($target, $rspamdScore) {
+    $needed = ceil(($target - $rspamdScore) * 100 - 1e-9) / 100;
+    while ($rspamdScore + $needed < $target + 1e-6) {
+        $needed = round($needed + 0.01, 2);
+    }
+    return $needed;
+}
+
+// ---------------------------------------------------------------------
 //  Deckelt unseren Beitrag so, dass die Gesamtsumme die Obergrenze der
 //  Kategorie nicht ueberschreitet. Ham-Abzuege bleiben unangetastet, und
 //  wenn Rspamd allein schon ueber der Grenze liegt, legen wir nichts drauf -
@@ -5403,7 +5422,7 @@ function failOpenResponse(array $mail, array $localContext, $reason) {
     }
 
     $rspamd = floatval($mail['rspamd_score'] ?? 0);
-    $needed = ceil((JUNK_FLOOR - $rspamd) * 100 - 1e-9) / 100;
+    $needed = pointsToReach(JUNK_FLOOR, $rspamd);
     $score  = max(floatval($localContext['impersonation_score'] ?? 0), $needed, 0.0);
     $score  = clampToTotalCeiling($score, $rspamd, MAX_TOTAL_DEFAULT);
 
