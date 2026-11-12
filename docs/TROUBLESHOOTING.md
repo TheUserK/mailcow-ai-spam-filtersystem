@@ -176,26 +176,28 @@ and a second attempt was made.
 
 ## Internal-Mail Detection Not Working
 
-`isInternalMail()` needs a working connection to the Mailcow database.
+`isInternalMail()` needs the list of your own domains. Since 12.11. the
+checker no longer queries the mailcow database for it (and no longer carries
+its password): `ai-filter-domains.sh` exports the list hourly to
+`data/ai-checker/local_domains.json`.
 
 ```bash
-# Is MAILCOW_DBPASS set in the container?
-docker compose exec ai-checker env | grep MAILCOW_DBPASS
+ai-filter-domains.sh --status   # which domains the checker knows
+ai-filter-domains.sh            # export now, e.g. after adding a domain
 ```
 
-If it's missing, add `- MAILCOW_DBPASS=${DBPASS}` to the `ai-checker`
-service's `environment:` section in `docker-compose.override.yml` (next to
-`TZ`) and restart the container. Check `errors.log` for
-"Failed to fetch local domains" if it's set but still failing.
+`errors.log` says "No local domain list - run ai-filter-domains.sh" when
+neither the export nor the older cache exists. An installation whose
+`docker-compose.override.yml` still passes `MAILCOW_DBPASS` keeps working the
+old way until `install.sh --upgrade` replaces the file.
 
 The same domain list also decides `claimsOwnThread()`, and without it that
 function treats every mail carrying any `In-Reply-To` header as a claimed
 thread - which switches off both reject paths (since 12.11. no longer the
-junk floor). Since 16.09. the
-last successfully read list is cached to
-`data/logs/ai-checker/local_domains.json` and reused on a DB failure, so an
-outage no longer silently disarms the filter. `errors.log` then says "Using
-cached local domains". If both the DB and the cache are gone, that protective
+junk floor). The exported
+file stays in place when an export fails, so a database outage does not
+disarm the filter. If the export and the older cache in
+`data/logs/ai-checker/local_domains.json` are both gone, that protective
 fallback is back in force - worth knowing before concluding that nothing is
 being rejected any more:
 

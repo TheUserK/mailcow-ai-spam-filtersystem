@@ -1,7 +1,8 @@
 services:
   ai-checker:
     # Built locally instead of using a stock php image: the official images
-    # do not include pdo_mysql, which the internal-mail detection needs.
+    # do not include pdo_sqlite, which the domain-rank and relationship
+    # lookups need.
     build:
       context: ./data/ai-checker
     container_name: mailcow-ai-checker
@@ -21,11 +22,23 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    # This container reads mail an attacker wrote and talks to the internet.
+    # It gets nothing it does not need: no capabilities, no way to gain
+    # privileges, a read-only root filesystem (only the log directory and
+    # /tmp are writable) and a memory ceiling.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
     environment:
       - TZ=${TZ:-Europe/Berlin}
-      - MAILCOW_DBPASS=${DBPASS}
-      - MAILCOW_DBUSER=${DBUSER:-mailcow}
-      - MAILCOW_DBNAME=${DBNAME:-mailcow}
+      # No database credentials here any more: the list of local domains is
+      # exported hourly by ai-filter-domains.sh to data/ai-checker/local_domains.json.
+      #
       # php -S is single-worker by default, which serialises every mail behind
       # the slowest AI call. Without this a burst of mail runs into rspamd's
       # http_timeout.

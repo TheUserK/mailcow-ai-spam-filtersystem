@@ -160,7 +160,8 @@ Incoming Email
 
 ### 1. Docker Container (ai-checker)
 - **Image:** built from `php:8-cli` + `pdo_mysql`/`pdo_sqlite` (the official image does not ship them). Rebuilt weekly with a fresh base image by `ai-filter-update-image.sh`, which only switches after a pre-check and a healthy start and rolls back otherwise
-- **Network:** mailcow-network (internal), plus reaches the mailcow `mysql` container for internal-mail detection
+- **Network:** mailcow-network (internal). No database access: the list of local domains is exported to `local_domains.json` by `ai-filter-domains.sh`
+- **Hardening:** read-only root filesystem, all capabilities dropped, `no-new-privileges`, memory limit - it parses attacker-written mail and talks to the internet
 - **Health:** HTTP /health endpoint
 - **Resources:** ~50MB RAM, minimal CPU
 - **Config:** constants at the top of `ai-mail-checker.php` (no config.ini)
@@ -214,6 +215,7 @@ Incoming Email
 |   |   +-- brand_domains.txt                # generated Majestic-Million brand list (not shipped, not in git)
 |   |   +-- business_context.json            # what each of your own domains does (ai-filter-context.sh, operator-editable)
 |   |   +-- domain_ranks.sqlite              # sender-domain web-reputation lookup (ai-filter-rank.sh, not shipped, not in git)
+|   |   +-- local_domains.json               # your active mailcow domains (ai-filter-domains.sh, hourly)
 |   |   +-- feedback-import.php              # imports what ai-filter-feedback.sh read (CLI only)
 |   |   +-- feedback_exclude.txt             # mailboxes/domains left out of the feedback scan (optional)
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders

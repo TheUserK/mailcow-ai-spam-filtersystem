@@ -126,12 +126,15 @@ count_compose_services() {
 }
 
 # Ist der Checker-Block in der Override-Datei noch auf dem alten Stand?
-# Merkmale des aktuellen Stands: Build-Context zeigt auf data/ai-checker
-# (bringt pdo_mysql mit) und PHP_CLI_SERVER_WORKERS ist gesetzt.
+# Merkmale des aktuellen Stands: Build-Context zeigt auf data/ai-checker,
+# PHP_CLI_SERVER_WORKERS ist gesetzt, der Container ist gehaertet
+# (read_only) und traegt kein Datenbank-Passwort mehr.
 override_is_current() {
     local f="$1"
     grep -q 'context:[[:space:]]*\./data/ai-checker' "$f" \
-        && grep -q 'PHP_CLI_SERVER_WORKERS' "$f"
+        && grep -q 'PHP_CLI_SERVER_WORKERS' "$f" \
+        && grep -q 'read_only:[[:space:]]*true' "$f" \
+        && ! grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' "$f"
 }
 
 # === MAIN LOGIC ===
@@ -508,6 +511,10 @@ if [[ -f "docker-compose.override.yml" ]]; then
                 || echo "         - build context does not point at data/ai-checker (pdo_mysql missing)"
             grep -q 'PHP_CLI_SERVER_WORKERS' docker-compose.override.yml \
                 || echo "         - PHP_CLI_SERVER_WORKERS not set (requests are serialised)"
+            grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' docker-compose.override.yml \
+                && echo "         - the container still carries the mailcow database password (no longer needed)"
+            grep -q 'read_only:[[:space:]]*true' docker-compose.override.yml \
+                || echo "         - container hardening missing (read-only filesystem, no capabilities)"
 
             OVERRIDE_SERVICES=$(count_compose_services docker-compose.override.yml)
 
@@ -525,7 +532,7 @@ if [[ -f "docker-compose.override.yml" ]]; then
                     cp "$SCRIPT_DIR/files/docker-compose.override.yml" docker-compose.override.yml
                     echo -e "${GREEN}[OK]${NC} docker-compose.override.yml updated (backup kept)"
                 else
-                    echo -e "${YELLOW}[WARN]${NC} Keeping the old file - internal-mail detection will stay broken."
+                    echo -e "${YELLOW}[WARN]${NC} Keeping the old file - the points listed above stay as they are."
                 fi
             else
                 # Fremde Dienste in der Datei: nichts automatisch anfassen.
@@ -588,6 +595,22 @@ cat > /etc/cron.d/ai-filter-image <<'CRON'
 30 3 * * 0 root /usr/local/bin/ai-filter-update-image.sh --cron >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/ai-filter-image
+
+# Eigene Domains fuer den Checker exportieren. Er fragt die mailcow-
+# Datenbank nicht mehr selbst ab und traegt deren Passwort nicht mehr.
+# Einmal sofort (der Container wird weiter unten neu gestartet und soll
+# die Liste dann vorfinden), danach stuendlich.
+cat > /etc/cron.d/ai-filter-domains <<'CRON'
+# Eigene mailcow-Domains fuer den ai-checker, stuendlich.
+# Von Hand: ai-filter-domains.sh          Stand: ai-filter-domains.sh --status
+7 * * * * root /usr/local/bin/ai-filter-domains.sh >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/ai-filter-domains
+if ! /usr/local/bin/ai-filter-domains.sh; then
+    echo -e "${YELLOW}[WARN]${NC} Domainliste konnte nicht exportiert werden. Der Checker nutzt solange"
+    echo "       seine zuletzt bekannte Liste; der stuendliche Lauf holt es nach."
+    echo "       Von Hand: ai-filter-domains.sh"
+fi
 
 # Sortierverhalten der Empfaenger auswerten: Was aus dem Junk zurueckgeholt
 # oder von Hand hineingeschoben wurde, ist die einzige belastbare Antwort
@@ -788,6 +811,7 @@ echo "  ai-filter-model.sh     Show or change the model / AI provider"
 echo "  ai-filter-report.sh    Cases where the filter contradicts itself"
 echo "  ai-filter-context.sh   Recipient context; --hint sets what only you know"
 echo "  ai-filter-whitelist.sh Senders that are always delivered unless the account is abused"
+echo "  ai-filter-domains.sh   Export local domains for the checker (hourly via cron)"
 echo "  ai-filter-feedback.sh  What recipients rescued from / moved to Junk (nightly; --status, --dry-run)"
 echo "  ai-filter-update-image.sh  Rebuild the ai-checker image (weekly via cron, with rollback)"
 echo ""

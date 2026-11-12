@@ -1047,7 +1047,8 @@ keeps your choice.
 | `AI_MODEL_DEFAULT` | `openai/gpt-oss-120b` | Model name |
 | `API_TIMEOUT` | `20` | API request timeout (seconds) |
 | `CONNECT_TIMEOUT` | `5` | Connection timeout (seconds) |
-| `MAILCOW_DB_HOST` / `MAILCOW_DB_NAME` / `MAILCOW_DB_USER` | `mysql` / `$MAILCOW_DBNAME` / `$MAILCOW_DBUSER` | Used for the internal-mail lookup. Name, user and password all come from container env vars fed by mailcow's `DBNAME`/`DBUSER`/`DBPASS` in `docker-compose.override.yml` |
+| `LOCAL_DOMAINS_FILE` | `local_domains.json` | Your active mailcow domains, exported hourly by `ai-filter-domains.sh`. Since 12.11. the checker reads this file instead of querying the mailcow database, and the container no longer carries the database password |
+| `MAILCOW_DB_HOST` / `MAILCOW_DB_NAME` / `MAILCOW_DB_USER` | `mysql` / `$MAILCOW_DBNAME` / `$MAILCOW_DBUSER` | Legacy fallback only: used when the export file is missing **and** an older `docker-compose.override.yml` still passes `MAILCOW_DBPASS` |
 | `MONTHLY_BUDGET_EUR` | `50` | Monthly budget in EUR |
 | `AVG_COST_PER_CALL_EUR` | `0.00034` | Estimated cost per API call, used to derive the monthly call limit. Depends on the model, so a provider profile overrides it; `0` disables the limit |
 | `MAX_SPAM_POINTS` | `4.0` | Max score the AI can add for `legitimate`/`transactional`/`personal` (`newsletter`/`marketing` get `MAX_SPAM_POINTS + 1.0`; the attackable categories use `MAX_PHISHING_POINTS` instead, see below) |

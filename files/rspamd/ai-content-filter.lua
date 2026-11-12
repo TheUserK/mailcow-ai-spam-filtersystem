@@ -768,8 +768,11 @@ rspamd_config:register_symbol({
     -- als intern, wenn das hier zutrifft oder DMARC die Domain bestaetigt.
     -- Die From-Kopfzeile allein beweist nichts - die schreibt der Absender.
     local local_origin = false
-    local from_ip = task:get_from_ip()
-    if from_ip and from_ip:is_valid() and from_ip:is_local() then
+    local ok_ip, is_local_ip = pcall(function()
+      local from_ip = task:get_from_ip()
+      return from_ip and from_ip:is_valid() and from_ip:is_local()
+    end)
+    if ok_ip and is_local_ip then
       local_origin = true
     end
 

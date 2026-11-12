@@ -104,6 +104,8 @@ define('MAX_CALLS_PER_MONTH', AVG_COST_PER_CALL_EUR > 0
     ? (int)(MONTHLY_BUDGET_EUR / AVG_COST_PER_CALL_EUR)
     : PHP_INT_MAX);
 define('BUDGET_FILE', '/var/log/ai-checker/monthly_budget.json');
+// Die eigenen Domains, exportiert von ai-filter-domains.sh.
+define('LOCAL_DOMAINS_FILE', __DIR__ . '/local_domains.json');
 // Letzte erfolgreich gelesene Domainliste - siehe getLocalDomains().
 define('LOCAL_DOMAINS_CACHE', '/var/log/ai-checker/local_domains.json');
 // Die letzten erfolgreichen API-Antwortzeiten - siehe firstAttemptTimeout().
@@ -5096,6 +5098,37 @@ function getLocalDomains() {
     static $lastFetch = 0;
 
     if ($domains !== null && (time() - $lastFetch) < 3600) {
+        return $domains;
+    }
+
+    // Erste Quelle: die Liste, die ai-filter-domains.sh stuendlich aus
+    // mailcow exportiert. Seit 12.11. der Normalfall - der Container
+    // braucht dafuer kein Datenbank-Passwort mehr. Er liest Post, die ein
+    // Angreifer geschrieben hat, und spricht mit dem Internet; das
+    // Passwort zur gesamten mailcow-Datenbank hatte er nur fuer diese eine
+    // Spalte. Nebenbei entfaellt eine MySQL-Verbindung pro Mail.
+    $exported = @file_get_contents(LOCAL_DOMAINS_FILE);
+    if ($exported !== false) {
+        $decoded = json_decode($exported, true);
+        if (is_array($decoded) && !empty($decoded)) {
+            $domains = normalizeDomainList($decoded);
+            $lastFetch = time();
+            return $domains;
+        }
+    }
+
+    // Aeltere Installation ohne Exportdatei: wie bisher die Datenbank,
+    // sofern das Passwort noch im Container steht.
+    if ((string)getenv('MAILCOW_DBPASS') === '') {
+        $domains = [];
+        $cached = @file_get_contents(LOCAL_DOMAINS_CACHE);
+        $decoded = $cached !== false ? json_decode($cached, true) : null;
+        if (is_array($decoded) && !empty($decoded)) {
+            $domains = normalizeDomainList($decoded);
+        } else {
+            logError('system', 'No local domain list - run ai-filter-domains.sh');
+        }
+        $lastFetch = time();
         return $domains;
     }
 
