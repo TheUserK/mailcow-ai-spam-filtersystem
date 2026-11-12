@@ -1,0 +1,9 @@
+# Postfaecher oder ganze Domains, deren Sortierverhalten ai-filter-feedback.sh
+# NICHT auswerten soll - eine Angabe je Zeile. Nach
+# data/ai-checker/feedback_exclude.txt kopieren.
+#
+# Sinnvoll fuer Sammel-, Archiv- und Abuse-Postfaecher: Dort sortiert
+# niemand, "liegt im Posteingang" heisst also nicht "erwuenscht".
+#
+# archiv@example.com
+# kundendomain.example

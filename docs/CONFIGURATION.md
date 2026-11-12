@@ -877,6 +877,81 @@ domain stays established even when its mailbox is hijacked, so
 `hijacked-reply-to`, a business-context role conflict, or any other structural
 evidence still applies exactly as before.
 
+## Recipient relationship (ai-filter-feedback.sh, relationship.sqlite)
+
+Whether a mail was subscribed to is not written in the mail. The model has to
+guess, and both remaining error classes hang on that guess: the subscribed
+newsletter the model calls `spam` (the junk floor then lifts it to 8), and
+the cold outreach with an unsubscribe link it calls `marketing` (no floor,
+inbox). The only place the answer actually exists is the mailbox.
+
+Two local sources, neither of which leaves the server:
+
+| Source | Written by | Meaning |
+|---|---|---|
+| `feedback` | `ai-filter-feedback.sh`, nightly | Mail carrying the spam header that sits in the **inbox** was moved out of Junk by the recipient -> `rescued`. Mail **without** the spam header in **Junk** was moved there by hand -> `junked`. Newest decision per mailbox and sender wins, valid for `FEEDBACK_MAX_AGE_DAYS` (180) |
+| `history` | the checker, per mail | How often and since when a strongly authenticated sender reached this recipient's **inbox**. Mail we sorted into junk ourselves does not count, otherwise persistent advertising would unlock itself over time |
+
+The sender key is the registrable From domain; for freemail it is the full
+address.
+
+What follows from it (`relationshipEffect()`):
+
+| Effect | Condition | Result |
+|---|---|---|
+| `force-floor` | recipient junked this sender; category `spam`/`clickbait`/`pharma`/`marketing`/`newsletter`; not a proven reply | Total is lifted to the junk threshold, even with an unsubscribe link. Never rejectable through this. Transactional and personal mail from the same sender is untouched |
+| `protect` | recipient rescued this sender; auth strong; no strong structural evidence; category not `phishing`/`fraud` | No junk floor, no ai-confident reject, and the AI's own positive share ends just below the junk threshold. Rspamd's own score is not rescued |
+| `lift-floor` | at least `HISTORY_MIN_INBOX` (3) inbox mails over at least `HISTORY_MIN_DAYS` (21); list mail with strong auth and no evidence; category `spam`/`clickbait` | No hard jump to the junk threshold on the model's word alone; its own graduated score still counts |
+
+Protection is only ever given to a verified sender and never against
+structural evidence - the account behind a subscribed newsletter gets
+hijacked too.
+
+### Modes
+
+`RELATIONSHIP_MODE` is `shadow` by default: both sources are recorded and
+every `stats.log` line shows under `relationship` what *would* have happened
+(`"applied": false`), but neither prompt nor score is touched. Check a week
+of entries, then switch it on by adding one line to the `ai-checker` service
+in `docker-compose.override.yml` and recreating the container:
+
+```yaml
+    environment:
+      - AI_FILTER_RELATIONSHIP_MODE=on
+```
+
+`on` additionally shows the model three flags (`recipient-rescued-sender`,
+`sender-history:N-inbox-mails-over-D-days`, `recipient-junked-sender`).
+`off` reads and writes nothing.
+
+### What the script reads
+
+Per mailbox, only Inbox and Junk, only mail saved in the last 14 days
+(`--days N`), and only these header fields: `From`, `X-Spam-Flag`/`X-Spam`
+and the saved date. No subject, no body, no attachments. It stores mailbox
+address, sender key, `rescued`/`junked` and a date in
+`data/logs/ai-checker/relationship.sqlite` (root, `0600`). This is a new kind
+of processing - recipients' sorting behaviour - and belongs in your records
+of processing.
+
+```bash
+ai-filter-feedback.sh --dry-run          # show findings, store nothing
+ai-filter-feedback.sh --status
+ai-filter-feedback.sh --show anna@example.com
+ai-filter-feedback.sh --forget anna@example.com [sender]
+```
+
+To leave mailboxes or whole domains out, list them in
+`data/ai-checker/feedback_exclude.txt` (template next to it). Do that for
+shared, archive and abuse mailboxes where nobody sorts.
+
+A mailbox that keeps tagged mail in the inbox (mailcow's "tag only" setting)
+never *rescued* anything. The import recognises this - more tagged mail in
+the inbox than in Junk, and at least five - and ignores that mailbox's
+rescues, naming it in the output. A mail client with its own junk filter
+(Thunderbird) produces `junked` entries the user did not make by hand; if
+that misfires, exclude the mailbox.
+
 ## Provider profile (provider.conf)
 
 The three `_DEFAULT` constants below are the shipped values. If
@@ -995,6 +1070,9 @@ keeps your choice.
 | `BRAND_DOMAINS_FILE` | `brand_domains.txt` next to the script | The generated Majestic-Million brand list (see below); absent means the checker silently falls back to the hand-curated list only |
 | `LOG_SUBJECT` | `true` | Write the subject line to stats.log. Needed to judge a verdict after the fact; kept 30 days, root-only |
 | `PROMPT_BODY_CHARS` | `3000` | How much of the visible mail text the model sees. Since 12.11. this is head *and* tail (`promptExcerpt()`), and the text is what the recipient reads (`visibleText()`): until then `strip_tags()` left the contents of `<style>` in place, so for HTML-only newsletters the model was partly reading CSS, and anything after character 3000 was invisible |
+| `RELATIONSHIP_MODE` | `shadow` | `off` / `shadow` / `on`, set via `AI_FILTER_RELATIONSHIP_MODE`. See [Recipient relationship](#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite) |
+| `FEEDBACK_MAX_AGE_DAYS` | `180` | How long a recipient's rescue/junk decision stays valid |
+| `HISTORY_MIN_INBOX` / `HISTORY_MIN_DAYS` | `3` / `21` | When a list counts as established for a recipient |
 | `LOG_MAIL_CONTENT` | `false` | Write a body excerpt as well. Far more revealing than a subject and not needed for review - debugging only |
 | `LOG_FILE_MODE` | `0600` | Permissions for newly created log files |
 

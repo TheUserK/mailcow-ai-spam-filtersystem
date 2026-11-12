@@ -61,4 +61,10 @@ if [ -f "$root/tests/domain_ranks.sample.tsv" ]; then
   ' "$tmp/domain_ranks.sqlite" "$root/tests/domain_ranks.sample.tsv"
 fi
 
+# Beziehungs-Datenbank: leer und scharf. Die Korpusfaelle finden darin
+# nichts und bleiben unveraendert; die synthetischen Faelle am Ende
+# tragen ihre Eintraege selbst ein.
+export AI_FILTER_RELATIONSHIP_DB="$tmp/relationship.sqlite"
+export AI_FILTER_RELATIONSHIP_MODE=on
+
 php -r 'require $argv[1]; require $argv[2];' "$tmp/lib.php" "$root/tests/fixtures.php"

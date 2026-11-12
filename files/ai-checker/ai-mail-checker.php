@@ -265,6 +265,43 @@ define('AI_CONFIDENT_CONFIDENCE', 0.90);  // Mindestsicherheit des Modells
 define('AI_CONFIDENT_SCORE', 7.0);        // eigener Punktwert des Modells
 define('AI_CONFIDENT_TOTAL', 15.5);       // angepeilte Gesamtsumme
 
+// ---------------------------------------------------------------------
+//  Beziehung zwischen Empfaenger und Absender.
+//
+//  "Abonniert oder nicht" steht in keiner Mail. Das Modell muss es raten,
+//  und daran haengen beide Fehlerarten zugleich: der bezogene Newsletter,
+//  der als "spam" im Junk landet, und die Kaltakquise mit Abmeldelink, die
+//  als "marketing" durchgeht. Die einzige Stelle, an der die Antwort
+//  wirklich steht, ist das Postfach: was der Empfaenger aus dem Junk
+//  zurueckholt, will er; was er von Hand hineinschiebt, will er nicht.
+//
+//  Zwei Quellen, beide rein lokal, nichts davon geht an den KI-Anbieter:
+//   - feedback: ai-filter-feedback.sh liest nachts per doveadm nur
+//     Kopfzeilen (From, List-Id, Spam-Kennzeichen) aus Posteingang und Junk.
+//   - history:  der Checker zaehlt selbst mit, wie oft und seit wann ein
+//     sauber authentifizierter Absender bei diesem Empfaenger im
+//     POSTEINGANG gelandet ist. Was wir selbst in den Junk sortiert haben,
+//     zaehlt nicht - sonst wuerde sich Dauerwerbung mit der Zeit selbst
+//     freischalten.
+//
+//  RELATIONSHIP_MODE:
+//    off    - nichts lesen, nichts schreiben
+//    shadow - mitschreiben und im Log zeigen, was es bewirkt HAETTE,
+//             aber weder Prompt noch Score anfassen (Vorgabe)
+//    on     - scharf
+//  Umschalten ohne Codeaenderung: AI_FILTER_RELATIONSHIP_MODE im
+//  environment-Abschnitt des ai-checker-Dienstes.
+// ---------------------------------------------------------------------
+define('RELATIONSHIP_DB', getenv('AI_FILTER_RELATIONSHIP_DB') ?: '/var/log/ai-checker/relationship.sqlite');
+define('RELATIONSHIP_MODE', in_array(getenv('AI_FILTER_RELATIONSHIP_MODE'), ['off', 'shadow', 'on'], true)
+    ? getenv('AI_FILTER_RELATIONSHIP_MODE')
+    : 'shadow');
+// Wie lange eine Nutzerentscheidung gilt.
+define('FEEDBACK_MAX_AGE_DAYS', 180);
+// Ab wann eine Liste als "laeuft hier schon laenger" gilt.
+define('HISTORY_MIN_INBOX', 3);
+define('HISTORY_MIN_DAYS', 21);
+
 // Wie viele Zeichen Mailtext das Modell zu sehen bekommt (drei Viertel
 // vom Anfang, ein Viertel vom Ende - siehe promptExcerpt()).
 define('PROMPT_BODY_CHARS', 3000);
@@ -277,6 +314,13 @@ define('MAX_PHISHING_POINTS', 10.0); // Phishing/Fraud darf kraeftig beissen, ab
 // =====================================================================
 //  ROUTER
 // =====================================================================
+// feedback-import.php bindet diese Datei als Bibliothek ein: Die
+// Funktionen stehen dann bereit (PHP sammelt sie vorab ein), der Router
+// laeuft nicht.
+if (defined('AI_FILTER_LIBRARY')) {
+    return;
+}
+
 $input = file_get_contents('php://input');
 $data = json_decode($input, true);
 
@@ -298,6 +342,7 @@ if (!empty($localResult['handled'])) {
         $localResult,
         whitelistDecision($mail, $localResult, $localResult)
     );
+    recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $localResult['score']);
     logStats($requestId, [
         'from' => $mail['from'],
         'to' => $mail['to'],
@@ -336,6 +381,7 @@ if (!checkBudget($requestId)) {
 
 $result = analyzeWithAI($mail, $localResult, $requestId);
 $result = applyWhitelistDecision($result, whitelistDecision($mail, $localResult, $result));
+recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $result['score']);
 
 logStats($requestId, [
     'from' => $mail['from'],
@@ -372,6 +418,7 @@ logStats($requestId, [
     'struct_flags' => $result['struct_flags'] ?? [],
     'real_conversation' => !empty($result['real_conversation']),
     'claimed_thread' => !empty($result['claimed_thread']),
+    'relationship' => $result['relationship'] ?? null,
     // Wurden von logStats() gelesen, aber nie uebergeben - beide Felder
     // standen deshalb seit ihrer Einfuehrung in JEDER Zeile leer bzw.
     // false, egal was tatsaechlich passiert war. Genau die zwei Felder,
@@ -1830,6 +1877,21 @@ function analyzeLocally(array $mail, $requestId) {
 
     // Marken-Impersonation: gibt sich die Mail als bekannte Marke aus,
     // obwohl die Domain nicht passt? (Typosquat oder fremde Domain)
+    // Beziehung Empfaenger/Absender. Im Schattenmodus nur fuers Log -
+    // das Modell bekommt die Flags erst, wenn der Modus scharf ist.
+    $relationship = relationshipFor($mail, $authStrength);
+    if (RELATIONSHIP_MODE === 'on') {
+        if ($relationship['junked']) {
+            $riskFlags[] = 'recipient-junked-sender';
+        } elseif ($relationship['verified'] && $relationship['rescued']) {
+            $trustFlags[] = 'recipient-rescued-sender';
+        }
+        if ($relationship['verified'] && $relationship['established'] && !$relationship['junked']) {
+            $trustFlags[] = 'sender-history:' . $relationship['inbox'] . '-inbox-mails-over-'
+                . $relationship['days'] . '-days';
+        }
+    }
+
     $impersonation = detectBrandImpersonation($mail);
     $impersonationScore = 0.0;
     $impersonationKind = '';
@@ -1859,6 +1921,7 @@ function analyzeLocally(array $mail, $requestId) {
         'impersonation_score' => $impersonationScore,
         'impersonation_kind' => $impersonationKind,
         'sender_global_rank' => $senderGlobalRank,
+        'relationship' => $relationship,
         'struct' => $struct,
         'risk_flags' => array_values(array_unique($riskFlags)),
         'trust_flags' => array_values(array_unique($trustFlags)),
@@ -2183,6 +2246,21 @@ Zu den Absender-Flags:
   Kontaktpruefung ohne erkennbaren Anlass - erhoeht es die Sicherheit
   spuerbar. Allein, bei sonst unauffaelliger Mail, kein Grund zum Einstufen
   als Spam.
+- "recipient-rescued-sender": Der Empfaenger hat Post dieses Absenders
+  selbst aus dem Junk-Ordner zurueck in den Posteingang geholt. Das ist die
+  Antwort auf die Abo-Frage, und sie stammt nicht vom Absender: Diese Post
+  ist erwuenscht. Werbung von dort ist "newsletter" oder "marketing", nie
+  "spam" oder "clickbait". Konkrete Betrugs- oder Phishing-Signale gelten
+  weiter - auch ein bezogener Absender kann gekapert sein.
+- "sender-history:N-inbox-mails-over-D-days": Dieser authentifizierte
+  Absender kommt bei diesem Empfaenger seit D Tagen an, N Mails davon
+  landeten im Posteingang. Das belegt keine Bestellung, spricht aber klar
+  gegen Kaltakquise - die besteht aus wenigen Mails in kurzer Folge.
+- "recipient-junked-sender": Der Empfaenger hat Post dieses Absenders von
+  Hand in den Junk-Ordner verschoben. Werbung von dort ist unerwuenscht,
+  egal wie sauber der Versand ist und ob ein Abmeldelink vorhanden ist.
+  Fuer Rechnungen, Bestaetigungen und persoenliche Post desselben
+  Absenders folgt daraus nichts.
 - "verified-brand:MARKE": Die From-Domain gehoert nachweislich (per DMARC)
   zu MARKE - kein Anzeigename-Trick, die Mail kommt wirklich von deren
   eigenen Servern. SEHR STARKES Ham-Signal, staerker als einzelne
@@ -2957,6 +3035,12 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
     // wie vor abweisbar, falls doch einer zutrifft.
     $authenticatedList = authenticatedListMail($mail, $localContext, $evidence);
 
+    // Was sagt das Postfach des Empfaengers zu diesem Absender? Siehe
+    // relationshipEffect(). Im Schattenmodus wird nur protokolliert.
+    $relationship = $localContext['relationship'] ?? ['key' => ''];
+    $relEffect = relationshipEffect($relationship, $category, $strong, $authenticatedList, $realConversation);
+    $relApplied = RELATIONSHIP_MODE === 'on' ? $relEffect : '';
+
     // Fuer die Betreiber-Regel gilt eine eigene Vertrauensgrenze.
     //
     // Der Prompt sagt dem Modell, ein Regeltreffer fuehre zur endgueltigen
@@ -3000,6 +3084,9 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         && !$hasOperatorHint
         && !$authenticatedList
         && $transactionalGuard === ''
+        // Was der Empfaenger zurueckgeholt hat, weist das Modell nicht
+        // allein ab.
+        && $relApplied !== 'protect'
         // Sonst wuerde dieselbe vom lokalen Marken-Flag gelenkte
         // Modellentscheidung durch die Hintertuer des zweiten Pfads doch
         // wieder rejecten, sobald Rspamd genug Punkte beisteuert.
@@ -3085,6 +3172,18 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         && $verifiedBrand === ''
         && !$realConversation
         && $transactionalGuard === '';
+
+    if ($relApplied === 'protect' || $relApplied === 'lift-floor') {
+        $junkFloorApplies = false;
+    }
+    if ($relApplied === 'protect') {
+        // Wie beim Transaktions-Guard: kein Rabatt, nur der positive
+        // KI-Anteil endet knapp unter der Junk-Schwelle.
+        $ceiling = min($ceiling, TRANSACTIONAL_GUARD_MAX_TOTAL);
+    }
+    if ($relApplied === 'force-floor' && $transactionalGuard === '') {
+        $junkFloorApplies = true;
+    }
 
     if ($junkFloorApplies || $suspiciousInvoice) {
         // KEIN min(..., policy['points']) hier - anders als beim
@@ -3176,6 +3275,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         // confidentReject UND den Junk-Floor. Sie gehoert ins Log.
         'real_conversation' => $realConversation,
         'claimed_thread'  => $claimedThread,
+        'relationship'    => relationshipLog($relationship, $relEffect),
         // Leer = kein Treffer, "field" = sauber im JSON, "text" = nur im
         // Begruendungstext. Ohne diese Unterscheidung liess sich am 14.09.
         // nicht sagen, ob das Modell verneint oder nur schlampig geantwortet
@@ -4788,6 +4888,209 @@ function scoreFromAi($probability, $confidence, $category = '') {
 // =====================================================================
 //  HELFER
 // =====================================================================
+// ---------------------------------------------------------------------
+//  Beziehungs-Datenbank (siehe RELATIONSHIP_MODE). Jeder Fehler hier ist
+//  folgenlos: ohne Datenbank verhaelt sich der Filter wie vorher.
+// ---------------------------------------------------------------------
+function relationshipDb() {
+    static $db = false;
+    if ($db !== false) {
+        return $db;
+    }
+    $db = null;
+    if (RELATIONSHIP_MODE === 'off' || !extension_loaded('pdo_sqlite')) {
+        return $db;
+    }
+    try {
+        $fresh = !file_exists(RELATIONSHIP_DB);
+        $pdo = new PDO('sqlite:' . RELATIONSHIP_DB);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        // Vier Worker und nachts das Feedback-Skript schreiben in dieselbe
+        // Datei - kurz warten statt sofort scheitern.
+        $pdo->exec('PRAGMA busy_timeout = 1500');
+        $pdo->exec('CREATE TABLE IF NOT EXISTS history (
+            rcpt TEXT NOT NULL, sender TEXT NOT NULL,
+            first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+            seen INTEGER NOT NULL DEFAULT 0, inbox INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (rcpt, sender))');
+        $pdo->exec('CREATE TABLE IF NOT EXISTS feedback (
+            rcpt TEXT NOT NULL, sender TEXT NOT NULL,
+            verdict TEXT NOT NULL, ts INTEGER NOT NULL,
+            PRIMARY KEY (rcpt, sender))');
+        if ($fresh) {
+            @chmod(RELATIONSHIP_DB, LOG_FILE_MODE);
+        }
+        $db = $pdo;
+    } catch (Exception $e) {
+        logError('system', 'Relationship database unavailable: ' . $e->getMessage());
+        $db = null;
+    }
+    return $db;
+}
+
+// Empfaengerpostfach und Absender-Schluessel. Bei Firmendomains die
+// registrierbare Domain (news.haendler.de und shop.haendler.de sind
+// derselbe Absender), bei Freemail die volle Adresse - die Domain
+// gmail.com sagt ueber niemanden etwas.
+function relationshipKey(array $mail) {
+    $sender = relationshipSenderKey($mail['from_email'] ?? '');
+    $rcpt = strtolower(extractEmailAddress($mail['to'] ?? ''));
+    if ($rcpt === '' || $sender === '') {
+        return ['', ''];
+    }
+    return [$rcpt, $sender];
+}
+
+// Eigene Funktion, weil feedback-import.php denselben Schluessel aus einer
+// From-Kopfzeile bilden muss - zwei Stellen, die ihn unterschiedlich
+// herleiten, faenden ihre Eintraege gegenseitig nie.
+function relationshipSenderKey($fromAddress) {
+    $address = strtolower(extractEmailAddress($fromAddress));
+    $domain = normalizeHost(extractDomainFromAddress($address));
+    if ($address === '' || $domain === '') {
+        return '';
+    }
+    return isFreemailDomain($domain) ? $address : registrableDomain($domain);
+}
+
+// Bewusst eine eigene Liste und nicht das Signal aus dem Lua-Modul: Der
+// Schluessel muss auch dort stimmen, wo es kein Rspamd-Ergebnis gibt
+// (Import aus dem Postfach). Obermenge der Liste in ai-content-filter.lua.
+function isFreemailDomain($domain) {
+    static $domains = [
+        'gmail.com', 'googlemail.com',
+        'gmx.de', 'gmx.net', 'gmx.at', 'gmx.ch', 'gmx.com',
+        'web.de', 't-online.de', 'freenet.de', 'posteo.de', 'mailbox.org',
+        'outlook.com', 'outlook.de', 'hotmail.com', 'hotmail.de', 'live.com', 'live.de', 'msn.com',
+        'yahoo.com', 'yahoo.de', 'ymail.com',
+        'icloud.com', 'me.com', 'mac.com', 'aol.com', 'aol.de',
+        'mail.com', 'protonmail.com', 'proton.me', 'pm.me',
+        'libero.it', 'mail.ru', 'yandex.com', 'yandex.ru', 'zoho.com',
+    ];
+    return in_array($domain, $domains, true);
+}
+
+function relationshipFor(array $mail, $authStrength) {
+    $rel = [
+        'key' => '', 'rescued' => false, 'junked' => false,
+        'inbox' => 0, 'seen' => 0, 'days' => 0,
+        'established' => false,
+        // Nur ein nachweislich echter Absender erbt Vertrauen. Sonst
+        // genuegte ein gefaelschtes From auf eine gerettete Domain.
+        'verified' => $authStrength === 'strong',
+    ];
+    list($rcpt, $sender) = relationshipKey($mail);
+    $db = ($rcpt !== '') ? relationshipDb() : null;
+    if (!$db) {
+        return $rel;
+    }
+    $rel['key'] = $sender;
+
+    try {
+        $st = $db->prepare('SELECT verdict, ts FROM feedback WHERE rcpt = ? AND sender = ?');
+        $st->execute([$rcpt, $sender]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if ($row && (int)$row['ts'] >= time() - FEEDBACK_MAX_AGE_DAYS * 86400) {
+            $rel['rescued'] = $row['verdict'] === 'rescued';
+            $rel['junked']  = $row['verdict'] === 'junked';
+        }
+
+        $st = $db->prepare('SELECT first_seen, seen, inbox FROM history WHERE rcpt = ? AND sender = ?');
+        $st->execute([$rcpt, $sender]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            $rel['seen']  = (int)$row['seen'];
+            $rel['inbox'] = (int)$row['inbox'];
+            $rel['days']  = (int)floor(max(0, time() - (int)$row['first_seen']) / 86400);
+            $rel['established'] = $rel['inbox'] >= HISTORY_MIN_INBOX && $rel['days'] >= HISTORY_MIN_DAYS;
+        }
+    } catch (Exception $e) {
+        logError('system', 'Relationship lookup failed: ' . $e->getMessage());
+    }
+    return $rel;
+}
+
+// Nach dem Urteil mitzaehlen. "inbox" nur, wenn die Summe unter der
+// Junk-Schwelle blieb - siehe den Kommentar bei RELATIONSHIP_MODE.
+function recordDelivery(array $mail, $authStrength, $totalScore) {
+    if ($authStrength !== 'strong') {
+        return;
+    }
+    list($rcpt, $sender) = relationshipKey($mail);
+    $db = ($rcpt !== '') ? relationshipDb() : null;
+    if (!$db) {
+        return;
+    }
+    try {
+        $now = time();
+        $st = $db->prepare('INSERT INTO history (rcpt, sender, first_seen, last_seen, seen, inbox)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(rcpt, sender) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                seen = seen + 1,
+                inbox = inbox + excluded.inbox');
+        $st->execute([$rcpt, $sender, $now, $now, $totalScore < JUNK_FLOOR ? 1 : 0]);
+    } catch (Exception $e) {
+        logError('system', 'Relationship update failed: ' . $e->getMessage());
+    }
+}
+
+// ---------------------------------------------------------------------
+//  Was folgt aus der Beziehung fuer DIESE Mail? Reine Funktion.
+//
+//   force-floor  Der Empfaenger hat diesen Absender selbst in den Junk
+//                geschoben. Werbung von dort gehoert in den Junk, auch mit
+//                Abmeldelink und auch, wenn das Modell "newsletter" sagt.
+//                Transaktions- und persoenliche Post bleibt unberuehrt.
+//   protect      Der Empfaenger hat Post dieses Absenders aus dem Junk
+//                zurueckgeholt. Unser Anteil schiebt sie dann nicht wieder
+//                hinein. Rspamds eigener Score wird nicht gerettet.
+//   lift-floor   Eine sauber authentifizierte Liste, die hier seit Wochen
+//                im Posteingang ankommt: kein harter Sprung auf die
+//                Junk-Schwelle allein, weil das Modell "spam" sagt. Sein
+//                eigener Punktwert zaehlt weiter.
+//
+//  Schutz gibt es nur fuer verifizierte Absender und nie gegen einen
+//  Strukturbeleg oder ein Phishing-/Betrugsurteil - auch das Postfach
+//  eines bezogenen Newsletters wird gekapert.
+// ---------------------------------------------------------------------
+function relationshipEffect(array $rel, $category, array $strong, $authenticatedList, $realConversation) {
+    if (($rel['key'] ?? '') === '') {
+        return '';
+    }
+    if (!empty($rel['junked']) && !$realConversation
+        && in_array($category, ['spam', 'clickbait', 'pharma', 'marketing', 'newsletter'], true)) {
+        return 'force-floor';
+    }
+    if (empty($rel['verified']) || !empty($strong) || in_array($category, ['phishing', 'fraud'], true)) {
+        return '';
+    }
+    if (!empty($rel['rescued'])) {
+        return 'protect';
+    }
+    if (!empty($rel['established']) && $authenticatedList
+        && in_array($category, ['spam', 'clickbait'], true)) {
+        return 'lift-floor';
+    }
+    return '';
+}
+
+// Fuer stats.log: nur, wenn es ueberhaupt etwas zu sagen gibt.
+function relationshipLog(array $rel, $effect) {
+    if (($rel['key'] ?? '') === ''
+        || (empty($rel['rescued']) && empty($rel['junked']) && empty($rel['seen']))) {
+        return null;
+    }
+    return [
+        'feedback' => !empty($rel['rescued']) ? 'rescued' : (!empty($rel['junked']) ? 'junked' : ''),
+        'inbox'    => (int)$rel['inbox'],
+        'seen'     => (int)$rel['seen'],
+        'days'     => (int)$rel['days'],
+        'effect'   => $effect,
+        'applied'  => $effect !== '' && RELATIONSHIP_MODE === 'on',
+    ];
+}
+
 function getLocalDomains() {
     static $domains = null;
     static $lastFetch = 0;
@@ -5737,6 +6040,12 @@ function logStats($requestId, $data) {
         'real_conversation' => !empty($data['real_conversation']),
         'claimed_thread' => !empty($data['claimed_thread']),
     ];
+
+    // Was das Postfach des Empfaengers ueber diesen Absender weiss -
+    // nur, wenn es etwas weiss. "applied" false heisst Schattenmodus.
+    if (!empty($data['relationship']) && is_array($data['relationship'])) {
+        $entry['relationship'] = $data['relationship'];
+    }
 
     // Nur bei Absendern, auf die ein Whitelist-Eintrag passt. Eine
     // Adresse als Eintrag ist personenbezogen und wird gekuerzt wie

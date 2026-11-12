@@ -2195,6 +2195,109 @@ function runFixtures() {
     $result = $scoreCase($input, $model);
     $checkScore($result['score'] === 0.0, 'brand conflict without shortener gets no invoice floor');
 
+    // Beziehung Empfaenger/Absender: Feedback aus dem Postfach und
+    // eigene Historie. Haendler-Newsletter, sauber authentifiziert, mit
+    // Abmeldelink - das Modell sagt trotzdem "spam" mit 0.9.
+    $news = [
+        'from' => 'news@haendler-beispiel.test', 'from_email' => 'news@haendler-beispiel.test',
+        'to' => 'kundin@example.com', 'subject' => 'Neu im Sortiment',
+        'body' => 'Unsere Neuheiten im Herbst. Abmelden jederzeit moeglich.',
+        'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'],
+        'rspamd_score' => -1.2,
+        'urls' => ['https://haendler-beispiel.test/neu'], 'url_domains' => ['haendler-beispiel.test'],
+        'signals' => ['has_list_unsubscribe' => true],
+        'headers' => ['to_header' => 'kundin@example.com',
+                      'list_unsubscribe' => '<https://haendler-beispiel.test/abmelden>'],
+    ];
+    $spamVerdict = ['category' => 'spam', 'spam_probability' => 0.9, 'confidence' => 0.9,
+        'claimed_brand' => '', 'red_flags' => [], 'reasoning' => 'Synthetic',
+        'reject_rule_match' => false, 'reject_rule_confidence' => 0.0];
+    $newsVerdict = array_replace($spamVerdict, ['category' => 'newsletter', 'spam_probability' => 0.2]);
+    $db = relationshipDb();
+    $checkScore($db !== null, 'relationship database opens');
+    $setFeedback = function ($verdict, $ts = null) use ($db) {
+        $db->exec('DELETE FROM feedback');
+        if ($verdict !== '') {
+            $db->prepare('INSERT INTO feedback VALUES (?, ?, ?, ?)')
+               ->execute(['kundin@example.com', 'haendler-beispiel.test', $verdict, $ts ?? time()]);
+        }
+    };
+
+    $result = $scoreCase($news, $spamVerdict);
+    $checkScore($news['rspamd_score'] + $result['score'] >= JUNK_FLOOR && $result['relationship'] === null,
+        'without history a confident spam verdict still reaches junk');
+
+    $setFeedback('rescued');
+    $result = $scoreCase($news, $spamVerdict);
+    $checkScore($news['rspamd_score'] + $result['score'] < JUNK_FLOOR
+        && $result['relationship']['effect'] === 'protect' && $result['relationship']['applied'],
+        'rescued sender is not pushed back into junk');
+    $checkScore(in_array('recipient-rescued-sender',
+        analyzeLocally(prepareMailContext($news), 'synthetic')['trust_flags'], true),
+        'rescued sender is shown to the model');
+    $checkScore($news['rspamd_score'] + $scoreCase($news, array_replace($spamVerdict, ['category' => 'phishing']))['score'] >= JUNK_FLOOR,
+        'rescue does not protect a phishing verdict');
+    $unauth = array_replace($news, ['auth' => ['spf' => 'fail', 'dkim' => 'unknown', 'dmarc' => 'fail']]);
+    $checkScore($scoreCase($unauth, $spamVerdict)['relationship']['effect'] === '',
+        'rescue does not protect a sender that fails authentication');
+    $blocklisted = array_replace($news, [
+        'urls' => ['https://fremde-seite.test/x'], 'url_domains' => ['fremde-seite.test'],
+        'signals' => ['has_list_unsubscribe' => true, 'url_blacklisted' => true]]);
+    $checkScore(in_array('url-on-blocklist', $scoreCase($blocklisted, $spamVerdict)['evidence'], true),
+        'test premise: blocklist hit is evidence');
+    $checkScore($scoreCase($blocklisted, $spamVerdict)['relationship']['effect'] === '',
+        'rescue does not override structural evidence');
+    $setFeedback('rescued', time() - (FEEDBACK_MAX_AGE_DAYS + 1) * 86400);
+    $checkScore($scoreCase($news, $spamVerdict)['relationship'] === null, 'old feedback expires');
+
+    $setFeedback('junked');
+    $result = $scoreCase($news, $newsVerdict);
+    $checkScore($news['rspamd_score'] + $result['score'] >= JUNK_FLOOR
+        && $result['relationship']['effect'] === 'force-floor' && !$result['reject_eligible'],
+        'junked sender: newsletter goes to junk, never rejected');
+    $result = $scoreCase($news, array_replace($spamVerdict,
+        ['category' => 'transactional', 'spam_probability' => 0.1]));
+    $checkScore($result['score'] <= 0 && $result['relationship']['effect'] === '',
+        'junked sender: transactional mail is left alone');
+
+    // Eigene Historie: gezaehlt wird nur, was im Posteingang ankam.
+    $setFeedback('');
+    $mailCtx = prepareMailContext($news);
+    recordDelivery($mailCtx, 'strong', 9.5);
+    recordDelivery($mailCtx, 'strong', 8.0);
+    recordDelivery($mailCtx, 'medium', 0.0);
+    $rel = relationshipFor($mailCtx, 'strong');
+    $checkScore($rel['seen'] === 2 && $rel['inbox'] === 0 && !$rel['established'],
+        'mail we sorted into junk ourselves builds no history');
+    recordDelivery($mailCtx, 'strong', 1.0);
+    recordDelivery($mailCtx, 'strong', 2.0);
+    recordDelivery($mailCtx, 'strong', 7.99);
+    $checkScore(relationshipFor($mailCtx, 'strong')['inbox'] === 3
+        && !relationshipFor($mailCtx, 'strong')['established'], 'three inbox mails in one day are not a history');
+    $db->exec('UPDATE history SET first_seen = first_seen - ' . (HISTORY_MIN_DAYS + 1) * 86400);
+    $checkScore(relationshipFor($mailCtx, 'strong')['established'], 'inbox mails over weeks are a history');
+    $result = $scoreCase($news, $spamVerdict);
+    $checkScore($result['relationship']['effect'] === 'lift-floor'
+        && $result['score'] === $result['model_score'], 'established list: model score only, no junk floor');
+    $noList = array_replace($news, ['signals' => [], 'headers' => ['to_header' => 'kundin@example.com']]);
+    $checkScore($scoreCase($noList, $spamVerdict)['relationship']['effect'] === '',
+        'history lifts the floor only for list mail');
+    $db->exec('DELETE FROM history');
+
+    // Freemail: Schluessel ist die Adresse, nicht gmail.com.
+    $checkScore(relationshipKey(prepareMailContext(['from_email' => 'Max@Gmail.com', 'from' => 'Max@Gmail.com',
+        'to' => 'Kundin@Example.com', 'signals' => ['freemail_from' => true]]))
+        === ['kundin@example.com', 'max@gmail.com'], 'freemail senders are keyed by address');
+    $checkScore(relationshipKey(prepareMailContext(['from_email' => 'a@news.haendler-beispiel.test',
+        'from' => 'a@news.haendler-beispiel.test', 'to' => 'kundin@example.com']))[1]
+        === 'haendler-beispiel.test', 'company senders are keyed by registrable domain');
+
+    // Reine Funktion, unabhaengig vom Modus.
+    $r = ['key' => 'x.test', 'verified' => true, 'rescued' => false, 'junked' => false, 'established' => false];
+    $checkScore(relationshipEffect($r, 'spam', [], true, false) === '', 'no data, no effect');
+    $checkScore(relationshipEffect(array_replace($r, ['junked' => true]), 'spam', [], true, true) === '',
+        'a proven conversation is never force-floored');
+
     // Mailtext: was der Empfaenger sieht, nicht das Stylesheet.
     $html = '<html><head><style>.a{color:#fff;font-family:Arial}</style><title>x</title></head>'
         . '<body><!-- kommentar --><p>Hallo</p><p>Sch&ouml;ne&nbsp;Gr&uuml;&szlig;e</p>'

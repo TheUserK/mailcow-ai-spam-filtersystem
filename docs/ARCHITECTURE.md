@@ -177,6 +177,7 @@ Incoming Email
 - Adds the sender domain's web-reputation rank to the prompt (`domainRank()`, from `domain_ranks.sqlite` - the full Majestic Million, looked up via SQLite rather than loaded into memory, see [CONFIGURATION.md](CONFIGURATION.md#sender-domain-reputation-domain_rankssqlite)) so the model can weigh how established a sender is as a number. The exact From-domain rank also powers the narrow lone-`foreign-domain` reject guard; it never grants Ham or newsletter status
 - Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
 - Applies the reject-eligibility conjunction, the category override, the junk floor and the two reject paths (see [Design Principle](#design-principle-v3) above)
+- Looks up what the recipient's own mailbox says about the sender (`relationshipFor()`: rescued from Junk, moved to Junk by hand, or arriving in the inbox for weeks) and, once switched from shadow to on, uses it for the junk floor - see [CONFIGURATION.md](CONFIGURATION.md#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite)
 - Manages budget tracking
 - Never returns a `reject` action - always `add` (or `pass` for the two skip cases above), with a numeric score for Rspamd to add
 
@@ -213,6 +214,8 @@ Incoming Email
 |   |   +-- brand_domains.txt                # generated Majestic-Million brand list (not shipped, not in git)
 |   |   +-- business_context.json            # what each of your own domains does (ai-filter-context.sh, operator-editable)
 |   |   +-- domain_ranks.sqlite              # sender-domain web-reputation lookup (ai-filter-rank.sh, not shipped, not in git)
+|   |   +-- feedback-import.php              # imports what ai-filter-feedback.sh read (CLI only)
+|   |   +-- feedback_exclude.txt             # mailboxes/domains left out of the feedback scan (optional)
 |   |   +-- trusted_sender_profiles.json.example  # template for custom trusted senders
 |   |   +-- trusted_sender_profiles.json     # your custom trusted senders (optional, not shipped)
 |   +-- conf/rspamd/
@@ -231,6 +234,7 @@ Incoming Email
 |       +-- stats.log               # Analysis results
 |       +-- errors.log              # Error events
 |       +-- monthly_budget.json     # Budget tracking
+|       +-- relationship.sqlite     # recipient feedback + sender history (see CONFIGURATION.md)
 +-- docker-compose.override.yml     # Container definition
 ```
 
@@ -303,4 +307,5 @@ the filter via `loadfile()` rather than being auto-loaded - keeping it out of
 - Log files `0600`, log directory `0700`
 - 30-day log retention (configurable via logrotate)
 - Outbound mail from authenticated users is never analysed
+- `ai-filter-feedback.sh` reads header fields only (From, spam flag, saved date) from Inbox and Junk, stores mailbox + sender domain + rescued/junked locally, and sends nothing to the AI provider
 - AVV/DPA available from IONOS

@@ -90,6 +90,8 @@ else
 fi
 
 rm -f data/ai-checker/trusted_sender_profiles.json.example
+rm -f data/ai-checker/feedback-import.php data/ai-checker/feedback_exclude.txt.example
+rm -f data/ai-checker/feedback_exclude.txt
 rm -f data/ai-checker/trusted_sender_profiles.json
 rm -f data/ai-checker/business_context.json
 rm -f data/ai-checker/brand_domains.txt
@@ -108,7 +110,7 @@ rm -f /usr/local/bin/ai-filter-*.sh
 rm -f /etc/logrotate.d/ai-filter
 # Ohne das laufen die Cron-Eintraege weiter und rufen geloeschte Skripte
 # auf - taeglich eine Fehlermail an root, ohne erkennbaren Absender.
-rm -f /etc/cron.d/ai-filter-report /etc/cron.d/ai-filter-brands /etc/cron.d/ai-filter-context /etc/cron.d/ai-filter-rank /etc/cron.d/ai-filter-image
+rm -f /etc/cron.d/ai-filter-report /etc/cron.d/ai-filter-brands /etc/cron.d/ai-filter-context /etc/cron.d/ai-filter-rank /etc/cron.d/ai-filter-image /etc/cron.d/ai-filter-feedback
 docker image rm mailcow-ai-checker:rollback >/dev/null 2>&1 || true
 echo -e "${GREEN}[OK]${NC} Scripts and cron entries removed"
 

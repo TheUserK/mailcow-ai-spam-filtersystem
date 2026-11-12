@@ -265,6 +265,9 @@ fi
 cp "$SCRIPT_DIR/files/ai-checker/ai-mail-checker.php" data/ai-checker/
 cp "$SCRIPT_DIR/files/ai-checker/router.php" data/ai-checker/
 cp "$SCRIPT_DIR/files/ai-checker/trusted_sender_profiles.json.example" data/ai-checker/
+# Uebernimmt das Sortierverhalten der Empfaenger (ai-filter-feedback.sh).
+cp "$SCRIPT_DIR/files/ai-checker/feedback-import.php" data/ai-checker/
+cp "$SCRIPT_DIR/files/ai-checker/feedback_exclude.txt.example" data/ai-checker/
 # Build-Context fuer den ai-checker-Container (bringt pdo_mysql mit,
 # das im offiziellen php:8.2-cli-Image fehlt)
 cp "$SCRIPT_DIR/files/ai-checker/Dockerfile" data/ai-checker/
@@ -277,6 +280,7 @@ sed -i "s|define('AI_API_TOKEN_DEFAULT', '')|define('AI_API_TOKEN_DEFAULT', '$AI
     data/ai-checker/ai-mail-checker.php
 
 chmod 644 data/ai-checker/router.php data/ai-checker/trusted_sender_profiles.json.example data/ai-checker/Dockerfile
+chmod 644 data/ai-checker/feedback-import.php data/ai-checker/feedback_exclude.txt.example
 chmod 600 data/ai-checker/ai-mail-checker.php
 echo -e "${GREEN}[OK]${NC} PHP scripts installed (API key embedded in ai-mail-checker.php)"
 
@@ -585,6 +589,18 @@ cat > /etc/cron.d/ai-filter-image <<'CRON'
 CRON
 chmod 644 /etc/cron.d/ai-filter-image
 
+# Sortierverhalten der Empfaenger auswerten: Was aus dem Junk zurueckgeholt
+# oder von Hand hineingeschoben wurde, ist die einzige belastbare Antwort
+# auf "erwuenscht oder nicht". Liest nur Kopfzeilen, nachts um 2:17.
+# Der Checker laeuft damit zunaechst im Schattenmodus (RELATIONSHIP_MODE):
+# Er schreibt mit, was es bewirkt haette, und aendert nichts.
+cat > /etc/cron.d/ai-filter-feedback <<'CRON'
+# Sortierverhalten der Empfaenger (nur Kopfzeilen), taeglich um 2:17.
+# Von Hand: ai-filter-feedback.sh --dry-run    Stand: ai-filter-feedback.sh --status
+17 2 * * * root /usr/local/bin/ai-filter-feedback.sh >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/ai-filter-feedback
+
 cat > /etc/cron.d/ai-filter-brands <<'CRON'
 # Marken-Domains fuer die Impersonation-Erkennung, sonntags um 4 Uhr.
 # Von Hand: ai-filter-brands.sh          Stand: ai-filter-brands.sh --status
@@ -772,6 +788,7 @@ echo "  ai-filter-model.sh     Show or change the model / AI provider"
 echo "  ai-filter-report.sh    Cases where the filter contradicts itself"
 echo "  ai-filter-context.sh   Recipient context; --hint sets what only you know"
 echo "  ai-filter-whitelist.sh Senders that are always delivered unless the account is abused"
+echo "  ai-filter-feedback.sh  What recipients rescued from / moved to Junk (nightly; --status, --dry-run)"
 echo "  ai-filter-update-image.sh  Rebuild the ai-checker image (weekly via cron, with rollback)"
 echo ""
 echo "Logs: $COMPOSE_CMD logs -f ai-checker"
