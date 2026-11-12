@@ -595,10 +595,8 @@ function prepareMailContext(array $data) {
             'spf' => normalizeTriState($auth['spf'] ?? 'unknown'),
             'dkim' => normalizeTriState($auth['dkim'] ?? 'unknown'),
             'dmarc' => normalizeTriState($auth['dmarc'] ?? 'unknown'),
-            'whitelisted' => !empty($auth['whitelisted']),
         ],
         'signals' => [
-            'mailcow_white' => !empty($signals['mailcow_white']),
             'freemail_from' => !empty($signals['freemail_from']),
             'forged_sender' => !empty($signals['forged_sender']),
             'from_neq_envfrom' => !empty($signals['from_neq_envfrom']),
@@ -5926,7 +5924,12 @@ function evaluateAuthStrength(array $mail) {
         return 'strong';
     }
 
-    if ($passCount === 1 || $mail['rspamd_score'] <= 1.0) {
+    // Bis 12.11. genuegte hier auch ein Rspamd-Score bis 1.0 - ohne ein
+    // einziges bestandenes Verfahren. "auth:medium" sagt dem Modell aber,
+    // die Absenderdomain sei authentifiziert und Abweichungen bei Envelope
+    // und Reply-To seien Infrastruktur-Rauschen. Ein niedriger Score ist
+    // keine Authentifizierung; das Modell sieht ihn ohnehin als eigene Zeile.
+    if ($passCount === 1) {
         return 'medium';
     }
 
@@ -6263,10 +6266,26 @@ function checkBudget($requestId) {
         return false;
     }
 
+    // Lesen, erhoehen und schreiben unter EINER Sperre. Vorher war nur das
+    // Schreiben gesperrt: Vier Worker lasen gleichzeitig denselben Stand,
+    // und von vier Aufrufen wurde einer gezaehlt.
+    $fh = @fopen(BUDGET_FILE, 'c+');
+    if ($fh === false) {
+        return true;   // Zaehler nicht schreibbar: lieber filtern als blockieren
+    }
+    flock($fh, LOCK_EX);
+    $stored = json_decode((string)stream_get_contents($fh), true);
+    if (is_array($stored) && ($stored['month'] ?? '') === $currentMonth) {
+        $budget = $stored;
+    }
     $budget['calls'] = intval($budget['calls'] ?? 0) + 1;
     $budget['estimated_cost_eur'] = $budget['calls'] * AVG_COST_PER_CALL_EUR;
-
-    file_put_contents(BUDGET_FILE, json_encode($budget), LOCK_EX);
+    ftruncate($fh, 0);
+    rewind($fh);
+    fwrite($fh, json_encode($budget));
+    fflush($fh);
+    flock($fh, LOCK_UN);
+    fclose($fh);
 
     return true;
 }
