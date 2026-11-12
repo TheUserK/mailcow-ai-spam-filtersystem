@@ -877,6 +877,41 @@ domain stays established even when its mailbox is hijacked, so
 `hijacked-reply-to`, a business-context role conflict, or any other structural
 evidence still applies exactly as before.
 
+## Offer type and mass mailing (OFFER_TYPE_RULES)
+
+"Newsletter or cold outreach" used to hang on the category alone, and for
+the same kind of mail the model picks it one way today and the other way
+tomorrow. Since 12.11. it also answers two questions it can read off the
+mail, independent of the category:
+
+- `mass_mailing` - identical text to many recipients, or individually written?
+- `offer_type` - `product_or_content` (the sender's own products, content or
+  events, addressed to customers), `service_for_recipient` (a service for the
+  recipient's business: web design, SEO, leads, staffing, ...) or `none`.
+
+The Lua module additionally reports RFC 8058 one-click unsubscribe
+(`List-Unsubscribe-Post` plus an https target), shown to the model as
+`one-click-unsubscribe`. Gmail and Yahoo require it from bulk senders;
+outreach tools sending from ordinary mailboxes usually lack it.
+
+Two rules follow, both logged as `offer_rule` in `stats.log`:
+
+| Rule | Condition | Result |
+|---|---|---|
+| `list-newsletter` | category `spam`; `mass_mailing`; `product_or_content`; list mail with strong auth and no structural evidence; one-click unsubscribe; recipient has not junked the sender | No hard jump to the junk threshold. The model's own graduated score still counts, so a mail Rspamd already dislikes still lands in junk |
+| `cold-outreach` | category `marketing` or `newsletter`; `service_for_recipient`; sender never reached this recipient's inbox and was not rescued; not an established domain; history running for at least `HISTORY_MIN_DAYS` | Junk floor, even with an unsubscribe link. Never rejectable through this |
+
+`cold-outreach` stays silent for the first three weeks after the update:
+until the history has run that long, every sender would look new.
+
+Neither rule was measured against real mail before release - there is no
+stored corpus to replay. Watch `offer_rule` in `stats.log` for the first
+weeks. `list-newsletter` deliberately excludes `clickbait`, `pharma`,
+`phishing` and `fraud`, but a well-built unwanted advertising list with
+one-click unsubscribe will get through more easily than before; that is the
+price for subscribed newsletters no longer being forced into junk. Setting
+`OFFER_TYPE_RULES` to `false` switches both rules off and keeps the logging.
+
 ## Recipient relationship (ai-filter-feedback.sh, relationship.sqlite)
 
 Whether a mail was subscribed to is not written in the mail. The model has to
@@ -1071,6 +1106,7 @@ keeps your choice.
 | `BRAND_DOMAINS_FILE` | `brand_domains.txt` next to the script | The generated Majestic-Million brand list (see below); absent means the checker silently falls back to the hand-curated list only |
 | `LOG_SUBJECT` | `true` | Write the subject line to stats.log. Needed to judge a verdict after the fact; kept 30 days, root-only |
 | `PROMPT_BODY_CHARS` | `3000` | How much of the visible mail text the model sees. Since 12.11. this is head *and* tail (`promptExcerpt()`), and the text is what the recipient reads (`visibleText()`): until then `strip_tags()` left the contents of `<style>` in place, so for HTML-only newsletters the model was partly reading CSS, and anything after character 3000 was invisible |
+| `OFFER_TYPE_RULES` | `true` | Use the model's `offer_type`/`mass_mailing` answers for the junk floor. See [Offer type and mass mailing](#offer-type-and-mass-mailing-offer_type_rules) |
 | `VERDICT_CACHE_HOURS` | `24` | How long a model answer is reused for an identical mail; `0` disables. The same mailing to twenty mailboxes used to be twenty calls, and not always twenty identical answers (on 19.09. one Alfahosting mail got `transactional` and `spam` within eleven minutes). Cached is the model's answer, never the score: that is recomputed per mail from Rspamd's score, the recipient's feedback and the evidence. The key is a hash of what the model would see (minus the Rspamd score line), the model and this file's modification time, so an update or model change empties it. The file `data/logs/ai-checker/verdict_cache.sqlite` holds hash, verdict and time - no sender, recipient or mail text. A hit shows as `analysis_source: ai-cache` in `stats.log` and costs no budget |
 | `RELATIONSHIP_MODE` | `shadow` | `off` / `shadow` / `on`, set via `AI_FILTER_RELATIONSHIP_MODE`. See [Recipient relationship](#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite) |
 | `FEEDBACK_MAX_AGE_DAYS` | `180` | How long a recipient's rescue/junk decision stays valid |

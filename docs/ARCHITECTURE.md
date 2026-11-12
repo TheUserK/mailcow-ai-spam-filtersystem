@@ -200,7 +200,7 @@ Incoming Email
 
 ### 5. AI Analysis
 - Model: GPT-OSS-120B (120B parameters)
-- Returns `spam_probability` (0-1), `confidence` (0-1), a `category` (`legitimate`/`transactional`/`personal`/`newsletter`/`marketing`/`clickbait`/`spam`/`pharma`/`phishing`/`fraud`) and `claimed_brand` (free text - who the mail claims to be from, used by the list-free brand-impersonation path)
+- Returns `spam_probability` (0-1), `confidence` (0-1), a `category` (`legitimate`/`transactional`/`personal`/`newsletter`/`marketing`/`clickbait`/`spam`/`pharma`/`phishing`/`fraud`) and `claimed_brand` (free text - who the mail claims to be from, used by the list-free brand-impersonation path), plus `mass_mailing` and `offer_type` - two things it can read off the mail, used to tell a newsletter from cold outreach without relying on the category alone
 - The category caps how far the score can swing: attackable categories can go up to `MAX_PHISHING_POINTS` (10 - high enough to reach reject together with other signals, low enough never to get there alone), everything else is capped at `MAX_SPAM_POINTS` (4) on the spam side and `MAX_HAM_POINTS` (3) on the ham side
 
 ## File Structure

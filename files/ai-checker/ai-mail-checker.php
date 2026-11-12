@@ -326,6 +326,33 @@ define('HISTORY_MIN_DAYS', 21);
 define('VERDICT_CACHE_DB', getenv('AI_FILTER_VERDICT_CACHE_DB') ?: '/var/log/ai-checker/verdict_cache.sqlite');
 define('VERDICT_CACHE_HOURS', 24);
 
+// ---------------------------------------------------------------------
+//  Angebotsart statt Bauchgefuehl.
+//
+//  "Newsletter oder Kaltakquise" hing bisher allein an der Kategorie, die
+//  das Modell waehlt - und die kippt bei derselben Art Mail mal so, mal
+//  so. Seit 12.11. beantwortet das Modell zusaetzlich zwei Fragen, die
+//  sich an der Mail ABLESEN lassen: Ist es Massenversand? Und was wird
+//  angeboten - eigene Produkte/Inhalte, oder eine Dienstleistung fuer das
+//  Geschaeft des Empfaengers? Daraus folgen zwei Regeln:
+//
+//   list-newsletter   Kategorie "spam", aber: Massenversand eigener
+//                     Produkte/Inhalte, sauber authentifizierte Liste mit
+//                     Ein-Klick-Abmeldung, kein Strukturbeleg. Kein harter
+//                     Sprung auf die Junk-Schwelle - der eigene Punktwert
+//                     des Modells zaehlt weiter.
+//   cold-outreach     Kategorie "marketing"/"newsletter", aber: eine
+//                     Dienstleistung fuer das Geschaeft des Empfaengers,
+//                     von einem Absender, der hier noch nie im Posteingang
+//                     ankam und nicht etabliert ist. Junk-Floor, auch mit
+//                     Abmeldelink. Greift erst, wenn die Historie lange
+//                     genug mitlaeuft (HISTORY_MIN_DAYS) - vorher waere
+//                     jeder Absender "neu".
+//
+//  false schaltet beide Regeln ab; die Felder werden weiter protokolliert.
+// ---------------------------------------------------------------------
+define('OFFER_TYPE_RULES', true);
+
 // Wie viele Zeichen Mailtext das Modell zu sehen bekommt (drei Viertel
 // vom Anfang, ein Viertel vom Ende - siehe promptExcerpt()).
 define('PROMPT_BODY_CHARS', 3000);
@@ -452,6 +479,11 @@ logStats($requestId, [
     'real_conversation' => !empty($result['real_conversation']),
     'claimed_thread' => !empty($result['claimed_thread']),
     'relationship' => $result['relationship'] ?? null,
+    'offer_type' => $result['offer_type'] ?? '',
+    'mass_mailing' => !empty($result['mass_mailing']),
+    'offer_rule' => $result['offer_rule'] ?? '',
+    'offer_applied' => !empty($result['offer_applied']),
+    'one_click' => !empty($mail['signals']['one_click_unsubscribe']),
     // Wurden von logStats() gelesen, aber nie uebergeben - beide Felder
     // standen deshalb seit ihrer Einfuehrung in JEDER Zeile leer bzw.
     // false, egal was tatsaechlich passiert war. Genau die zwei Felder,
@@ -586,6 +618,8 @@ function prepareMailContext(array $data) {
         'headers' => [
             'list_unsubscribe' => cleanTextValue($headers['list_unsubscribe'] ?? $data['list_unsubscribe'] ?? ''),
             'list_id' => cleanTextValue($headers['list_id'] ?? $data['list_id'] ?? ''),
+            'list_unsubscribe_post' => cleanTextValue($headers['list_unsubscribe_post'] ?? ''),
+            'feedback_id' => cleanTextValue($headers['feedback_id'] ?? ''),
             'precedence' => cleanTextValue($headers['precedence'] ?? $data['precedence'] ?? ''),
             'authentication_results' => cleanTextValue($headers['authentication_results'] ?? $data['authentication_results'] ?? ''),
             'to_header' => cleanTextValue($headers['to_header'] ?? $data['to_header'] ?? ''),
@@ -604,6 +638,13 @@ function prepareMailContext(array $data) {
             'unknown_sender' => !empty($signals['unknown_sender']),
             'freemail_reply_to' => !empty($signals['freemail_reply_to']),
             'reply_to_our_mail' => !empty($signals['reply_to_our_mail']),
+            // Ein-Klick-Abmeldung nach RFC 8058: List-Unsubscribe mit
+            // https-Ziel PLUS List-Unsubscribe-Post. Gmail und Yahoo
+            // verlangen das von jedem Massenversender; Akquise-Werkzeuge,
+            // die aus normalen Postfaechern senden, haben es in der Regel
+            // nicht.
+            'one_click_unsubscribe' => stripos((string)($headers['list_unsubscribe_post'] ?? ''), 'one-click') !== false
+                && stripos((string)($headers['list_unsubscribe'] ?? ''), 'https://') !== false,
             // Eingeliefert aus dem eigenen Netz (mailcow-Container,
             // localhost) - siehe isInternalMail().
             'local_origin' => !empty($signals['local_origin']),
@@ -1882,6 +1923,9 @@ function analyzeLocally(array $mail, $requestId) {
     if (!empty($mail['headers']['list_unsubscribe']) || !empty($mail['headers']['list_id'])) {
         $trustFlags[] = 'newsletter-headers-present';
     }
+    if (!empty($mail['signals']['one_click_unsubscribe'])) {
+        $trustFlags[] = 'one-click-unsubscribe';
+    }
 
     // Eigene Korrespondenzhistorie. Ersetzt keine Markenliste, beantwortet
     // aber die Frage, die bei Fehlalarmen wirklich zaehlte: kennen wir den?
@@ -2277,6 +2321,12 @@ Zu den Absender-Flags:
   Kontaktpruefung ohne erkennbaren Anlass - erhoeht es die Sicherheit
   spuerbar. Allein, bei sonst unauffaelliger Mail, kein Grund zum Einstufen
   als Spam.
+- "one-click-unsubscribe": Die Mail traegt die Ein-Klick-Abmeldung, die
+  Gmail und Yahoo von Massenversendern verlangen (List-Unsubscribe-Post).
+  Das ist die Infrastruktur eines regulaeren Newsletter-Versands ueber
+  einen Versanddienst. Kaltakquise-Werkzeuge senden meist aus normalen
+  Postfaechern und haben es nicht. Kein Abo-Beweis, aber ein deutlicher
+  Hinweis auf einen ordentlichen Listenversand statt Einzelansprache.
 - "recipient-rescued-sender": Der Empfaenger hat Post dieses Absenders
   selbst aus dem Junk-Ordner zurueck in den Posteingang geholt. Das ist die
   Antwort auf die Abo-Frage, und sie stammt nicht vom Absender: Diese Post
@@ -2389,9 +2439,7 @@ Umschlag-Adresse (Envelope-From) bzw. der Reply-To-Domain abweicht. Bei
 JEDEM Massenversand ueber einen Newsletter-Dienst (Spotler, Mailchimp,
 Brevo, Salesforce Marketing Cloud, ...) ist genau das der Normalfall: der
 Dienst versendet ueber seine eigene Bounce-Domain, waehrend From die
-Marke zeigt. Am 24.08. reichten diese drei Flags allein, um eine echte
-Modehaendler-Mail ("Dark Denim: Looks in tiefem Blau", Spotler-Versand,
-DMARC fuer madeleine.com bestanden) als Phishing einzustufen.
+Marke zeigt.
 Entscheidend ist die Kombination mit der Auth-Staerke: Steht "auth:strong"
 oder "auth:medium" in den Trust-Flags, ist die eigentliche Absenderdomain
 authentifiziert - dann sind diese drei Flags Infrastruktur-Rauschen, kein
@@ -2405,10 +2453,6 @@ im Fuss stehen hat. Werbung eines etablierten Anbieters, bei dem der
 Empfaenger erkennbar Kunde sein KANN (Versandhandel, Fachhaendler,
 Dienstleister mit Ladengeschaeft - guter Domain-Rang, eigene Marke, eigene
 Links, funktionierende Abmeldeadresse), ist "marketing", nicht "spam".
-Am 15.09. liefen zwei solche Haendler-Newsletter mit 0.90 und 0.96 Sicherheit
-als "spam" durch, obwohl sie sauber authentifiziert waren, eine
-funktionierende Abmeldeadresse mitschickten und ausschliesslich auf die
-eigene Domain verlinkten. Der Empfaenger hatte sie bezogen.
 
 Das gilt AUSDRUECKLICH NICHT fuer Kaltakquise - siehe den eigenen Abschnitt
 weiter unten. Dort entscheidet nicht der Abmeldelink, sondern die Beziehung:
@@ -2684,6 +2728,33 @@ eines Treffers, nicht deine Sicherheit ueber ein Nein.
 Bei true: nenne in "reasoning" zusaetzlich kurz, woran du das Muster erkannt
 hast.
 
+MASSENVERSAND UND ANGEBOTSART - "mass_mailing" und "offer_type":
+Zwei Fragen, die du an der Mail ABLESEN kannst. Beantworte sie unabhaengig
+von der Kategorie und unabhaengig davon, ob du die Mail fuer erwuenscht
+haeltst - sie werden getrennt ausgewertet.
+
+"mass_mailing": true, wenn die Mail erkennbar wortgleich an viele Empfaenger
+geht (Newsletter-Layout, Listen-Kopfzeilen, Abmeldehinweis, keine
+individuelle Bezugnahme). false bei einer einzeln verfassten Mail - auch
+wenn sie Werbung ist.
+
+"offer_type" - was wird dem Empfaenger angeboten?
+- "product_or_content": Der Absender bewirbt oder liefert SEINE EIGENEN
+  Produkte, Inhalte oder Veranstaltungen an Kunden und Interessenten:
+  Haendler-Newsletter, Rabattaktion, Produktneuheit, Reiseangebot,
+  Redaktions- oder Vereinsnewsletter, Firmware-/Produkt-Update.
+- "service_for_recipient": Der Absender will dem Empfaenger eine
+  Dienstleistung FUER DESSEN GESCHAEFT verkaufen oder mit ihm ins Geschaeft
+  kommen: Webdesign, SEO, Backlinks, Leads, Werbeflaechen, Software oder
+  Beratung fuer den Betrieb, Personalvermittlung, Finanzierung,
+  Kooperations- und Partneranfragen von Unbekannten.
+- "none": kein Angebot - Korrespondenz, Transaktionsmail, Benachrichtigung,
+  oder Betrug/Phishing ohne echtes Angebot.
+Im Zweifel zwischen den ersten beiden: Wuerde ein Privatkunde das kaufen
+oder lesen -> "product_or_content". Richtet es sich an den Empfaenger als
+Unternehmen, das damit selbst Geld verdienen oder sparen soll ->
+"service_for_recipient".
+
 ABSENDER-BEHAUPTUNG - "claimed_brand":
 Als welches Unternehmen oder welche Organisation gibt sich diese Mail aus?
 Trage den Namen so ein, wie er behauptet wird ("N26", "Sparkasse",
@@ -2697,7 +2768,7 @@ Diese Angabe wird maschinell gegen die tatsaechliche Absenderdomain geprueft.
 Rate nicht - im Zweifel leer lassen.
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne weiteren Text:
-{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "reject_rule_match": true|false, "reject_rule_confidence": 0.0-1.0, "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
+{"spam_probability": 0.0-1.0, "confidence": 0.0-1.0, "category": "legitimate|transactional|personal|newsletter|marketing|clickbait|spam|pharma|phishing|fraud", "reject_rule_match": true|false, "reject_rule_confidence": 0.0-1.0, "mass_mailing": true|false, "offer_type": "none|product_or_content|service_for_recipient", "claimed_brand": "", "red_flags": ["..."], "reasoning": "kurze Begruendung"}
 
 "category" und "spam_probability" muessen zueinander passen - sie werden
 getrennt ausgewertet, die Kategorie entscheidet ueber den Schutz, die
@@ -3201,6 +3272,30 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         && empty($mail['headers']['list_id'])
         && !establishedSender($mail, $localContext);
 
+    // Angebotsart - siehe OFFER_TYPE_RULES. Fehlen die Felder (aelterer
+    // Anbieter ohne Schema, abgeschnittene Antwort), greift keine Regel.
+    $offerType = in_array($analysis['offer_type'] ?? '', ['none', 'product_or_content', 'service_for_recipient'], true)
+        ? $analysis['offer_type'] : '';
+    $massMailing = !empty($analysis['mass_mailing']);
+    $offerRule = '';
+    if ($offerType === 'service_for_recipient'
+        && in_array($category, ['marketing', 'newsletter'], true)
+        && relationshipWarm()
+        && empty($relationship['inbox']) && empty($relationship['rescued'])
+        && !establishedSender($mail, $localContext)) {
+        $offerRule = 'cold-outreach';
+    } elseif ($offerType === 'product_or_content' && $massMailing
+        && $category === 'spam'
+        && $authenticatedList
+        && !empty($mail['signals']['one_click_unsubscribe'])
+        && empty($relationship['junked'])) {
+        $offerRule = 'list-newsletter';
+    }
+    $offerApplied = OFFER_TYPE_RULES ? $offerRule : '';
+    if ($offerApplied === 'cold-outreach') {
+        $unsolicitedBulk = true;
+    }
+
     $junkFloorApplies = ($policy['may_reject'] || $unsolicitedBulk)
         && $confidence >= 0.80
         && empty($localContext['matched_profile'])
@@ -3208,6 +3303,9 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         && !$realConversation
         && $transactionalGuard === '';
 
+    if ($offerApplied === 'list-newsletter' && $relApplied !== 'force-floor') {
+        $junkFloorApplies = false;
+    }
     if ($relApplied === 'protect' || $relApplied === 'lift-floor') {
         $junkFloorApplies = false;
     }
@@ -3311,6 +3409,11 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         'real_conversation' => $realConversation,
         'claimed_thread'  => $claimedThread,
         'relationship'    => relationshipLog($relationship, $relEffect),
+        'offer_type'      => $offerType,
+        'mass_mailing'    => $massMailing,
+        // Welche Angebots-Regel zutraf, und ob sie angewandt wurde.
+        'offer_rule'      => $offerRule,
+        'offer_applied'   => $offerApplied !== '',
         // Leer = kein Treffer, "field" = sauber im JSON, "text" = nur im
         // Begruendungstext. Ohne diese Unterscheidung liess sich am 14.09.
         // nicht sagen, ob das Modell verneint oder nur schlampig geantwortet
@@ -3431,6 +3534,12 @@ function responseSchema() {
             // greift" durchgehen - und genau so wurde sie
             // bisher benutzt.
             'reject_rule_confidence' => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
+            // Zwei ablesbare Merkmale - siehe OFFER_TYPE_RULES.
+            'mass_mailing' => ['type' => 'boolean'],
+            'offer_type' => [
+                'type' => 'string',
+                'enum' => ['none', 'product_or_content', 'service_for_recipient'],
+            ],
             'claimed_brand' => ['type' => 'string'],
             'red_flags' => ['type' => 'array', 'items' => ['type' => 'string']],
             'reasoning' => ['type' => 'string'],
@@ -3440,6 +3549,7 @@ function responseSchema() {
         'required' => [
             'spam_probability', 'confidence', 'category',
             'reject_rule_match', 'reject_rule_confidence',
+            'mass_mailing', 'offer_type',
             'claimed_brand', 'red_flags', 'reasoning',
         ],
         'additionalProperties' => false,
@@ -4881,6 +4991,12 @@ function recoverTruncatedAnalysis($content) {
     if (preg_match('/"reject_rule_match"\s*:\s*(true|false)/i', $content, $rr)) {
         $analysis['reject_rule_match'] = (mb_strtolower($rr[1]) === 'true');
     }
+    if (preg_match('/"mass_mailing"\s*:\s*(true|false)/i', $content, $mm)) {
+        $analysis['mass_mailing'] = (mb_strtolower($mm[1]) === 'true');
+    }
+    if (preg_match('/"offer_type"\s*:\s*"([a-z_]+)"/i', $content, $ot)) {
+        $analysis['offer_type'] = mb_strtolower($ot[1]);
+    }
 
     return $analysis;
 }
@@ -5115,6 +5231,27 @@ function relationshipFor(array $mail, $authStrength) {
         logError('system', 'Relationship lookup failed: ' . $e->getMessage());
     }
     return $rel;
+}
+
+// Laeuft die Historie schon lange genug, dass "kam hier noch nie an"
+// etwas bedeutet? In den ersten Wochen ist jeder Absender neu.
+function relationshipWarm() {
+    static $warm = null;
+    if ($warm !== null) {
+        return $warm;
+    }
+    $warm = false;
+    $db = relationshipDb();
+    if ($db) {
+        try {
+            $oldest = $db->query('SELECT MIN(first_seen) FROM history')->fetchColumn();
+            $warm = $oldest !== null && $oldest !== false
+                && (int)$oldest <= time() - HISTORY_MIN_DAYS * 86400;
+        } catch (Exception $e) {
+            $warm = false;
+        }
+    }
+    return $warm;
 }
 
 // Nach dem Urteil mitzaehlen. "inbox" nur, wenn die Summe unter der
@@ -6183,6 +6320,19 @@ function logStats($requestId, $data) {
         'real_conversation' => !empty($data['real_conversation']),
         'claimed_thread' => !empty($data['claimed_thread']),
     ];
+
+    // Angebotsart (siehe OFFER_TYPE_RULES). Nur bei KI-Urteilen vorhanden.
+    if (($data['offer_type'] ?? '') !== '') {
+        $entry['offer_type'] = (string)$data['offer_type'];
+        $entry['mass_mailing'] = !empty($data['mass_mailing']);
+    }
+    if (($data['offer_rule'] ?? '') !== '') {
+        $entry['offer_rule'] = (string)$data['offer_rule'];
+        $entry['offer_applied'] = !empty($data['offer_applied']);
+    }
+    if (!empty($data['one_click'])) {
+        $entry['one_click'] = true;
+    }
 
     // Was das Postfach des Empfaengers ueber diesen Absender weiss -
     // nur, wenn es etwas weiss. "applied" false heisst Schattenmodus.

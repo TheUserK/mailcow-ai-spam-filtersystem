@@ -2298,6 +2298,77 @@ function runFixtures() {
     $checkScore(relationshipEffect(array_replace($r, ['junked' => true]), 'spam', [], true, true) === '',
         'a proven conversation is never force-floored');
 
+    // Angebotsart (OFFER_TYPE_RULES). Haendler-Newsletter mit Ein-Klick-
+    // Abmeldung: das Modell sagt "spam", liest aber selbst ab, dass es
+    // Massenversand eigener Produkte ist -> kein harter Junk-Floor.
+    $oneClick = array_replace($news, [
+        'signals' => ['has_list_unsubscribe' => true],
+        'headers' => ['to_header' => 'kundin@example.com',
+                      'list_unsubscribe' => '<https://haendler-beispiel.test/abmelden>',
+                      'list_unsubscribe_post' => 'List-Unsubscribe=One-Click'],
+    ]);
+    $productSpam = array_replace($spamVerdict, ['mass_mailing' => true, 'offer_type' => 'product_or_content']);
+    $checkScore(in_array('one-click-unsubscribe',
+        analyzeLocally(prepareMailContext($oneClick), 'synthetic')['trust_flags'], true),
+        'one-click unsubscribe is shown to the model');
+    $checkScore(!in_array('one-click-unsubscribe',
+        analyzeLocally(prepareMailContext($news), 'synthetic')['trust_flags'], true),
+        'a plain List-Unsubscribe is not one-click');
+    $result = $scoreCase($oneClick, $productSpam);
+    $checkScore($result['offer_rule'] === 'list-newsletter' && $result['offer_applied']
+        && $result['score'] === $result['model_score']
+        && $oneClick['rspamd_score'] + $result['score'] < JUNK_FLOOR,
+        'list newsletter with one-click unsubscribe: model score only');
+    $checkScore($scoreCase($news, $productSpam)['offer_rule'] === '',
+        'without one-click unsubscribe the junk floor stays');
+    $checkScore($scoreCase($oneClick, $spamVerdict)['offer_rule'] === '',
+        'without the model fields nothing changes');
+    $checkScore($scoreCase($oneClick, array_replace($productSpam, ['category' => 'clickbait']))['offer_rule'] === '',
+        'clickbait keeps the junk floor');
+    $checkScore($scoreCase($oneClick, array_replace($productSpam, ['offer_type' => 'service_for_recipient']))['offer_rule'] === '',
+        'a service offer called spam keeps the junk floor');
+    $oneClickBad = array_replace($oneClick, [
+        'urls' => ['https://fremde-seite.test/x'], 'url_domains' => ['fremde-seite.test'],
+        'signals' => ['has_list_unsubscribe' => true, 'url_blacklisted' => true]]);
+    $checkScore($scoreCase($oneClickBad, $productSpam)['offer_rule'] === '',
+        'structural evidence keeps the junk floor');
+    $setFeedback('junked');
+    $result = $scoreCase($oneClick, $productSpam);
+    $checkScore($oneClick['rspamd_score'] + $result['score'] >= JUNK_FLOOR,
+        'a sender the recipient junked stays in junk despite one-click');
+    $setFeedback('');
+
+    // Kaltakquise, die das Modell "marketing" nennt, mit Abmeldelink.
+    $serviceMarketing = array_replace($spamVerdict, ['category' => 'marketing', 'spam_probability' => 0.3,
+        'mass_mailing' => true, 'offer_type' => 'service_for_recipient']);
+    $result = $scoreCase($news, $serviceMarketing);
+    $checkScore($result['offer_rule'] === '' && $result['score'] === 0.0,
+        'cold-outreach rule waits until the history is warm');
+    // Historie laeuft seit Wochen (ein beliebiger anderer Absender).
+    $db->prepare('INSERT INTO history VALUES (?, ?, ?, ?, 1, 1)')
+       ->execute(['irgendwer@example.com', 'alt.test', time() - 60 * 86400, time()]);
+    $warmCheck = function ($input, $response) {
+        // relationshipWarm() merkt sich das Ergebnis je Prozess - fuer den
+        // Test in einem frischen Prozess rechnen.
+        $code = 'define("AI_FILTER_LIBRARY", true); require $argv[1]; '
+            . '$m = prepareMailContext(json_decode($argv[2], true)); '
+            . '$r = scoreAiAnalysis($m, analyzeLocally($m, "t"), json_decode($argv[3], true), "t"); '
+            . 'echo json_encode(["rule" => $r["offer_rule"], "total" => $m["rspamd_score"] + $r["score"], "reject" => $r["reject_eligible"]]);';
+        $lib = (new ReflectionFunction('scoreAiAnalysis'))->getFileName();
+        $out = shell_exec('php -r ' . escapeshellarg($code) . ' ' . escapeshellarg($lib) . ' '
+            . escapeshellarg(json_encode($input)) . ' ' . escapeshellarg(json_encode($response)));
+        return json_decode((string)$out, true);
+    };
+    $r = $warmCheck($news, $serviceMarketing);
+    $checkScore($r['rule'] === 'cold-outreach' && $r['total'] >= JUNK_FLOOR && !$r['reject'],
+        'cold outreach called marketing reaches junk, never reject');
+    $r = $warmCheck($news, array_replace($serviceMarketing, ['offer_type' => 'product_or_content']));
+    $checkScore($r['rule'] === '' && $r['total'] < JUNK_FLOOR, 'a product newsletter called marketing is left alone');
+    recordDelivery(prepareMailContext($news), 'strong', 1.0);
+    $r = $warmCheck($news, $serviceMarketing);
+    $checkScore($r['rule'] === '', 'a sender already seen in the inbox is not cold outreach');
+    $db->exec('DELETE FROM history');
+
     // Urteils-Cache: dieselbe Mail an ein zweites Postfach derselben
     // Domain trifft, auch bei leicht anderem Rspamd-Score; anderer Inhalt
     // oder anderer Absender nicht.

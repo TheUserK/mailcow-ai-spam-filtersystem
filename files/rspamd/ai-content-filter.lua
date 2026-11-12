@@ -702,6 +702,10 @@ rspamd_config:register_symbol({
     local references = header_str(task, 'References')
     local list_unsubscribe = header_str(task, 'List-Unsubscribe')
     local list_id = header_str(task, 'List-Id')
+    -- Ein-Klick-Abmeldung (RFC 8058) und Kampagnenkennung: die Merkmale
+    -- eines regulaeren Listenversands ueber einen Versanddienst.
+    local list_unsubscribe_post = header_str(task, 'List-Unsubscribe-Post')
+    local feedback_id = header_str(task, 'Feedback-ID')
     -- Fuer die "Undisclosed recipients"-Erkennung: kein einzelner sichtbarer
     -- Empfaenger im To-Header. Die Auswertung (leer, oder RFC-5322-Leerformel
     -- "Undisclosed recipients:;") passiert im PHP-Checker.
@@ -799,6 +803,8 @@ rspamd_config:register_symbol({
       headers = {
         list_unsubscribe = list_unsubscribe,
         list_id = list_id,
+        list_unsubscribe_post = list_unsubscribe_post,
+        feedback_id = feedback_id,
         precedence = precedence,
         authentication_results = authentication_results,
         to_header = to_header,
