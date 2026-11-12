@@ -9,8 +9,10 @@
 //  ai-mail-checker.php durch.
 //
 //  Eingabe auf STDIN, eine Zeile je Mail, im Tab-Format von doveadm,
-//  davor der Ordner:
-//    <INBOX|JUNK> TAB user TAB date.saved TAB x-spam-flag TAB x-spam TAB from
+//  davor der Ordner. Welche Spalte was ist, steht in doveadms Kopfzeile
+//  und wird von dort gelesen, nicht abgezaehlt: Mit -A stellt doveadm
+//  eine Spalte "username" voran, die niemand angefordert hat - bis 12.11.
+//  verrutschte dadurch alles um eins, und als Datum galt immer "heute".
 //
 //  Daraus:
 //    INBOX + Spam-Kennzeichen   -> "rescued"  (aus dem Junk zurueckgeholt)
@@ -67,23 +69,42 @@ function feedbackExcluded($rcpt) {
     return isset($list[$rcpt]) || ($domain !== '' && isset($list[$domain]));
 }
 
+// Spaltenname -> Position, aus der Kopfzeile. Vorgabe fuer den Fall,
+// dass keine kommt: die angeforderte Reihenfolge mit vorangestelltem
+// "username".
+$columns = ['username' => 1, 'user' => 2, 'date.saved' => 3,
+            'hdr.x-spam-flag' => 4, 'hdr.x-spam' => 5, 'hdr.from' => 6];
+$column = function (array $fields, $name) use (&$columns) {
+    return isset($columns[$name], $fields[$columns[$name]]) ? $fields[$columns[$name]] : '';
+};
+
 $found = [];      // [rcpt][sender] => ['verdict' => ..., 'ts' => ...]
 $flaggedInbox = [];
 $flaggedJunk = [];
 $lines = 0;
+$undated = 0;
 
 while (($line = fgets(STDIN)) !== false) {
     $fields = explode("\t", rtrim($line, "\r\n"));
-    if (count($fields) < 6 || $fields[1] === 'user') {
-        continue;   // Kopfzeile von doveadm oder Unvollstaendiges
+    if (in_array('hdr.from', $fields, true) && in_array('date.saved', $fields, true)) {
+        // Kopfzeile von doveadm: Spalten neu zuordnen.
+        $columns = array_flip($fields);
+        continue;
+    }
+    if (count($fields) < 4) {
+        continue;
     }
     $lines++;
     $folder  = $fields[0];
-    $rcpt    = strtolower(trim($fields[1]));
-    $ts      = strtotime(feedbackUnescape($fields[2])) ?: time();
-    $flagged = preg_match('/^\s*yes/i', feedbackUnescape($fields[3])) === 1
-            || preg_match('/^\s*yes/i', feedbackUnescape($fields[4])) === 1;
-    $from    = feedbackAddress(feedbackUnescape(implode(' ', array_slice($fields, 5))));
+    $rcpt    = strtolower(trim($column($fields, 'username') ?: $column($fields, 'user')));
+    $saved   = strtotime(feedbackUnescape($column($fields, 'date.saved')));
+    if ($saved === false) {
+        $undated++;
+    }
+    $ts      = $saved ?: time();
+    $flagged = preg_match('/^\s*yes/i', feedbackUnescape($column($fields, 'hdr.x-spam-flag'))) === 1
+            || preg_match('/^\s*yes/i', feedbackUnescape($column($fields, 'hdr.x-spam'))) === 1;
+    $from    = feedbackAddress(feedbackUnescape($column($fields, 'hdr.from')));
 
     if ($rcpt === '' || feedbackExcluded($rcpt)) {
         continue;
@@ -166,6 +187,9 @@ fwrite(STDERR, sprintf(
     "%d Mails gelesen: %d Absender zurueckgeholt, %d von Hand aussortiert%s\n",
     $lines, $counts['rescued'], $counts['junked'], $dryRun ? ' (nur Anzeige, nichts gespeichert)' : ''
 ));
+if ($undated > 0) {
+    fwrite(STDERR, "Hinweis: bei $undated Mails war das Ablagedatum nicht lesbar - dort gilt der heutige Tag\n");
+}
 foreach ($skipped as $rcpt) {
     fwrite(STDERR, "Uebersprungen (laesst gekennzeichnete Post im Posteingang): $rcpt\n");
 }
