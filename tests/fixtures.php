@@ -2298,6 +2298,78 @@ function runFixtures() {
     $checkScore(relationshipEffect(array_replace($r, ['junked' => true]), 'spam', [], true, true) === '',
         'a proven conversation is never force-floored');
 
+    // Eigene Schwellen je Postfach: die Zusagen gelten relativ zu DESSEN
+    // Schwellen, nicht zu 8 und 15.
+    $std = mailboxThresholds([]);
+    $checkScore(!$std['custom'] && toStandardScore(3.3, $std) === 3.3
+        && realScoreDelta(['thresholds' => $std, 'rspamd_score' => 1.0, 'rspamd_score_raw' => 1.0], 7.01) === 7.01,
+        'standard thresholds change nothing');
+    $checkScore(!mailboxThresholds(['thresholds' => ['junk' => 9997, 'reject' => 9999]])['custom']
+        && !mailboxThresholds(['thresholds' => ['junk' => 'x']])['custom'],
+        'implausible thresholds fall back to the standard');
+    foreach ([[5.0, 10.0], [6.0, 15.0], [8.0, 12.0], [10.0, 25.0], [4.5, 9.25]] as $pair) {
+        $thr = mailboxThresholds(['thresholds' => ['junk' => $pair[0], 'reject' => $pair[1]]]);
+        $checkScore($thr['custom'] && abs(toStandardScore($pair[0], $thr) - JUNK_FLOOR) < 1e-9
+            && abs(toStandardScore($pair[1], $thr) - REJECT_THRESHOLD) < 1e-9, 'thresholds map onto 8 and 15');
+        foreach ([-6.0, -1.61, 0.147622, 2.5, $pair[0] - 0.01, $pair[0], $pair[0] + 1.3, $pair[1] - 0.2, $pair[1] + 3] as $raw) {
+            $checkScore(abs(fromStandardScore(toStandardScore($raw, $thr), $thr) - $raw) < 1e-9, 'scale round trip');
+            $input = array_replace($news, ['rspamd_score' => $raw,
+                'thresholds' => ['junk' => $pair[0], 'reject' => $pair[1]]]);
+            $mailT = prepareMailContext($input);
+            // Sicheres Spam-Urteil ohne Beleg: muss in den Junk DIESES
+            // Postfachs, darf aber dessen Reject-Schwelle nicht erreichen,
+            // solange Rspamd selbst darunter liegt.
+            $resT = scoreAiAnalysis($mailT, analyzeLocally($mailT, 'synthetic'), $spamVerdict, 'synthetic');
+            $realT = $raw + realScoreDelta($mailT, $resT['score']);
+            // Kern der Umrechnung: dieselbe Seite beider Schwellen wie in
+            // der Standardskala - mit genau der Addition, die Rspamd macht.
+            $stdT = $mailT['rspamd_score'] + $resT['score'];
+            $checkScore(($stdT >= JUNK_FLOOR) === ($realT >= $pair[0])
+                && ($stdT >= REJECT_THRESHOLD) === ($realT >= $pair[1]),
+                "real total is on the same side of both thresholds ($pair[0]/$pair[1] at $raw: $realT vs $stdT)");
+            if ($raw < $pair[1]) {
+                $checkScore($realT >= $pair[0], "junk floor reaches this mailbox's junk threshold ($pair[0]/$pair[1] at $raw: $realT)");
+            }
+            // Ohne zweite Quelle keine Ablehnung. Ab RSPAMD_CONCUR_SCORE
+            // stimmt Rspamd selbst zu - dann darf sie sein, wie im Standard.
+            if ($mailT['rspamd_score'] < RSPAMD_CONCUR_SCORE) {
+                $checkScore($realT < $pair[1], "no reject below this mailbox's reject threshold ($pair[0]/$pair[1] at $raw: $realT)");
+            }
+            // Geschuetzte Kategorie: nie ueber die Reject-Schwelle gehoben.
+            $resP = scoreAiAnalysis($mailT, analyzeLocally($mailT, 'synthetic'),
+                array_replace($spamVerdict, ['category' => 'transactional', 'spam_probability' => 0.95]), 'synthetic');
+            $realP = $raw + realScoreDelta($mailT, $resP['score']);
+            $stdP = $mailT['rspamd_score'] + $resP['score'];
+            $checkScore(($stdP >= JUNK_FLOOR) === ($realP >= $pair[0])
+                && ($stdP >= REJECT_THRESHOLD) === ($realP >= $pair[1]),
+                'protected category: same side of both thresholds');
+            if ($raw < $pair[1]) {
+                $checkScore($realP < $pair[1], "protected category stays below this mailbox's reject threshold");
+            }
+        }
+    }
+
+    // Mehrere Empfaenger: geschuetzt, sobald EINER gerettet hat; Junk nur,
+    // wenn ALLE aussortiert haben.
+    $two = array_replace($news, ['recipients' => ['kundin@example.com', 'kollege@example.com']]);
+    $checkScore(prepareMailContext($two)['recipients'] === ['kundin@example.com', 'kollege@example.com'],
+        'all recipients are kept, first one first');
+    $setFeedback('junked');
+    $checkScore(!relationshipFor(prepareMailContext($two), 'strong')['junked'],
+        'one of two recipients junking the sender does not force junk');
+    $db->prepare('INSERT INTO feedback VALUES (?, ?, ?, ?)')
+       ->execute(['kollege@example.com', 'haendler-beispiel.test', 'junked', time()]);
+    $checkScore(relationshipFor(prepareMailContext($two), 'strong')['junked'],
+        'all recipients junking the sender does');
+    $db->prepare('UPDATE feedback SET verdict = ? WHERE rcpt = ?')->execute(['rescued', 'kollege@example.com']);
+    $relTwo = relationshipFor(prepareMailContext($two), 'strong');
+    $checkScore($relTwo['rescued'] && !$relTwo['junked'], 'one rescue protects the delivery');
+    $setFeedback('');
+    recordDelivery(prepareMailContext($two), 'strong', 1.0);
+    $checkScore((int)$db->query('SELECT COUNT(*) FROM history')->fetchColumn() === 2,
+        'history is counted for every recipient');
+    $db->exec('DELETE FROM history');
+
     // Angebotsart (OFFER_TYPE_RULES). Haendler-Newsletter mit Ein-Klick-
     // Abmeldung: das Modell sagt "spam", liest aber selbst ab, dass es
     // Massenversand eigener Produkte ist -> kein harter Junk-Floor.

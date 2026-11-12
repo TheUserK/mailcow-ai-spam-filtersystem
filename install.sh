@@ -144,7 +144,7 @@ override_is_current() {
     local block
     block=$(checker_block "$1")
     grep -q 'context:[[:space:]]*\./data/ai-checker' <<<"$block" \
-        && grep -q 'PHP_CLI_SERVER_WORKERS' <<<"$block" \
+        && grep -Eq 'PHP_CLI_SERVER_WORKERS=([89]|[1-9][0-9]+)' <<<"$block" \
         && grep -q 'read_only:[[:space:]]*true' <<<"$block" \
         && ! grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' <<<"$block"
 }
@@ -569,8 +569,8 @@ if [[ -f "docker-compose.override.yml" ]]; then
             CHECKER_BLOCK=$(checker_block docker-compose.override.yml)
             grep -q 'context:[[:space:]]*\./data/ai-checker' <<<"$CHECKER_BLOCK" \
                 || echo "         - build context does not point at data/ai-checker (pdo_mysql missing)"
-            grep -q 'PHP_CLI_SERVER_WORKERS' <<<"$CHECKER_BLOCK" \
-                || echo "         - PHP_CLI_SERVER_WORKERS not set (requests are serialised)"
+            grep -Eq 'PHP_CLI_SERVER_WORKERS=([89]|[1-9][0-9]+)' <<<"$CHECKER_BLOCK" \
+                || echo "         - fewer than 8 request workers (a stalled provider blocks them all)"
             grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' <<<"$CHECKER_BLOCK" \
                 && echo "         - the container still carries the mailcow database password (no longer needed)"
             grep -q 'read_only:[[:space:]]*true' <<<"$CHECKER_BLOCK" \
@@ -696,8 +696,7 @@ fi
 # Sortierverhalten der Empfaenger auswerten: Was aus dem Junk zurueckgeholt
 # oder von Hand hineingeschoben wurde, ist die einzige belastbare Antwort
 # auf "erwuenscht oder nicht". Liest nur Kopfzeilen, nachts um 2:17.
-# Der Checker laeuft damit zunaechst im Schattenmodus (RELATIONSHIP_MODE):
-# Er schreibt mit, was es bewirkt haette, und aendert nichts.
+# Der Checker wertet das seit 12.11. standardmaessig aus (RELATIONSHIP_MODE).
 cat > /etc/cron.d/ai-filter-feedback <<'CRON'
 # Sortierverhalten der Empfaenger (nur Kopfzeilen), taeglich um 2:17.
 # Von Hand: ai-filter-feedback.sh --dry-run    Stand: ai-filter-feedback.sh --status

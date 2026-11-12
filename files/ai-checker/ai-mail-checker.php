@@ -289,15 +289,15 @@ define('AI_CONFIDENT_TOTAL', 15.5);       // angepeilte Gesamtsumme
 //  RELATIONSHIP_MODE:
 //    off    - nichts lesen, nichts schreiben
 //    shadow - mitschreiben und im Log zeigen, was es bewirkt HAETTE,
-//             aber weder Prompt noch Score anfassen (Vorgabe)
-//    on     - scharf
+//             aber weder Prompt noch Score anfassen
+//    on     - scharf (Vorgabe seit 12.11.)
 //  Umschalten ohne Codeaenderung: AI_FILTER_RELATIONSHIP_MODE im
 //  environment-Abschnitt des ai-checker-Dienstes.
 // ---------------------------------------------------------------------
 define('RELATIONSHIP_DB', getenv('AI_FILTER_RELATIONSHIP_DB') ?: '/var/log/ai-checker/relationship.sqlite');
 define('RELATIONSHIP_MODE', in_array(getenv('AI_FILTER_RELATIONSHIP_MODE'), ['off', 'shadow', 'on'], true)
     ? getenv('AI_FILTER_RELATIONSHIP_MODE')
-    : 'shadow');
+    : 'on');
 // Wie lange eine Nutzerentscheidung gilt.
 define('FEEDBACK_MAX_AGE_DAYS', 180);
 // Ab wann eine Liste als "laeuft hier schon laenger" gilt.
@@ -394,12 +394,15 @@ if (!empty($localResult['handled'])) {
         whitelistDecision($mail, $localResult, $localResult)
     );
     recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $localResult['score']);
+    // Ab hier in der Skala des Postfachs - siehe mailboxThresholds().
+    $localResult['score'] = realScoreDelta($mail, $localResult['score']);
     logStats($requestId, [
         'from' => $mail['from'],
         'to' => $mail['to'],
         'subject' => $mail['subject'],
         'body' => $mail['body'],
-        'rspamd_score' => $mail['rspamd_score'],
+        'rspamd_score' => $mail['rspamd_score_raw'],
+        'thresholds' => $mail['thresholds'],
         'ai_score' => $localResult['score'],
         'ai_action' => $localResult['action'],
         'category' => $localResult['category'] ?? 'unknown',
@@ -442,13 +445,16 @@ if ($cachedAnalysis !== null) {
 }
 $result = applyWhitelistDecision($result, whitelistDecision($mail, $localResult, $result));
 recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $result['score']);
+// Ab hier in der Skala des Postfachs - siehe mailboxThresholds().
+$result['score'] = realScoreDelta($mail, $result['score']);
 
 logStats($requestId, [
     'from' => $mail['from'],
     'to' => $mail['to'],
     'subject' => $mail['subject'],
     'body' => $mail['body'],
-    'rspamd_score' => $mail['rspamd_score'],
+    'rspamd_score' => $mail['rspamd_score_raw'],
+    'thresholds' => $mail['thresholds'],
     'ai_score' => $result['score'],
     'ai_action' => $result['action'],
     'category' => $result['category'] ?? 'unknown',
@@ -595,7 +601,13 @@ function prepareMailContext(array $data) {
         'subject' => $subject !== '' ? $subject : '(no subject)',
         'from' => $from,
         'to' => $to,
-        'rspamd_score' => floatval($data['rspamd_score'] ?? 0),
+        // Auf die Standardskala (Junk 8, Reject 15) umgerechnet - siehe
+        // mailboxThresholds(). Bei Standardschwellen ist das derselbe Wert.
+        'rspamd_score' => toStandardScore(floatval($data['rspamd_score'] ?? 0), mailboxThresholds($data)),
+        'rspamd_score_raw' => floatval($data['rspamd_score'] ?? 0),
+        'thresholds' => mailboxThresholds($data),
+        // Alle Empfaenger dieser Zustellung, nicht nur der erste.
+        'recipients' => recipientList($data, $to),
         'attachments' => $attachments,
         'from_email' => cleanTextValue($data['from_email'] ?? $from),
         'from_domain' => $fromDomain,
@@ -5040,6 +5052,118 @@ function scoreFromAi($probability, $confidence, $category = '') {
 //  HELFER
 // =====================================================================
 // ---------------------------------------------------------------------
+//  Eigene Schwellen je Postfach.
+//
+//  mailcow laesst jedes Postfach seine Junk- und Reject-Schwelle selbst
+//  setzen. Der Checker rechnete bis 12.11. fest mit 8 und 15: Bei einem
+//  Postfach mit Reject ab 10 konnte eine "geschuetzte" Kategorie (Deckel
+//  12) abgewiesen werden, und bei Junk ab 5 verfehlte der Junk-Floor sein
+//  Ziel nach der anderen Seite.
+//
+//  Statt jede Grenze einzeln beweglich zu machen, wird die Skala
+//  umgerechnet: Rspamds Score kommt auf die Standardskala (Junk 8,
+//  Reject 15), die gesamte Logik rechnet wie bisher, und der Beitrag geht
+//  am Ende zurueck in die Skala des Postfachs. Unterhalb der Junk-Schwelle
+//  wird nur verschoben (ein Punkt bleibt ein Punkt - Rspamds
+//  Symbolgewichte aendern sich mit der Schwelle nicht), zwischen Junk und
+//  Reject gestreckt. Damit gilt exakt: Standard-Summe >= 8 <=> echte
+//  Summe >= Junk-Schwelle, und dasselbe fuer Reject.
+//
+//  Das Lua-Modul liefert die fuer DIESE Mail gueltigen Schwellen. Fehlen
+//  sie (aelteres Modul) oder sind sie unplausibel, gelten 8 und 15 - dann
+//  ist die Umrechnung die Identitaet und nichts aendert sich.
+// ---------------------------------------------------------------------
+function mailboxThresholds(array $data) {
+    $given = (isset($data['thresholds']) && is_array($data['thresholds'])) ? $data['thresholds'] : [];
+    $junk = floatval($given['junk'] ?? 0);
+    $reject = floatval($given['reject'] ?? 0);
+
+    if ($junk < 1.0 || $junk > 30.0) {
+        $junk = JUNK_FLOOR;
+    }
+    if ($reject < $junk + 1.0 || $reject > 100.0) {
+        // Kein (brauchbarer) Reject-Wert: denselben Abstand wie im Standard.
+        $reject = $junk + (REJECT_THRESHOLD - JUNK_FLOOR);
+    }
+    return [
+        'junk' => $junk,
+        'reject' => $reject,
+        'custom' => abs($junk - JUNK_FLOOR) > 0.001 || abs($reject - REJECT_THRESHOLD) > 0.001,
+    ];
+}
+
+function toStandardScore($score, array $thr) {
+    if (empty($thr['custom'])) {
+        return $score;
+    }
+    if ($score <= $thr['junk']) {
+        return $score - $thr['junk'] + JUNK_FLOOR;
+    }
+    if ($score <= $thr['reject']) {
+        return JUNK_FLOOR + ($score - $thr['junk'])
+            * (REJECT_THRESHOLD - JUNK_FLOOR) / ($thr['reject'] - $thr['junk']);
+    }
+    return REJECT_THRESHOLD + ($score - $thr['reject']);
+}
+
+function fromStandardScore($score, array $thr) {
+    if (empty($thr['custom'])) {
+        return $score;
+    }
+    if ($score <= JUNK_FLOOR) {
+        return $score - JUNK_FLOOR + $thr['junk'];
+    }
+    if ($score <= REJECT_THRESHOLD) {
+        return $thr['junk'] + ($score - JUNK_FLOOR)
+            * ($thr['reject'] - $thr['junk']) / (REJECT_THRESHOLD - JUNK_FLOOR);
+    }
+    return $thr['reject'] + ($score - REJECT_THRESHOLD);
+}
+
+// Unser Beitrag aus der Standardskala zurueck in die des Postfachs.
+// Zurueckgegeben werden zwei Nachkommastellen; danach wird geprueft, dass
+// die echte Summe auf DERSELBEN Seite beider Schwellen liegt wie die
+// Standard-Summe - genau die Addition, die Rspamd ausfuehrt.
+function realScoreDelta(array $mail, $delta) {
+    $thr = $mail['thresholds'] ?? ['custom' => false];
+    if (empty($thr['custom']) || abs($delta) < 0.005) {
+        return $delta;
+    }
+    $raw = $mail['rspamd_score_raw'];
+    $standardTotal = $mail['rspamd_score'] + $delta;
+    $real = round(fromStandardScore($standardTotal, $thr) - $raw, 2);
+
+    foreach ([[JUNK_FLOOR, $thr['junk']], [REJECT_THRESHOLD, $thr['reject']]] as $pair) {
+        list($standardLimit, $realLimit) = $pair;
+        $guard = 0;
+        while ($standardTotal >= $standardLimit && $raw + $real < $realLimit && $guard++ < 5) {
+            $real = round($real + 0.01, 2);
+        }
+        while ($standardTotal < $standardLimit && $raw + $real >= $realLimit && $guard++ < 5) {
+            $real = round($real - 0.01, 2);
+        }
+    }
+    return $real;
+}
+
+// Alle Empfaenger einer Zustellung (kleingeschrieben, hoechstens 20), der
+// erste zuerst. Aeltere Lua-Fassungen schicken nur "to".
+function recipientList(array $data, $to) {
+    $list = [];
+    $first = strtolower(extractEmailAddress($to));
+    if ($first !== '') {
+        $list[] = $first;
+    }
+    foreach (normalizeStringList($data['recipients'] ?? []) as $rcpt) {
+        $rcpt = strtolower(extractEmailAddress($rcpt));
+        if ($rcpt !== '' && !in_array($rcpt, $list, true)) {
+            $list[] = $rcpt;
+        }
+    }
+    return array_slice($list, 0, 20);
+}
+
+// ---------------------------------------------------------------------
 //  Urteils-Cache (siehe VERDICT_CACHE_HOURS). Jeder Fehler hier heisst
 //  nur: kein Treffer, das Modell wird gefragt wie bisher.
 // ---------------------------------------------------------------------
@@ -5164,6 +5288,20 @@ function relationshipKey(array $mail) {
     return [$rcpt, $sender];
 }
 
+// Eine Mail an mehrere Postfaecher bekommt EINEN Score - Rspamd bewertet
+// die Zustellung, nicht den einzelnen Empfaenger. Bis 12.11. zaehlte nur
+// der erste. Jetzt gilt die jeweils schonendere Lesart: Geschuetzt wird,
+// sobald EINER die Post zurueckgeholt hat oder sie bei einem seit Wochen
+// ankommt; in den Junk gezwungen nur, wenn ALLE sie aussortiert haben.
+function relationshipRecipients(array $mail) {
+    $list = $mail['recipients'] ?? [];
+    if (empty($list)) {
+        $first = strtolower(extractEmailAddress($mail['to'] ?? ''));
+        $list = $first !== '' ? [$first] : [];
+    }
+    return $list;
+}
+
 // Eigene Funktion, weil feedback-import.php denselben Schluessel aus einer
 // From-Kopfzeile bilden muss - zwei Stellen, die ihn unterschiedlich
 // herleiten, faenden ihre Eintraege gegenseitig nie.
@@ -5208,25 +5346,40 @@ function relationshipFor(array $mail, $authStrength) {
         return $rel;
     }
     $rel['key'] = $sender;
+    $recipients = relationshipRecipients($mail);
+    $junkedBy = 0;
 
     try {
-        $st = $db->prepare('SELECT verdict, ts FROM feedback WHERE rcpt = ? AND sender = ?');
-        $st->execute([$rcpt, $sender]);
-        $row = $st->fetch(PDO::FETCH_ASSOC);
-        if ($row && (int)$row['ts'] >= time() - FEEDBACK_MAX_AGE_DAYS * 86400) {
-            $rel['rescued'] = $row['verdict'] === 'rescued';
-            $rel['junked']  = $row['verdict'] === 'junked';
-        }
+        $feedback = $db->prepare('SELECT verdict, ts FROM feedback WHERE rcpt = ? AND sender = ?');
+        $history = $db->prepare('SELECT first_seen, seen, inbox FROM history WHERE rcpt = ? AND sender = ?');
+        foreach ($recipients as $one) {
+            $feedback->execute([$one, $sender]);
+            $row = $feedback->fetch(PDO::FETCH_ASSOC);
+            if ($row && (int)$row['ts'] >= time() - FEEDBACK_MAX_AGE_DAYS * 86400) {
+                if ($row['verdict'] === 'rescued') {
+                    $rel['rescued'] = true;
+                } elseif ($row['verdict'] === 'junked') {
+                    $junkedBy++;
+                }
+            }
 
-        $st = $db->prepare('SELECT first_seen, seen, inbox FROM history WHERE rcpt = ? AND sender = ?');
-        $st->execute([$rcpt, $sender]);
-        $row = $st->fetch(PDO::FETCH_ASSOC);
-        if ($row) {
-            $rel['seen']  = (int)$row['seen'];
-            $rel['inbox'] = (int)$row['inbox'];
-            $rel['days']  = (int)floor(max(0, time() - (int)$row['first_seen']) / 86400);
-            $rel['established'] = $rel['inbox'] >= HISTORY_MIN_INBOX && $rel['days'] >= HISTORY_MIN_DAYS;
+            $history->execute([$one, $sender]);
+            $row = $history->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                $days = (int)floor(max(0, time() - (int)$row['first_seen']) / 86400);
+                if ((int)$row['inbox'] >= HISTORY_MIN_INBOX && $days >= HISTORY_MIN_DAYS) {
+                    $rel['established'] = true;
+                }
+                // Fuers Log der Empfaenger mit der laengsten Geschichte.
+                if ((int)$row['inbox'] >= $rel['inbox']) {
+                    $rel['inbox'] = (int)$row['inbox'];
+                    $rel['seen']  = (int)$row['seen'];
+                    $rel['days']  = $days;
+                }
+            }
         }
+        // Aussortiert zaehlt nur einstimmig, und nie gegen eine Rettung.
+        $rel['junked'] = !$rel['rescued'] && !empty($recipients) && $junkedBy === count($recipients);
     } catch (Exception $e) {
         logError('system', 'Relationship lookup failed: ' . $e->getMessage());
     }
@@ -5273,7 +5426,9 @@ function recordDelivery(array $mail, $authStrength, $totalScore) {
                 last_seen = excluded.last_seen,
                 seen = seen + 1,
                 inbox = inbox + excluded.inbox');
-        $st->execute([$rcpt, $sender, $now, $now, $totalScore < JUNK_FLOOR ? 1 : 0]);
+        foreach (relationshipRecipients($mail) as $one) {
+            $st->execute([$one, $sender, $now, $now, $totalScore < JUNK_FLOOR ? 1 : 0]);
+        }
     } catch (Exception $e) {
         logError('system', 'Relationship update failed: ' . $e->getMessage());
     }
@@ -6320,6 +6475,16 @@ function logStats($requestId, $data) {
         'real_conversation' => !empty($data['real_conversation']),
         'claimed_thread' => !empty($data['claimed_thread']),
     ];
+
+    // Eigene Schwellen dieses Postfachs. model_score und ai_score_raw
+    // stehen dann in der Standardskala, rspamd_score/ai_score/total_score
+    // in der des Postfachs.
+    if (!empty($data['thresholds']['custom'])) {
+        $entry['thresholds'] = [
+            'junk' => $data['thresholds']['junk'],
+            'reject' => $data['thresholds']['reject'],
+        ];
+    }
 
     // Angebotsart (siehe OFFER_TYPE_RULES). Nur bei KI-Urteilen vorhanden.
     if (($data['offer_type'] ?? '') !== '') {

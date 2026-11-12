@@ -16,8 +16,9 @@
 #  davon verlaesst den Server.
 #
 #  Was der Checker damit macht, steht bei RELATIONSHIP_MODE in
-#  ai-mail-checker.php. Vorgabe ist der Schattenmodus: Es wird
-#  mitgeschrieben und im Log gezeigt, was es bewirkt haette.
+#  ai-mail-checker.php. Vorgabe ist "on". Mit
+#  AI_FILTER_RELATIONSHIP_MODE=shadow wird nur mitgeschrieben und im Log
+#  gezeigt, was es bewirkt haette.
 #
 #  Aufruf:
 #    ai-filter-feedback.sh              Postfaecher lesen und uebernehmen
@@ -89,7 +90,7 @@ status)
     echo "Aussortiert:    $(sqlite3 "$DB" "SELECT COUNT(*) FROM feedback WHERE verdict='junked'")"
     echo "Postfaecher:    $(sqlite3 "$DB" "SELECT COUNT(DISTINCT rcpt) FROM feedback")"
     echo "Historie:       $(sqlite3 "$DB" "SELECT COUNT(*) FROM history") Absender/Postfach-Paare"
-    echo "Modus:          $($COMPOSE_CMD exec -T ai-checker printenv AI_FILTER_RELATIONSHIP_MODE 2>/dev/null || echo 'shadow (Vorgabe)')"
+    echo "Modus:          $($COMPOSE_CMD exec -T ai-checker printenv AI_FILTER_RELATIONSHIP_MODE 2>/dev/null || echo 'on (Vorgabe)')"
     exit 0 ;;
 show)
     [[ -n "$ARG" ]] || { echo "Usage: ai-filter-feedback.sh --show postfach@domain"; exit 1; }

@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP (with SQLite) and LuaJIT
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q php-cli php-sqlite3 php-mbstring php-curl luajit
+
+      - name: PHP syntax
+        run: |
+          for f in files/ai-checker/*.php tests/*.php; do php -l "$f"; done
+
+      - name: Shell syntax
+        run: |
+          for f in install.sh uninstall.sh files/scripts/*.sh tests/*.sh; do bash -n "$f"; done
+
+      - name: Lua syntax
+        run: luajit -bl files/rspamd/ai-content-filter.lua > /dev/null
+
+      - name: Compose template is valid YAML
+        run: python3 -c "import yaml; yaml.safe_load(open('files/docker-compose.override.yml'))"
+
+      - name: Fixture corpus and scoring tests
+        run: tests/run-fixtures.sh > /dev/null

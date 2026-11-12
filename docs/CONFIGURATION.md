@@ -912,6 +912,34 @@ one-click unsubscribe will get through more easily than before; that is the
 price for subscribed newsletters no longer being forced into junk. Setting
 `OFFER_TYPE_RULES` to `false` switches both rules off and keeps the logging.
 
+## Per-mailbox thresholds
+
+mailcow lets every mailbox set its own junk and reject threshold. Until
+12.11. the checker calculated with 8 and 15 regardless: for a mailbox that
+rejects at 10, a "protected" category capped at 12 could be rejected, and for
+one that junks at 5 the junk floor overshot.
+
+The Lua module now sends the thresholds that apply to the mail
+(`task:get_metric_threshold`), and the checker converts the scale rather than
+each limit: Rspamd's score is mapped onto the standard scale (junk 8, reject
+15), all logic runs unchanged, and the contribution is mapped back. Below the
+junk threshold the score is only shifted - a point stays a point, Rspamd's
+symbol weights do not change with a mailbox's threshold - and between junk
+and reject it is stretched. This guarantees exactly: standard total >= 8 if
+and only if real total >= the mailbox's junk threshold, and the same for
+reject.
+
+With standard thresholds, an older Lua module or implausible values (below 1,
+above 30/100) the conversion is the identity and nothing changes. A mailbox
+set to "deliver everything" (thresholds of 9997 and above) is skipped by the
+Lua module altogether - nothing can land in junk there, so the call would be
+paid for and without effect. `skip_score_above` follows the mailbox's own
+reject threshold.
+
+In `stats.log`, a mail for such a mailbox carries `thresholds`;
+`rspamd_score`, `ai_score` and `total_score` are then in the mailbox's scale,
+`model_score` and `ai_score_raw` in the standard scale.
+
 ## Recipient relationship (ai-filter-feedback.sh, relationship.sqlite)
 
 Whether a mail was subscribed to is not written in the mail. The model has to
@@ -944,20 +972,29 @@ hijacked too.
 
 ### Modes
 
-`RELATIONSHIP_MODE` is `shadow` by default: both sources are recorded and
-every `stats.log` line shows under `relationship` what *would* have happened
-(`"applied": false`), but neither prompt nor score is touched. Check a week
-of entries, then switch it on by adding one line to the `ai-checker` service
-in `docker-compose.override.yml` and recreating the container:
+`RELATIONSHIP_MODE` is `on` by default since 12.11.: the effects above apply
+and the model sees three flags (`recipient-rescued-sender`,
+`sender-history:N-inbox-mails-over-D-days`, `recipient-junked-sender`).
+
+`shadow` records both sources and shows under `relationship` in every
+`stats.log` line what *would* have happened (`"applied": false`) without
+touching prompt or score; `off` reads and writes nothing. To change the mode,
+add one line to the `ai-checker` service in `docker-compose.override.yml` and
+recreate the container (`docker compose up -d ai-checker`):
 
 ```yaml
     environment:
-      - AI_FILTER_RELATIONSHIP_MODE=on
+      - AI_FILTER_RELATIONSHIP_MODE=shadow
 ```
 
-`on` additionally shows the model three flags (`recipient-rescued-sender`,
-`sender-history:N-inbox-mails-over-D-days`, `recipient-junked-sender`).
-`off` reads and writes nothing.
+### Several recipients
+
+Rspamd scores a delivery, not a recipient, so a mail to several mailboxes
+gets one score. Until 12.11. only the first recipient counted. Now the
+gentler reading applies: the delivery is protected as soon as **one**
+recipient rescued the sender or has it arriving for weeks, and forced into
+junk only when **all** of them junked it. History is counted for every
+recipient.
 
 ### What the script reads
 
@@ -1108,7 +1145,7 @@ keeps your choice.
 | `PROMPT_BODY_CHARS` | `3000` | How much of the visible mail text the model sees. Since 12.11. this is head *and* tail (`promptExcerpt()`), and the text is what the recipient reads (`visibleText()`): until then `strip_tags()` left the contents of `<style>` in place, so for HTML-only newsletters the model was partly reading CSS, and anything after character 3000 was invisible |
 | `OFFER_TYPE_RULES` | `true` | Use the model's `offer_type`/`mass_mailing` answers for the junk floor. See [Offer type and mass mailing](#offer-type-and-mass-mailing-offer_type_rules) |
 | `VERDICT_CACHE_HOURS` | `24` | How long a model answer is reused for an identical mail; `0` disables. The same mailing to twenty mailboxes used to be twenty calls, and not always twenty identical answers (on 19.09. one Alfahosting mail got `transactional` and `spam` within eleven minutes). Cached is the model's answer, never the score: that is recomputed per mail from Rspamd's score, the recipient's feedback and the evidence. The key is a hash of what the model would see (minus the Rspamd score line), the model and this file's modification time, so an update or model change empties it. The file `data/logs/ai-checker/verdict_cache.sqlite` holds hash, verdict and time - no sender, recipient or mail text. A hit shows as `analysis_source: ai-cache` in `stats.log` and costs no budget |
-| `RELATIONSHIP_MODE` | `shadow` | `off` / `shadow` / `on`, set via `AI_FILTER_RELATIONSHIP_MODE`. See [Recipient relationship](#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite) |
+| `RELATIONSHIP_MODE` | `on` | `off` / `shadow` / `on`, set via `AI_FILTER_RELATIONSHIP_MODE`. See [Recipient relationship](#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite) |
 | `FEEDBACK_MAX_AGE_DAYS` | `180` | How long a recipient's rescue/junk decision stays valid |
 | `HISTORY_MIN_INBOX` / `HISTORY_MIN_DAYS` | `3` / `21` | When a list counts as established for a recipient |
 | `LOG_MAIL_CONTENT` | `false` | Write a body excerpt as well. Far more revealing than a subject and not needed for review - debugging only |

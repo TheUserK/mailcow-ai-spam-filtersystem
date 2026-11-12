@@ -355,6 +355,21 @@ local function whitelist_deliver(task, wl)
   rspamd_logger.infox(task, 'AI Filter: whitelist %s (%s) - delivery forced', wl.entry, wl.auth_via)
 end
 
+-- Die fuer DIESE Mail gueltige Schwelle einer Aktion. mailcow laesst jedes
+-- Postfach Junk und Reject selbst setzen (Rspamd-Settings); ohne das
+-- rechnete der Checker bei solchen Postfaechern mit den falschen Grenzen.
+-- Aeltere Rspamd-Fassungen kennen den Aufruf nicht - dann nil, und der
+-- Checker nimmt seine Vorgaben.
+local function action_threshold(task, names)
+  for _, name in ipairs(names) do
+    local ok, value = pcall(task.get_metric_threshold, task, name)
+    if ok and type(value) == 'number' and value == value then
+      return value
+    end
+  end
+  return nil
+end
+
 local function header_str(task, name)
   local h = task:get_header(name)
   if h then
@@ -535,9 +550,26 @@ rspamd_config:register_symbol({
     -- Die Untergrenze zaehlt OHNE gelernte Ham-Symbole (siehe
     -- learned_ham_points). Falsch trainierte Post ist genau die, die die
     -- KI gegenpruefen soll; Rspamds Score selbst bleibt unveraendert.
+    local junk_threshold = action_threshold(task, { 'add header', 'add_header' })
+    local reject_threshold = action_threshold(task, { 'reject' })
+
+    -- Postfach mit "alles zustellen" (mailcow setzt die Schwellen dann auf
+    -- 9997 und hoeher): Hier landet nichts im Junk, egal was wir addieren.
+    -- Der Aufruf waere bezahlt und wirkungslos.
+    if junk_threshold and junk_threshold > 500 then
+      return false
+    end
+
+    -- "Schon entschieden" misst sich an der Reject-Schwelle dieses
+    -- Postfachs, nicht an der globalen.
+    local skip_above = cfg.skip_score_above
+    if reject_threshold and reject_threshold > 0 and reject_threshold < 500 then
+      skip_above = reject_threshold
+    end
+
     local learned = learned_ham_points(task)
     if score - learned < cfg.skip_score_below
-        or (score >= cfg.skip_score_above and not wl_active) then
+        or (score >= skip_above and not wl_active) then
       return false
     end
     if score < cfg.skip_score_below then
@@ -577,9 +609,18 @@ rspamd_config:register_symbol({
 
     -- Recipient
     local to_addr = 'unknown'
+    local recipients = {}
     local rcpts = task:get_recipients('smtp')
     if rcpts and rcpts[1] and rcpts[1].addr then
       to_addr = rcpts[1].addr
+    end
+    -- Alle Empfaenger dieser Zustellung: Der Score gilt fuer alle, also
+    -- soll auch das Feedback aller zaehlen.
+    for i, r in ipairs(rcpts or {}) do
+      if i > 20 then break end
+      if r.addr then
+        table.insert(recipients, r.addr)
+      end
     end
 
     -- Subject
@@ -783,6 +824,8 @@ rspamd_config:register_symbol({
     local request_data = {
       from = header_str(task, 'From') ~= '' and header_str(task, 'From') or from_email,
       to = to_addr,
+      recipients = recipients,
+      thresholds = { junk = junk_threshold, reject = reject_threshold },
       subject = subject,
       body = body_text,
       rspamd_score = score,
