@@ -225,7 +225,18 @@ to bounce a mail it is not.
 `AI_MAY_REJECT` still gates whether either path is armed. Both additionally
 require: no matched trusted-sender profile, no verified-brand sender, and
 `!partOfRealConversation($mail)` - the mail is not a reply to something we
-actually sent, or to a Message-ID whose domain is one of ours.
+actually sent (Rspamd's `REPLY` symbol) - and `!claimsOwnThread($mail)`: its
+`In-Reply-To`/`References` do not name one of our domains either.
+
+The two are deliberately separate since 12.11. Until then a Message-ID
+whose domain was one of ours counted as a proven conversation, on the
+assumption that an attacker would have to know a real Message-ID. Only the
+part after the `@` was ever compared, and the recipient's domain is known to
+anyone who writes to them: `In-Reply-To: <x@your-domain>` switched off both
+reject paths *and* the junk floor. The claim still blocks a reject (the
+replies module forgets after 30 days, and a late genuine reply looks the
+same), but the junk floor and the local fail-open classification now ignore
+it. `claimed_thread` in `stats.log` records it.
 
 Rspamd's `KNOWN_SENDER` symbol used to count as such a conversation too, and
 stopped doing so on 16.09. On 15.09. cold outreach arrived from a freemail
@@ -983,6 +994,7 @@ keeps your choice.
 | `AI_CONFIDENT_TOTAL` | `15.5` | Target total for the AI-confident path - since the AI's own contribution is capped at `MAX_PHISHING_POINTS` (10), Rspamd must independently supply the rest |
 | `BRAND_DOMAINS_FILE` | `brand_domains.txt` next to the script | The generated Majestic-Million brand list (see below); absent means the checker silently falls back to the hand-curated list only |
 | `LOG_SUBJECT` | `true` | Write the subject line to stats.log. Needed to judge a verdict after the fact; kept 30 days, root-only |
+| `PROMPT_BODY_CHARS` | `3000` | How much of the visible mail text the model sees. Since 12.11. this is head *and* tail (`promptExcerpt()`), and the text is what the recipient reads (`visibleText()`): until then `strip_tags()` left the contents of `<style>` in place, so for HTML-only newsletters the model was partly reading CSS, and anything after character 3000 was invisible |
 | `LOG_MAIL_CONTENT` | `false` | Write a body excerpt as well. Far more revealing than a subject and not needed for review - debugging only |
 | `LOG_FILE_MODE` | `0600` | Permissions for newly created log files |
 
@@ -1075,6 +1087,8 @@ name, opposite meaning. A finding only carries weight when it is in
 `real_conversation` (since 16.09.) records the `partOfRealConversation()`
 verdict. That single gate decides `rejectEligible`, `confidentReject` **and**
 the junk floor at once, and it was previously invisible after the fact.
+`claimed_thread` (since 12.11.) is the weaker sibling: an unproven reference
+to one of our domains, which blocks the two reject paths only.
 
 ## Trusted sender profiles
 
@@ -1273,7 +1287,7 @@ Note that mailcow entries are per mailbox/domain, ours apply server-wide.
 | `checker_url` | `http://ai-checker:8080/ai-mail-checker.php` | Where Rspamd sends the mail context |
 | `skip_score_above` | `15.0` | Skip the AI call if Rspamd already rejects on its own score. Keep this **at** the reject threshold, never below - see below |
 | `skip_score_below` | `-10.0` | Skip the AI call if Rspamd's score is already this low. Since 19.10. learned ham symbols (`BAYES_HAM`, `LOCAL_FUZZY_WHITE`, `FUZZY_WHITE`, `NEURAL_HAM*`) do not count towards this: they come from users moving mail out of junk, and mistrained mail is exactly what the AI should cross-check. On 16.10. a lawyers-network solicitation arrived at -11.75, of which -9.84 was learned ham. Rspamd's own score is unchanged; a skip-override is logged as `below skip threshold only through learned ham` |
-| `http_timeout` | `30.0` | HTTP timeout for the checker call |
+| `http_timeout` | `22.0` | HTTP timeout for the checker call. Must stay below Rspamd's `task_timeout` (25 s on mailcow) |
 | `log_only_mode` | `false` | Still calls the checker and logs the result, but never applies the score |
 | `whitelist_domains` | `{}` | Sender domains that skip the AI call entirely (Lua table) - no delivery promise |
 | `whitelist_senders` | `{}` | Sender addresses that skip the AI call entirely (Lua table) - no delivery promise |
@@ -1314,7 +1328,7 @@ mail (order confirmations, shipping notices, ...) gets a local auto-pass.
 ### Reduce Costs
 - Lower `MONTHLY_BUDGET_EUR` in `ai-mail-checker.php`
 - Tighten the score range above (fewer emails analyzed)
-- The body is already truncated to 3000 chars before it's sent to the AI
+- The body is already cut to 3000 chars before it's sent to the AI (`PROMPT_BODY_CHARS`): the visible text only - no markup, stylesheet or script - three quarters from the start and one quarter from the end, with long tracking links shortened to their host
 
 ### Improve Detection
 - Lower `MAX_SPAM_POINTS` / `MAX_PHISHING_POINTS` if too aggressive, raise them if too much gets through

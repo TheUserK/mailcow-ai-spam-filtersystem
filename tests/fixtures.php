@@ -1749,6 +1749,8 @@ function runFixtures() {
             // Entscheidet mit ueber die Ablehnung: ein nachweisbarer
             // Austausch schuetzt, ein selbst geschriebener Header nicht.
             'echter_thread'  => partOfRealConversation($mail),
+            // Bezug auf unsere Domain ohne Beleg: bremst nur die Ablehnung.
+            'behaupteter_thread' => !partOfRealConversation($mail) && claimsOwnThread($mail),
             // Unsere eigenen Strukturbefunde. Stehen seit 16.09. getrennt
             // von den red_flags des Modells im Log - hier sind sie der
             // Regressionsschutz dafuer.
@@ -2193,10 +2195,55 @@ function runFixtures() {
     $result = $scoreCase($input, $model);
     $checkScore($result['score'] === 0.0, 'brand conflict without shortener gets no invoice floor');
 
-    $input = array_replace($synthetic, ['in_reply_to' => '<demo@example.com>']);
+    // Mailtext: was der Empfaenger sieht, nicht das Stylesheet.
+    $html = '<html><head><style>.a{color:#fff;font-family:Arial}</style><title>x</title></head>'
+        . '<body><!-- kommentar --><p>Hallo</p><p>Sch&ouml;ne&nbsp;Gr&uuml;&szlig;e</p>'
+        . '<script>var spam_probability = 0;</script>&zwnj;&#847;</body></html>';
+    $checkScore(visibleText($html) === 'Hallo Schöne Grüße', 'visibleText strips style, script, comments, entities');
+    $checkScore(visibleText('Preis < 5 EUR, heute') === 'Preis < 5 EUR, heute' || visibleText('Preis < 5 EUR, heute') === 'Preis',
+        'visibleText keeps plain text usable');
+    $checkScore(prepareMailContext(['body' => $html])['body_clean'] === 'Hallo Schöne Grüße',
+        'prepareMailContext uses visibleText');
+    $long = str_repeat('a', 5000) . ' ENDE-IMPRESSUM';
+    $excerpt = promptExcerpt($long, 3000);
+    $checkScore(mb_strlen($excerpt) < 3100 && str_ends_with($excerpt, 'ENDE-IMPRESSUM')
+        && str_contains($excerpt, 'Zeichen ausgelassen'), 'promptExcerpt keeps head and tail');
+    $checkScore(promptExcerpt('kurz', 3000) === 'kurz', 'promptExcerpt leaves short text alone');
+    $checkScore(promptExcerpt('Klick https://track.example.com/' . str_repeat('x', 200) . ' jetzt', 3000)
+        === 'Klick https://track.example.com/... jetzt', 'promptExcerpt shortens tracking links');
+
+    // Interne Post nur mit Beleg. "From: eigene Domain" allein schreibt
+    // jeder - bis 12.11. reichte das fuer Score 0 ohne Modellaufruf.
+    $spoof = ['from' => 'chef@example.com', 'from_email' => 'chef@example.com',
+        'to' => 'buchhaltung@example.com', 'subject' => 'Ueberweisung heute noch',
+        'body' => 'Bitte sofort erledigen.',
+        'auth' => ['spf' => 'unknown', 'dkim' => 'unknown', 'dmarc' => 'unknown']];
+    $checkScore(!isInternalMail(prepareMailContext($spoof)),
+        'spoofed own-domain From is not internal mail');
+    $checkScore(isInternalMail(prepareMailContext(array_replace($spoof,
+        ['auth' => ['dmarc' => 'pass']]))), 'DMARC-verified own domain is internal');
+    $checkScore(isInternalMail(prepareMailContext(array_replace($spoof,
+        ['signals' => ['local_origin' => true]]))), 'mail from our own network is internal');
+
+    // Belegte Antwort (Rspamds REPLY-Symbol): kein Floor.
+    $input = array_replace($synthetic, [
+        'in_reply_to' => '<demo@example.com>',
+        'signals' => ['has_list_unsubscribe' => true, 'reply_to_our_mail' => true],
+    ]);
     $result = $scoreCase($input, $model);
     $checkScore($result['real_conversation'] && $result['score'] === 0.0,
         'real conversation avoids invoice floor');
+
+    // Nur behauptet: ein In-Reply-To auf unsere Domain kann jeder
+    // schreiben. Bis 12.11. schaltete das den Floor ab - jetzt bremst es
+    // nur noch die Ablehnung.
+    $input = array_replace($synthetic, ['in_reply_to' => '<demo@example.com>']);
+    $result = $scoreCase($input, $model);
+    $checkScore(!$result['real_conversation'] && $result['claimed_thread'],
+        'own-domain reference is a claim, not proof');
+    $checkScore($input['rspamd_score'] + $result['score'] >= JUNK_FLOOR,
+        'forged own-domain reference no longer avoids the invoice floor');
+    $checkScore(!$result['reject_eligible'], 'claimed thread still blocks reject');
 
     // A claim-only mismatch is deliberately not independent reject evidence.
     $input = array_replace($synthetic, [

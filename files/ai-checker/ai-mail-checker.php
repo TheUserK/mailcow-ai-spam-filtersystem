@@ -68,7 +68,7 @@ define('AI_MODEL',        providerSetting('model')    ?: AI_MODEL_DEFAULT);
 // ---------------------------------------------------------------------
 // Wie lange die API brauchen darf. Haengt stark am Modell: gpt-oss-120b
 // antwortet in rund 1,5 s, Qwen3.5-397B je nach reasoning_effort in 15-27 s.
-// Rspamd bricht seinerseits nach http_timeout (Vorgabe 30 s) ab - dieser
+// Rspamd bricht seinerseits nach http_timeout (Vorgabe 22 s) ab - dieser
 // Wert muss darunter bleiben, sonst wartet der Checker auf eine Antwort,
 // die niemand mehr entgegennimmt.
 define('API_TIMEOUT', providerSetting('api_timeout') !== ''
@@ -202,7 +202,7 @@ define('TRANSACTIONAL_GUARD_MAX_TOTAL', 7.99);
 define('CONTEXT_LEVEL_MAX', 1000);
 
 // Ab diesem eigenen Rspamd-Score gilt Rspamd als zustimmende zweite
-// Quelle. Bewusst hoch: Die Junk-Schwelle liegt bei 6, die Reject-
+// Quelle. Bewusst hoch: Die Junk-Schwelle liegt bei 8, die Reject-
 // Schwelle bei 15 - hier geht es um Post, die Rspamd auch allein schon
 // fuer ziemlich sicheren Muell haelt.
 define('RSPAMD_CONCUR_SCORE', 10.0);
@@ -265,6 +265,10 @@ define('AI_CONFIDENT_CONFIDENCE', 0.90);  // Mindestsicherheit des Modells
 define('AI_CONFIDENT_SCORE', 7.0);        // eigener Punktwert des Modells
 define('AI_CONFIDENT_TOTAL', 15.5);       // angepeilte Gesamtsumme
 
+// Wie viele Zeichen Mailtext das Modell zu sehen bekommt (drei Viertel
+// vom Anfang, ein Viertel vom Ende - siehe promptExcerpt()).
+define('PROMPT_BODY_CHARS', 3000);
+
 define('MAX_PHISHING_POINTS', 10.0); // Phishing/Fraud darf kraeftig beissen, aber
                                      // bewusst UNTER Rspamds Reject-Schwelle (15):
                                      // die KI allein soll nie eine Mail versenken.
@@ -283,7 +287,7 @@ if (!is_array($data)) {
 $requestId = substr(md5(uniqid(mt_rand(), true)), 0, 8);
 $mail = prepareMailContext($data);
 
-if (isInternalMail($mail['from'], $mail['to'])) {
+if (isInternalMail($mail)) {
     respondSuccess(0.0, 'add', 'internal-mail', $requestId);
 }
 
@@ -367,6 +371,7 @@ logStats($requestId, [
     'url_domains' => $mail['url_domains'],
     'struct_flags' => $result['struct_flags'] ?? [],
     'real_conversation' => !empty($result['real_conversation']),
+    'claimed_thread' => !empty($result['claimed_thread']),
     // Wurden von logStats() gelesen, aber nie uebergeben - beide Felder
     // standen deshalb seit ihrer Einfuehrung in JEDER Zeile leer bzw.
     // false, egal was tatsaechlich passiert war. Genau die zwei Felder,
@@ -470,7 +475,7 @@ function prepareMailContext(array $data) {
     $messageId = cleanTextValue($data['message_id'] ?? ($headers['message_id'] ?? ''));
     $messageIdDomain = normalizeHost($data['message_id_domain'] ?? extractDomainFromMessageId($messageId));
 
-    $bodyClean = trim(preg_replace('/\s+/u', ' ', strip_tags($body)));
+    $bodyClean = visibleText($body);
 
     return [
         'body' => $body,
@@ -521,6 +526,9 @@ function prepareMailContext(array $data) {
             'unknown_sender' => !empty($signals['unknown_sender']),
             'freemail_reply_to' => !empty($signals['freemail_reply_to']),
             'reply_to_our_mail' => !empty($signals['reply_to_our_mail']),
+            // Eingeliefert aus dem eigenen Netz (mailcow-Container,
+            // localhost) - siehe isInternalMail().
+            'local_origin' => !empty($signals['local_origin']),
             'suspicious_reply_to' => !empty($signals['suspicious_reply_to']),
             'has_list_unsubscribe' => !empty($signals['has_list_unsubscribe']) || cleanTextValue($headers['list_unsubscribe'] ?? '') !== '',
             'has_html' => !empty($signals['has_html']) || intval($contentStats['html_part_count'] ?? 0) > 0,
@@ -616,18 +624,40 @@ function prepareMailContext(array $data) {
 //  genau so, wie ai-content-filter.lua es immer beschrieben hat.
 // ---------------------------------------------------------------------
 function partOfRealConversation(array $mail) {
-    if (!empty($mail['signals']['reply_to_our_mail'])) {
-        return true;
-    }
+    // Nur was WIR belegen koennen: Rspamds replies-Modul kennt die
+    // Message-IDs unserer ausgehenden Post. Siehe claimsOwnThread() fuer
+    // den schwaecheren Fall.
+    return !empty($mail['signals']['reply_to_our_mail']);
+}
 
-    $ref = $mail['in_reply_to'] !== '' ? $mail['in_reply_to'] : $mail['references'];
+// ---------------------------------------------------------------------
+//  Die Mail BEHAUPTET, auf Post von uns zu antworten: In-Reply-To oder
+//  References nennen eine unserer Domains.
+//
+//  Bis 12.11. zaehlte das in partOfRealConversation() als belegter
+//  Austausch - mit der Begruendung, der Angreifer muesse dafuer die
+//  Message-ID einer echten Mail kennen. Geprueft wurde aber nur der Teil
+//  hinter dem @, und die Domain des Empfaengers kennt jeder, der ihm
+//  schreibt. "In-Reply-To: <x@empfaengerdomain.de>" genuegte, um beide
+//  Reject-Pfade UND den Junk-Floor abzuschalten.
+//
+//  Wegwerfen laesst sich der Hinweis trotzdem nicht: Das replies-Modul
+//  vergisst nach 30 Tagen, und eine echte Antwort auf ein zwei Monate
+//  altes Angebot sieht genau so aus. Deshalb bremst die Behauptung nur
+//  noch das, was sich nicht zuruecknehmen laesst - die Ablehnung. Den
+//  Junk-Ordner und die lokale Einordnung haelt sie nicht mehr auf.
+//
+//  Ohne Domainliste (Datenbank weg, kein Cache) gilt jeder Bezug als
+//  Behauptung: lieber eine Ablehnung zu wenig.
+// ---------------------------------------------------------------------
+function claimsOwnThread(array $mail) {
+    $ref = trim(($mail['in_reply_to'] ?? '') . ' ' . ($mail['references'] ?? ''));
     if ($ref === '') {
         return false;
     }
 
     $localDomains = getLocalDomains();
     if (empty($localDomains)) {
-        // Ohne Domainliste lieber vorsichtig bleiben und wie bisher schuetzen.
         return true;
     }
 
@@ -1894,7 +1924,7 @@ function analyzeLocally(array $mail, $requestId) {
 //  entscheidet spaeter mit ueber den ai-confident-Pfad.
 // ---------------------------------------------------------------------
 function buildUserPrompt(array $mail, array $localContext) {
-    $body = mb_substr($mail['body_clean'], 0, 3000);
+    $body = promptExcerpt($mail['body_clean'], PROMPT_BODY_CHARS);
 
     // Wer die Endmarkierung selbst in die Mail schreibt, koennte den
     // Datenbereich vorzeitig schliessen und den Rest als Anweisung
@@ -2901,10 +2931,14 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
     // ("war die Mail als laufende Konversation eingestuft?") im Nachhinein
     // nicht mehr beantworten, obwohl sie ueber drei Sperren entschied.
     $realConversation = partOfRealConversation($mail);
+    // Nur behauptet, nicht belegt - bremst ausschliesslich die Ablehnung.
+    // Siehe claimsOwnThread().
+    $claimedThread = !$realConversation && claimsOwnThread($mail);
 
     $noTrustSignals = empty($localContext['matched_profile'])
         && $verifiedBrand === ''
-        && !$realConversation;
+        && !$realConversation
+        && !$claimedThread;
 
     // Echte Liste, sauber authentifiziert, kein einziger Strukturbeleg.
     //
@@ -2936,7 +2970,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
     // Eine Sperre bleibt: die Antwort auf unsere EIGENE Post. Dafuer gibt
     // es die fest verdrahtete Richtungs-Ausnahme im Prompt, und eine Regel
     // darf nie den eigenen Schriftwechsel treffen.
-    $ruleTrustGate = $ruleMatched ? !$realConversation : $noTrustSignals;
+    $ruleTrustGate = $ruleMatched ? (!$realConversation && !$claimedThread) : $noTrustSignals;
 
     $rejectEligible = ($policy['may_reject'] || $categoryOverride)
         && ($ruleMatched || $confidence >= 0.80)
@@ -3141,6 +3175,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         // Diese eine Sperre entscheidet ueber rejectEligible,
         // confidentReject UND den Junk-Floor. Sie gehoert ins Log.
         'real_conversation' => $realConversation,
+        'claimed_thread'  => $claimedThread,
         // Leer = kein Treffer, "field" = sauber im JSON, "text" = nur im
         // Begruendungstext. Ohne diese Unterscheidung liess sich am 14.09.
         // nicht sagen, ob das Modell verneint oder nur schlampig geantwortet
@@ -4025,7 +4060,7 @@ function institutionalRolePatterns() {
 //  hat, und setzen dafuer Thread-Header, die auf uns zeigen.
 // ---------------------------------------------------------------------
 function fabricatedTicketClaim(array $mail) {
-    if (partOfRealConversation($mail)) {
+    if (partOfRealConversation($mail) || claimsOwnThread($mail)) {
         return false;
     }
 
@@ -4091,8 +4126,8 @@ function foreignThreadReference(array $mail) {
     if ($mail['in_reply_to'] === '' && $mail['references'] === '') {
         return false;   // das ist der Fall von fakeThreadClaim()
     }
-    if (partOfRealConversation($mail)) {
-        return false;   // der Bezug ist nachweisbar unserer
+    if (partOfRealConversation($mail) || claimsOwnThread($mail)) {
+        return false;   // der Bezug ist unserer, belegt oder behauptet
     }
     // Antwort-an-alle in einer Rundmail: Der Thread gehoert dem Dritten,
     // der die Rundmail geschickt hat - die fremde Message-ID ist dann der
@@ -4797,16 +4832,36 @@ function getLocalDomains() {
     return $domains;
 }
 
-function isInternalMail($from, $to) {
+// ---------------------------------------------------------------------
+//  Interne Post: beide Seiten auf eigenen Domains - UND der Absender ist
+//  es nachweislich.
+//
+//  Bis 12.11. genuegte die From-Kopfzeile. Die schreibt der Absender
+//  selbst: "From: chef@eigene-domain.de" von einem beliebigen Server
+//  draussen galt damit als intern und bekam Score 0, ohne dass das Modell
+//  die Mail je sah - ausgerechnet die Form, in der CEO-Fraud ankommt.
+//  Echte interne Post der eigenen Nutzer ist angemeldet eingeliefert und
+//  wird vom Lua-Modul gar nicht erst hierher geschickt. Uebrig bleiben
+//  Systemmails aus dem eigenen Netz (Quarantaene-Hinweise, Watchdog) -
+//  die erkennt das Lua-Modul an der einliefernden Adresse
+//  ("local_origin") - und Post, fuer die DMARC die eigene Domain
+//  bestaetigt.
+// ---------------------------------------------------------------------
+function isInternalMail(array $mail) {
     $domains = getLocalDomains();
     if (empty($domains)) {
         return false;
     }
 
-    $fromDomain = extractDomainFromAddress($from);
-    $toDomain = extractDomainFromAddress($to);
+    $fromDomain = extractDomainFromAddress($mail['from'] ?? '');
+    $toDomain = extractDomainFromAddress($mail['to'] ?? '');
 
-    return in_array($fromDomain, $domains, true) && in_array($toDomain, $domains, true);
+    if (!in_array($fromDomain, $domains, true) || !in_array($toDomain, $domains, true)) {
+        return false;
+    }
+
+    return !empty($mail['signals']['local_origin'])
+        || ($mail['auth']['dmarc'] ?? '') === 'pass';
 }
 
 function getTrustedSenderProfiles() {
@@ -5680,6 +5735,7 @@ function logStats($requestId, $data) {
         'struct_flags' => normalizeStringList($data['struct_flags'] ?? []),
         // Sperre fuer Reject-Pfade und Junk-Floor zugleich.
         'real_conversation' => !empty($data['real_conversation']),
+        'claimed_thread' => !empty($data['claimed_thread']),
     ];
 
     // Nur bei Absendern, auf die ein Whitelist-Eintrag passt. Eine
@@ -5701,7 +5757,7 @@ function logStats($requestId, $data) {
     // Vielfaches aussagekraeftiger ueber den Inhalt als eine Betreffzeile
     // und wird zum Beurteilen eines Urteils nicht gebraucht.
     if (LOG_MAIL_CONTENT) {
-        $entry['body_preview'] = mb_substr(trim(preg_replace('/\s+/u', ' ', strip_tags($data['body'] ?? ''))), 0, 220);
+        $entry['body_preview'] = mb_substr(visibleText($data['body'] ?? ''), 0, 220);
     }
 
     appendLogLine(STATS_LOG, $entry);
@@ -5764,6 +5820,94 @@ function checkBudget($requestId) {
     file_put_contents(BUDGET_FILE, json_encode($budget), LOCK_EX);
 
     return true;
+}
+
+// ---------------------------------------------------------------------
+//  Der Text, den ein Mensch im Mailprogramm liest.
+//
+//  Bis 12.11. stand hier strip_tags() und sonst nichts. Das entfernt die
+//  Tags, laesst aber deren INHALT stehen - also das komplette Stylesheet
+//  aus <style> und jedes Skript. Bei HTML-Newslettern waren die ersten
+//  paar tausend Zeichen damit CSS, und genau die bekam das Modell. Dazu
+//  klebte es Woerter ueber Absatzgrenzen zusammen ("Hallo</p><p>Welt" ->
+//  "HalloWelt") und liess Entities stehen ("&auml;", "&nbsp;").
+//
+//  Neuere Lua-Fassungen schicken bereits den von Rspamd geparsten Text;
+//  dann findet diese Funktion nichts mehr zu tun und kostet nichts.
+// ---------------------------------------------------------------------
+function visibleText($html) {
+    $text = (string)$html;
+    if ($text === '') {
+        return '';
+    }
+
+    if (strpos($text, '<') !== false) {
+        // Bloecke, deren Inhalt nie angezeigt wird. Bei sehr grossen
+        // Mails kann die Regex-Engine aufgeben (null) - dann lieber mit
+        // dem bisherigen Stand weiter als ohne Text.
+        foreach ([
+            '#<(style|script|head|title|noscript|template)\b[^>]*>.*?</\1\s*>#is',
+            '#<!--.*?-->#s',
+        ] as $pattern) {
+            $stripped = preg_replace($pattern, ' ', $text);
+            if ($stripped !== null) {
+                $text = $stripped;
+            }
+        }
+        // Blockgrenzen sind Wortgrenzen.
+        $spaced = preg_replace('#<(br|/p|/div|/td|/th|/tr|/li|/h[1-6]|/table|hr)\b[^>]*>#i', ' $0', $text);
+        if ($spaced !== null) {
+            $text = $spaced;
+        }
+        $text = strip_tags($text);
+    }
+
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+    // Unsichtbare Fuellzeichen: Vorschautext-Polster in Newslettern
+    // ("&zwnj;&nbsp;" hundertfach) und zerhackte Reizwoerter in Spam.
+    $unpadded = preg_replace('/[\x{00AD}\x{034F}\x{200B}-\x{200F}\x{2060}-\x{2064}\x{FEFF}]/u', '', $text);
+    if ($unpadded !== null) {
+        $text = $unpadded;
+    }
+
+    $collapsed = preg_replace('/[\s\x{00A0}]+/u', ' ', $text);
+    return trim($collapsed !== null ? $collapsed : $text);
+}
+
+// ---------------------------------------------------------------------
+//  Der Ausschnitt fuer das Modell: Anfang UND Ende.
+//
+//  Vorher die ersten 3000 Zeichen. Wer wusste, wo der Schnitt liegt,
+//  schrieb 3000 Zeichen Belangloses voran. Und bei echten Newslettern
+//  steht das, was sie als solche ausweist - Impressum, Abmeldehinweis,
+//  "Sie erhalten diese Mail, weil ..." - am Ende, also genau im
+//  abgeschnittenen Teil.
+//
+//  Lange Tracking-Links werden auf Schema und Host gekuerzt: Sie fuellen
+//  das Budget mit Zeichen, die dem Modell nichts sagen - die Domains
+//  stehen ohnehin in der Zeile "URL-Domains".
+// ---------------------------------------------------------------------
+function promptExcerpt($text, $limit) {
+    $text = (string)$text;
+    $short = preg_replace_callback('#https?://[^\s<>"\']{60,}#iu', function ($m) {
+        $host = parse_url($m[0], PHP_URL_HOST);
+        return is_string($host) && $host !== '' ? 'https://' . $host . '/...' : $m[0];
+    }, $text);
+    if ($short !== null) {
+        $text = $short;
+    }
+
+    $length = mb_strlen($text);
+    if ($length <= $limit) {
+        return $text;
+    }
+
+    $tail = (int)floor($limit / 4);
+    $head = $limit - $tail;
+    return mb_substr($text, 0, $head)
+        . ' [... ' . ($length - $limit) . ' Zeichen ausgelassen ...] '
+        . mb_substr($text, -$tail);
 }
 
 function cleanTextValue($value) {

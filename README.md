@@ -166,9 +166,9 @@ Incoming Email
      |
 Rspamd (Traditional Filters, Score: -10 to 15)
      |
-AI Content Filter (if score between -10.0 and 14.0)
+AI Content Filter (if score between -10.0 and 15.0)
      |
-Internal-mail check (both sides on a local Mailcow domain?) -> skip, score 0
+Internal-mail check (both sides on a local Mailcow domain, sender verified?) -> skip, score 0
      |
 Local precheck (trusted sender profile + strong auth + aligned headers?) -> auto-pass, score 0
      |
@@ -532,7 +532,7 @@ IONOS (Frankfurt/Berlin):
 |---|---|
 | Sender | From header, display name, From/Reply-To/Return-Path domains |
 | Subject | full |
-| Body | plain text, truncated to 3000 characters |
+| Body | visible text only (no markup), 3000 characters taken from start and end |
 | Link domains | up to 15 |
 | Attachment names | filenames only, never the files |
 | Technical signals | Rspamd score, SPF/DKIM/DMARC results, risk/trust flags |

@@ -96,7 +96,7 @@ docker compose logs rspamd-mailcow | grep "AI Filter"
 **Possible reasons (all expected, working as intended):**
 - The mail was sent by one of your own authenticated users (outbound is never analysed)
 - The mail is being re-delivered by your own sieve forwarding. It was analysed when it arrived; forwarding rewrites the envelope and breaks SPF/DKIM, so a second pass would judge the same message on worse evidence and bill a second API call for it
-- Both sender and recipient are on a local Mailcow domain (internal mail)
+- Both sender and recipient are on a local Mailcow domain **and** the sender is verified - DMARC pass, or delivered from our own network (internal mail). A From header naming one of our domains is not enough since 12.11.
 - Sender matched a trusted-sender profile with strong auth and aligned headers/links (local auto-pass)
 - Rspamd score already outside the `skip_score_above`/`skip_score_below` range in `ai-filter-settings.lua` (for the lower bound without learned ham symbols such as `BAYES_HAM`/`LOCAL_FUZZY_WHITE`). This skip is **silent** - it writes nothing to the AI checker's log and nothing to Rspamd's, so a mail that vanished without a trace is the signature of this case. Check the delivered message's `X-Spamd-Result` header for the score that caused it
 - Sender is in the Lua-level whitelist (`whitelist_domains`/`whitelist_senders`)
@@ -136,16 +136,18 @@ echo '{"month":"2025-12","calls":0,"estimated_cost_eur":0}' > \
 
 ### API Timeouts
 
-Increase the timeout constants in `ai-mail-checker.php`:
-```php
-define('API_TIMEOUT', 30);
-define('CONNECT_TIMEOUT', 10);
+The three timeouts have to stay in this order, otherwise Rspamd aborts the
+whole task and soft-rejects the mail:
+
+```
+api_timeout  <  http_timeout  <  task_timeout (25 s on mailcow)
 ```
 
-And in `ai-filter-settings.lua`:
-```lua
-http_timeout = 45.0,
-```
+Use `ai-filter-model.sh --timeout` rather than editing values by hand - it
+sets `api_timeout` in `provider.conf` and tells you when `http_timeout` in
+`ai-filter-settings.lua` (default `22.0`) or Rspamd's `task_timeout` have to
+move with it. See
+[CONFIGURATION.md](CONFIGURATION.md) for the details.
 
 ### API/network errors
 
@@ -186,9 +188,10 @@ service's `environment:` section in `docker-compose.override.yml` (next to
 `TZ`) and restart the container. Check `errors.log` for
 "Failed to fetch local domains" if it's set but still failing.
 
-The same domain list also decides `partOfRealConversation()`, and without it
-that function protects every mail carrying any `In-Reply-To` header - which
-switches off both reject paths *and* the junk floor at once. Since 16.09. the
+The same domain list also decides `claimsOwnThread()`, and without it that
+function treats every mail carrying any `In-Reply-To` header as a claimed
+thread - which switches off both reject paths (since 12.11. no longer the
+junk floor). Since 16.09. the
 last successfully read list is cached to
 `data/logs/ai-checker/local_domains.json` and reused on a DB failure, so an
 outage no longer silently disarms the filter. `errors.log` then says "Using
@@ -276,7 +279,7 @@ docker compose logs -f rspamd-mailcow | grep "AI Filter"
 | `api-error-http-NNN` | AI API call failed | Check IONOS API status/key; fails open (score 0) |
 | `budget-exceeded` | Monthly budget limit reached | Raise `MONTHLY_BUDGET_EUR` or wait for next month; fails open (score 0) |
 | `parse-error` | AI returned invalid JSON | Usually transient, check error log |
-| `internal-mail` | Both sender and recipient are on a local Mailcow domain | Expected, not an error |
+| `internal-mail` | Both sender and recipient are on a local Mailcow domain, sender verified (DMARC or own network) | Expected, not an error |
 | `trusted-transactional` | Local auto-pass via a trusted sender profile | Expected, not an error |
 | `Reject allowed` / `Would reject (shadow mode)` in errors.log | A mail qualified for one of the two reject paths | Expected, not an error - see [CONFIGURATION.md](CONFIGURATION.md#two-paths-to-the-reject-threshold). Read it, this is the only trace a rejected mail leaves |
 | `Undefined constant "..."` in php-errors.log, every mail failing | A `define()` was moved below code that runs before it - `define()` only executes when its line is reached, unlike function declarations | Move the `define()` above the router / any code path that can call it |

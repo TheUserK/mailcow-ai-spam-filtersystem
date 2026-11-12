@@ -589,22 +589,52 @@ rspamd_config:register_symbol({
     end
 
     -- Body text + part counts
+    --
+    -- Geschickt wird, was der Empfaenger SIEHT. Bis 12.11. wurden alle
+    -- Textteile roh hintereinandergehaengt: erst text/plain, dann das
+    -- HTML samt Tags und Stylesheet. Der Checker schneidet nach 3000
+    -- Zeichen ab - bei einem reinen HTML-Newsletter bekam das Modell so
+    -- teils CSS statt Inhalt zu lesen, und bei multipart/alternative nur
+    -- den Textteil, den kein Mailprogramm anzeigt. Wer dort Harmloses
+    -- hineinschreibt und die eigentliche Botschaft ins HTML legt, war
+    -- damit unsichtbar.
+    --
+    -- Rspamd hat das HTML bereits geparst: get_content('content') liefert
+    -- den Text ohne Tags. Faellt das aus irgendeinem Grund aus, bleibt es
+    -- beim Rohinhalt - der Checker bereinigt HTML auch selbst.
     local body_text = ''
+    local plain_text = ''
+    local html_text = ''
     local text_part_count = 0
     local html_part_count = 0
     local text_parts = task:get_text_parts()
     if text_parts then
       for _, part in ipairs(text_parts) do
-        local content = part:get_content('raw_utf')
-        if content then
-          body_text = body_text .. tostring(content)
-        end
         if part:is_html() then
           html_part_count = html_part_count + 1
+          local ok, content = pcall(part.get_content, part, 'content')
+          if not ok or not content then
+            content = part:get_content('raw_utf')
+          end
+          if content then
+            html_text = html_text .. tostring(content) .. '\n'
+          end
         else
           text_part_count = text_part_count + 1
+          local content = part:get_content('raw_utf')
+          if content then
+            plain_text = plain_text .. tostring(content) .. '\n'
+          end
         end
       end
+    end
+
+    -- Der HTML-Teil gewinnt, sobald er nennenswert Text traegt. Besteht er
+    -- praktisch nur aus Bildern, ist der Textteil die bessere Auskunft.
+    if #(html_text:gsub('%s+', '')) >= 40 or plain_text == '' then
+      body_text = html_text
+    else
+      body_text = plain_text
     end
 
     if body_text == '' then
@@ -733,6 +763,16 @@ rspamd_config:register_symbol({
     -- Adressgenaue Absender-Blockliste (siehe sender_blocklist_symbols).
     local sender_blocklisted = any_symbol(task, sender_blocklist_symbols)
 
+    -- Eingeliefert aus dem eigenen Netz (mailcow-Container, localhost)?
+    -- Der Checker behandelt Post zwischen zwei eigenen Domains nur dann
+    -- als intern, wenn das hier zutrifft oder DMARC die Domain bestaetigt.
+    -- Die From-Kopfzeile allein beweist nichts - die schreibt der Absender.
+    local local_origin = false
+    local from_ip = task:get_from_ip()
+    if from_ip and from_ip:is_valid() and from_ip:is_local() then
+      local_origin = true
+    end
+
     local request_data = {
       from = header_str(task, 'From') ~= '' and header_str(task, 'From') or from_email,
       to = to_addr,
@@ -785,6 +825,7 @@ rspamd_config:register_symbol({
         known_sender = known_sender,
         unknown_sender = unknown_sender,
         reply_to_our_mail = is_reply_to_us,
+        local_origin = local_origin,
       },
       content_stats = {
         body_length = #body_text,

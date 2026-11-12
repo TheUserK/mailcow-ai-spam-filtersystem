@@ -86,9 +86,11 @@ strong signs the account is abused (`whitelistAbuse()`); if so, the
 whitelist steps aside and everything above applies unchanged. See
 [CONFIGURATION.md](CONFIGURATION.md#sender-whitelist-ai-filter-whitelistsh).
 
-Either way, no trusted-sender match and no reply to an existing thread (a
-forgeable `In-Reply-To` header is not enough by itself - see
-`partOfRealConversation()`) are required. A single wrong verdict therefore
+Either way, no trusted-sender match and no reply to an existing thread are
+required. Only Rspamd's `REPLY` symbol proves a thread
+(`partOfRealConversation()`). An `In-Reply-To` that merely names one of our
+domains is a claim anyone can write (`claimsOwnThread()`): since 12.11. it
+still blocks a reject, but no longer the junk floor. A single wrong verdict therefore
 cannot throw mail away - a second, independent source always has to agree.
 See [CONFIGURATION.md](CONFIGURATION.md#two-paths-to-the-reject-threshold)
 for the full mechanics.
@@ -105,7 +107,7 @@ Incoming Email
 | Score: -10 to 15    |
 +----------+----------+
            |
-           v (Postfilter, if score -10.0 to 14.0)
+           v (Postfilter, if score -10.0 to 15.0)
 +---------------------+
 | AI_CONTENT_FILTER   |
 | Lua Module          |
@@ -121,7 +123,8 @@ Incoming Email
 |  .php)              |
 +----------+----------+
            |
-           +--> internal mail (both sides local)?      -> score 0, done
+           +--> internal mail (both sides local AND
+           |    sender verified)?                      -> score 0, done
            |
            +--> trusted sender profile + strong auth +
            |    aligned headers/links?                 -> local auto-pass, score 0, done
