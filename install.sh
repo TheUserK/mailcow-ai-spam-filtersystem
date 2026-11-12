@@ -129,12 +129,71 @@ count_compose_services() {
 # Merkmale des aktuellen Stands: Build-Context zeigt auf data/ai-checker,
 # PHP_CLI_SERVER_WORKERS ist gesetzt, der Container ist gehaertet
 # (read_only) und traegt kein Datenbank-Passwort mehr.
+#
+# Geprueft wird nur der ai-checker-Block selbst: Ein fremder Dienst in
+# derselben Datei darf MAILCOW_DBPASS haben oder kein read_only - das
+# sagt ueber unseren nichts.
+checker_block() {
+    awk '
+        /^  ai-checker:[[:space:]]*$/ { f = 1; print; next }
+        f && (/^  [^[:space:]]/ || /^[^[:space:]#]/) { f = 0 }
+        f { print }
+    ' "$1"
+}
 override_is_current() {
-    local f="$1"
-    grep -q 'context:[[:space:]]*\./data/ai-checker' "$f" \
-        && grep -q 'PHP_CLI_SERVER_WORKERS' "$f" \
-        && grep -q 'read_only:[[:space:]]*true' "$f" \
-        && ! grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' "$f"
+    local block
+    block=$(checker_block "$1")
+    grep -q 'context:[[:space:]]*\./data/ai-checker' <<<"$block" \
+        && grep -q 'PHP_CLI_SERVER_WORKERS' <<<"$block" \
+        && grep -q 'read_only:[[:space:]]*true' <<<"$block" \
+        && ! grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' <<<"$block"
+}
+
+# Ersetzt in einer Override-Datei NUR den ai-checker-Block durch den aus
+# unserer Vorlage. Alle anderen Dienste, Netzwerke und Volumes bleiben
+# Zeile fuer Zeile stehen.
+#
+# Der Block beginnt bei "  ai-checker:" und endet vor dem naechsten
+# Schluessel auf Dienst-Ebene (zwei Leerzeichen) oder auf oberster Ebene.
+# Das Ergebnis wird mit "docker compose config" geprueft, bevor es die
+# Datei ersetzt - schlaegt das fehl, bleibt alles beim Alten.
+#   $1 = vorhandene Datei, $2 = Vorlage
+merge_checker_block() {
+    local current="$1" template="$2" merged
+    merged=$(mktemp "$current.merge.XXXXXX") || return 1
+
+    awk -v tpl="$template" '
+        BEGIN {
+            while ((getline line < tpl) > 0) {
+                if (line ~ /^  ai-checker:[[:space:]]*$/) grab = 1
+                else if (grab && line ~ /^[^[:space:]#]/) grab = 0
+                if (grab) block = block line "\n"
+            }
+            close(tpl)
+        }
+        /^  ai-checker:[[:space:]]*$/ { printf "%s", block; skip = 1; done = 1; next }
+        # Ende des alten Blocks: naechster Dienst, ein Kommentar auf
+        # Dienst-Ebene (gehoert zum naechsten Dienst) oder oberste Ebene.
+        skip && (/^  [^[:space:]]/ || /^[^[:space:]#]/) { skip = 0; print "" }
+        !skip { print }
+        END { if (!done || block == "") exit 3 }
+    ' "$current" > "$merged" || { rm -f "$merged"; return 1; }
+
+    # Gueltiges Compose? Geprueft wird im Verbund mit mailcows eigener
+    # Datei, so wie docker compose sie spaeter auch liest.
+    local check_cmd=""
+    if docker compose version >/dev/null 2>&1; then check_cmd="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then check_cmd="docker-compose"; fi
+    if [[ -n "$check_cmd" && -f docker-compose.yml ]]; then
+        if ! $check_cmd -f docker-compose.yml -f "$merged" config -q >/dev/null 2>&1; then
+            rm -f "$merged"
+            return 2
+        fi
+    fi
+
+    # Rechte und Besitzer der bisherigen Datei behalten.
+    cat "$merged" > "$current"
+    rm -f "$merged"
 }
 
 # === MAIN LOGIC ===
@@ -507,13 +566,14 @@ if [[ -f "docker-compose.override.yml" ]]; then
             # nicht mitbringt - die Interne-Mail-Erkennung war dann dauerhaft
             # kaputt, ohne dass es irgendwo aufgefallen waere.
             echo -e "${YELLOW}[INFO]${NC} docker-compose.override.yml is outdated:"
-            grep -q 'context:[[:space:]]*\./data/ai-checker' docker-compose.override.yml \
+            CHECKER_BLOCK=$(checker_block docker-compose.override.yml)
+            grep -q 'context:[[:space:]]*\./data/ai-checker' <<<"$CHECKER_BLOCK" \
                 || echo "         - build context does not point at data/ai-checker (pdo_mysql missing)"
-            grep -q 'PHP_CLI_SERVER_WORKERS' docker-compose.override.yml \
+            grep -q 'PHP_CLI_SERVER_WORKERS' <<<"$CHECKER_BLOCK" \
                 || echo "         - PHP_CLI_SERVER_WORKERS not set (requests are serialised)"
-            grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' docker-compose.override.yml \
+            grep -q '^[[:space:]]*-[[:space:]]*MAILCOW_DBPASS' <<<"$CHECKER_BLOCK" \
                 && echo "         - the container still carries the mailcow database password (no longer needed)"
-            grep -q 'read_only:[[:space:]]*true' docker-compose.override.yml \
+            grep -q 'read_only:[[:space:]]*true' <<<"$CHECKER_BLOCK" \
                 || echo "         - container hardening missing (read-only filesystem, no capabilities)"
 
             OVERRIDE_SERVICES=$(count_compose_services docker-compose.override.yml)
@@ -535,10 +595,31 @@ if [[ -f "docker-compose.override.yml" ]]; then
                     echo -e "${YELLOW}[WARN]${NC} Keeping the old file - the points listed above stay as they are."
                 fi
             else
-                # Fremde Dienste in der Datei: nichts automatisch anfassen.
-                echo "       The file defines $OVERRIDE_SERVICES services, so it is NOT touched"
-                echo "       automatically. Merge the ai-checker block by hand from:"
-                echo "         $SCRIPT_DIR/files/docker-compose.override.yml"
+                # Fremde Dienste in der Datei: Die bleiben unangetastet,
+                # ersetzt wird ausschliesslich der ai-checker-Block.
+                OVERRIDE_BACKUP="docker-compose.override.yml.backup.$(date +%s)"
+                cp -p docker-compose.override.yml "$OVERRIDE_BACKUP"
+                echo "       The file defines $OVERRIDE_SERVICES services. Only the ai-checker block"
+                echo "       will be replaced; everything else stays as it is."
+                echo "       Backup: $OVERRIDE_BACKUP"
+                if [[ "${FORCE_REPLACE:-}" == "true" ]]; then
+                    upd="y"
+                else
+                    read -p "Replace the ai-checker block? (Y/n): " upd
+                fi
+                if [[ ! $upd =~ ^[Nn]$ ]]; then
+                    if merge_checker_block docker-compose.override.yml "$SCRIPT_DIR/files/docker-compose.override.yml" \
+                        && override_is_current docker-compose.override.yml; then
+                        echo -e "${GREEN}[OK]${NC} ai-checker block updated, other services untouched (backup kept)"
+                    else
+                        cp -p "$OVERRIDE_BACKUP" docker-compose.override.yml
+                        echo -e "${YELLOW}[WARN]${NC} Could not update the block safely - the file is unchanged."
+                        echo "       Merge the ai-checker block by hand from:"
+                        echo "         $SCRIPT_DIR/files/docker-compose.override.yml"
+                    fi
+                else
+                    echo -e "${YELLOW}[WARN]${NC} Keeping the old file - the points listed above stay as they are."
+                fi
             fi
         fi
     else
