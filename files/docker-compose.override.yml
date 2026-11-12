@@ -11,7 +11,9 @@ services:
       - ./data/ai-checker:/app:ro
       - ./data/logs/ai-checker:/var/log/ai-checker:rw
     working_dir: /app
-    command: php -S 0.0.0.0:8080 router.php
+    # session.upload_progress is switched off: the checker uses no sessions
+    # and takes no uploads, so the feature is only attack surface.
+    command: php -d session.upload_progress.enabled=0 -S 0.0.0.0:8080 router.php
     networks:
       mailcow-network:
         aliases:
