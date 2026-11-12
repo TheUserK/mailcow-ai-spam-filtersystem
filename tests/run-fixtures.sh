@@ -66,5 +66,6 @@ fi
 # tragen ihre Eintraege selbst ein.
 export AI_FILTER_RELATIONSHIP_DB="$tmp/relationship.sqlite"
 export AI_FILTER_RELATIONSHIP_MODE=on
+export AI_FILTER_VERDICT_CACHE_DB="$tmp/verdict_cache.sqlite"
 
 php -r 'require $argv[1]; require $argv[2];' "$tmp/lib.php" "$root/tests/fixtures.php"

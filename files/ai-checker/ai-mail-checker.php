@@ -304,6 +304,28 @@ define('FEEDBACK_MAX_AGE_DAYS', 180);
 define('HISTORY_MIN_INBOX', 3);
 define('HISTORY_MIN_DAYS', 21);
 
+// ---------------------------------------------------------------------
+//  Urteils-Cache: dieselbe Mail, dasselbe Urteil.
+//
+//  Eine Rundmail an zwanzig Postfaecher waren zwanzig Modellaufrufe - und
+//  nicht immer zwanzigmal dieselbe Antwort: Am 19.09. bekam dieselbe
+//  Alfahosting-Mail binnen elf Minuten "transactional" und "spam".
+//  temperature=0 verhindert das nicht.
+//
+//  Gespeichert wird die ANTWORT DES MODELLS, nicht der Score. Der wird
+//  fuer jede Mail neu gerechnet - Rspamd-Score, Empfaenger-Feedback und
+//  Belege unterscheiden sich von Postfach zu Postfach. Der Schluessel ist
+//  ein Hash ueber genau das, was das Modell zu sehen bekaeme (ohne die
+//  Zeile mit dem Rspamd-Score, die bei jeder Zustellung leicht schwankt),
+//  das Modell und den Stand dieser Datei: Ein Update oder Modellwechsel
+//  entwertet den Cache von selbst. In der Datei stehen nur Hash, Urteil
+//  und Zeitpunkt - kein Absender, kein Empfaenger, kein Mailtext.
+//
+//  0 Stunden schaltet ihn ab.
+// ---------------------------------------------------------------------
+define('VERDICT_CACHE_DB', getenv('AI_FILTER_VERDICT_CACHE_DB') ?: '/var/log/ai-checker/verdict_cache.sqlite');
+define('VERDICT_CACHE_HOURS', 24);
+
 // Wie viele Zeichen Mailtext das Modell zu sehen bekommt (drei Viertel
 // vom Anfang, ein Viertel vom Ende - siehe promptExcerpt()).
 define('PROMPT_BODY_CHARS', 3000);
@@ -371,17 +393,26 @@ if (!empty($localResult['handled'])) {
     );
 }
 
-if (!checkBudget($requestId)) {
-    // Ohne KI-Urteil entscheiden fuer die Whitelist nur die lokalen
-    // Belege - das Budget darf keine freigegebene Post kosten.
-    $budget = applyWhitelistDecision(
-        neutralResponse('budget-exceeded'),
-        whitelistDecision($mail, $localResult, neutralResponse('budget-exceeded'))
-    );
-    respondSuccess(0.0, 'add', 'budget-exceeded', $requestId, $budget['whitelist'] ?? null);
-}
+// Hat das Modell genau diese Mail in den letzten Stunden schon beurteilt?
+// Dann kostet sie weder einen Aufruf noch Budget - siehe VERDICT_CACHE_HOURS.
+$cachedAnalysis = verdictCacheGet(verdictCacheKey($mail, $localResult));
 
-$result = analyzeWithAI($mail, $localResult, $requestId);
+if ($cachedAnalysis !== null) {
+    $result = scoreAiAnalysis($mail, $localResult, $cachedAnalysis, $requestId);
+    $result['analysis_source'] = 'ai-cache';
+} else {
+    if (!checkBudget($requestId)) {
+        // Ohne KI-Urteil entscheiden fuer die Whitelist nur die lokalen
+        // Belege - das Budget darf keine freigegebene Post kosten.
+        $budget = applyWhitelistDecision(
+            neutralResponse('budget-exceeded'),
+            whitelistDecision($mail, $localResult, neutralResponse('budget-exceeded'))
+        );
+        respondSuccess(0.0, 'add', 'budget-exceeded', $requestId, $budget['whitelist'] ?? null);
+    }
+
+    $result = analyzeWithAI($mail, $localResult, $requestId);
+}
 $result = applyWhitelistDecision($result, whitelistDecision($mail, $localResult, $result));
 recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $result['score']);
 
@@ -2855,6 +2886,10 @@ PROMPT;
             'confidence' => $analysis['confidence'] ?? null,
             'category' => $analysis['category'] ?? null,
         ]);
+    } else {
+        // Nur vollstaendige Antworten merken - eine zusammengeflickte soll
+        // sich nicht auf die naechsten Empfaenger vererben.
+        verdictCachePut(verdictCacheKey($mail, $localContext), $analysis);
     }
 
     return scoreAiAnalysis($mail, $localContext, $analysis, $requestId);
@@ -4890,6 +4925,78 @@ function scoreFromAi($probability, $confidence, $category = '') {
 // =====================================================================
 //  HELFER
 // =====================================================================
+// ---------------------------------------------------------------------
+//  Urteils-Cache (siehe VERDICT_CACHE_HOURS). Jeder Fehler hier heisst
+//  nur: kein Treffer, das Modell wird gefragt wie bisher.
+// ---------------------------------------------------------------------
+function verdictCacheDb() {
+    static $db = false;
+    if ($db !== false) {
+        return $db;
+    }
+    $db = null;
+    if (VERDICT_CACHE_HOURS <= 0 || !extension_loaded('pdo_sqlite')) {
+        return $db;
+    }
+    try {
+        $fresh = !file_exists(VERDICT_CACHE_DB);
+        $pdo = new PDO('sqlite:' . VERDICT_CACHE_DB);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('PRAGMA busy_timeout = 1000');
+        $pdo->exec('CREATE TABLE IF NOT EXISTS verdicts (
+            key TEXT PRIMARY KEY, analysis TEXT NOT NULL, ts INTEGER NOT NULL)');
+        if ($fresh) {
+            @chmod(VERDICT_CACHE_DB, LOG_FILE_MODE);
+        }
+        $db = $pdo;
+    } catch (Exception $e) {
+        logError('system', 'Verdict cache unavailable: ' . $e->getMessage());
+        $db = null;
+    }
+    return $db;
+}
+
+function verdictCacheKey(array $mail, array $localContext) {
+    $prompt = buildUserPrompt($mail, $localContext);
+    // Der Rspamd-Score schwankt zwischen zwei Zustellungen derselben Mail
+    // um Zehntel (Bayes, Fuzzy) und wuerde jeden Treffer verhindern.
+    $text = preg_replace('/^Rspamd-Score: .*$/m', '', $prompt['text']);
+    return hash('sha256', AI_MODEL . "\n" . AI_REASONING_EFFORT . "\n" . (string)@filemtime(__FILE__) . "\n" . $text);
+}
+
+function verdictCacheGet($key) {
+    $db = verdictCacheDb();
+    if (!$db) {
+        return null;
+    }
+    try {
+        $st = $db->prepare('SELECT analysis FROM verdicts WHERE key = ? AND ts >= ?');
+        $st->execute([$key, time() - VERDICT_CACHE_HOURS * 3600]);
+        $raw = $st->fetchColumn();
+        $analysis = is_string($raw) ? json_decode($raw, true) : null;
+        return (is_array($analysis) && isset($analysis['spam_probability'])) ? $analysis : null;
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
+function verdictCachePut($key, array $analysis) {
+    $db = verdictCacheDb();
+    if (!$db) {
+        return;
+    }
+    try {
+        $db->prepare('INSERT OR REPLACE INTO verdicts (key, analysis, ts) VALUES (?, ?, ?)')
+           ->execute([$key, json_encode($analysis, JSON_UNESCAPED_UNICODE), time()]);
+        // Gelegentlich aufraeumen statt bei jeder Mail.
+        if (mt_rand(1, 200) === 1) {
+            $db->prepare('DELETE FROM verdicts WHERE ts < ?')->execute([time() - VERDICT_CACHE_HOURS * 3600]);
+        }
+    } catch (Exception $e) {
+        // Kein Cache ist kein Fehler.
+    }
+}
+
 // ---------------------------------------------------------------------
 //  Beziehungs-Datenbank (siehe RELATIONSHIP_MODE). Jeder Fehler hier ist
 //  folgenlos: ohne Datenbank verhaelt sich der Filter wie vorher.

@@ -236,6 +236,7 @@ Incoming Email
 |       +-- stats.log               # Analysis results
 |       +-- errors.log              # Error events
 |       +-- monthly_budget.json     # Budget tracking
+|       +-- verdict_cache.sqlite    # model answers for identical mails, 24 h (hash + verdict only)
 |       +-- relationship.sqlite     # recipient feedback + sender history (see CONFIGURATION.md)
 +-- docker-compose.override.yml     # Container definition
 ```
@@ -298,6 +299,7 @@ the filter via `loadfile()` rather than being auto-loaded - keeping it out of
 
 - Monthly limit configurable (default: EUR 50, `MONTHLY_BUDGET_EUR` constant)
 - Per-call cost tracking against `AVG_COST_PER_CALL_EUR`
+- An identical mail to further mailboxes reuses the model's answer for 24 h (`VERDICT_CACHE_HOURS`) and costs no call
 - Auto-reset on new month
 - Budget exceeded: mail passes through with score 0 (fail-open)
 

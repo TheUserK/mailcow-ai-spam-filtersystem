@@ -2298,6 +2298,27 @@ function runFixtures() {
     $checkScore(relationshipEffect(array_replace($r, ['junked' => true]), 'spam', [], true, true) === '',
         'a proven conversation is never force-floored');
 
+    // Urteils-Cache: dieselbe Mail an ein zweites Postfach derselben
+    // Domain trifft, auch bei leicht anderem Rspamd-Score; anderer Inhalt
+    // oder anderer Absender nicht.
+    $mailA = prepareMailContext($news);
+    $ctxA = analyzeLocally($mailA, 'synthetic');
+    $keyA = verdictCacheKey($mailA, $ctxA);
+    $checkScore(verdictCacheGet($keyA) === null, 'verdict cache starts empty');
+    verdictCachePut($keyA, $newsVerdict);
+    $checkScore(verdictCacheGet($keyA)['category'] === 'newsletter', 'verdict cache returns the stored analysis');
+    $mailB = prepareMailContext(array_replace($news, ['rspamd_score' => 0.4]));
+    $checkScore(verdictCacheKey($mailB, analyzeLocally($mailB, 'synthetic')) === $keyA,
+        'a different rspamd score is the same mail');
+    $mailC = prepareMailContext(array_replace($news, ['body' => 'Ganz anderer Inhalt.']));
+    $checkScore(verdictCacheKey($mailC, analyzeLocally($mailC, 'synthetic')) !== $keyA,
+        'different content is a different mail');
+    $mailD = prepareMailContext(array_replace($news, ['from' => 'news@anderer.test', 'from_email' => 'news@anderer.test']));
+    $checkScore(verdictCacheKey($mailD, analyzeLocally($mailD, 'synthetic')) !== $keyA,
+        'a different sender is a different mail');
+    verdictCacheDb()->exec('UPDATE verdicts SET ts = ts - ' . (VERDICT_CACHE_HOURS * 3600 + 60));
+    $checkScore(verdictCacheGet($keyA) === null, 'verdict cache expires');
+
     // Mailtext: was der Empfaenger sieht, nicht das Stylesheet.
     $html = '<html><head><style>.a{color:#fff;font-family:Arial}</style><title>x</title></head>'
         . '<body><!-- kommentar --><p>Hallo</p><p>Sch&ouml;ne&nbsp;Gr&uuml;&szlig;e</p>'
