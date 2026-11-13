@@ -16,6 +16,9 @@
 //
 //  Daraus:
 //    INBOX + Spam-Kennzeichen   -> "rescued"  (aus dem Junk zurueckgeholt)
+//    INBOX ohne Kennzeichen, aber vom Checker als Junk/Reject vermerkt
+//                               -> "rescued"  (aus der Quarantaene
+//                                  freigegeben - siehe recordFlagged())
 //    JUNK  ohne Spam-Kennzeichen -> "junked"   (von Hand hineingeschoben)
 //  Alles andere sagt nichts und wird verworfen. Gespeichert wird je
 //  Postfach und Absender nur die juengste Entscheidung.
@@ -73,7 +76,15 @@ function feedbackExcluded($rcpt) {
 // dass keine kommt: die angeforderte Reihenfolge mit vorangestelltem
 // "username".
 $columns = ['username' => 1, 'user' => 2, 'date.saved' => 3,
-            'hdr.x-spam-flag' => 4, 'hdr.x-spam' => 5, 'hdr.from' => 6];
+            'hdr.x-spam-flag' => 4, 'hdr.x-spam' => 5, 'hdr.message-id' => 6, 'hdr.from' => 7];
+
+// Fuer die Quarantaene-Erkennung wird die Datenbank auch im Probelauf
+// gelesen - geschrieben wird dort nichts.
+$lookupDb = relationshipDb();
+$flaggedLookup = $lookupDb
+    ? $lookupDb->prepare('SELECT ts FROM flagged WHERE rcpt = ? AND mid = ? AND sender = ?')
+    : null;
+$releases = [];   // [rcpt][sender] => ts
 $column = function (array $fields, $name) use (&$columns) {
     return isset($columns[$name], $fields[$columns[$name]]) ? $fields[$columns[$name]] : '';
 };
@@ -118,12 +129,27 @@ while (($line = fgets(STDIN)) !== false) {
     }
 
     $verdict = '';
+    $sender = relationshipSenderKey($from);
     if ($folder === 'INBOX' && $flagged) {
         $verdict = 'rescued';
     } elseif ($folder === 'JUNK' && !$flagged) {
         $verdict = 'junked';
+    } elseif ($folder === 'INBOX' && $flaggedLookup && $sender !== '') {
+        // Ohne Kennzeichen im Posteingang, obwohl der Checker genau diese
+        // Mail in Junk oder Ablehnung geschoben hatte: freigegeben.
+        $mid = messageIdHash(feedbackUnescape($column($fields, 'hdr.message-id')));
+        if ($mid !== '') {
+            try {
+                $flaggedLookup->execute([$rcpt, $mid, $sender]);
+                if ($flaggedLookup->fetchColumn() !== false) {
+                    $verdict = 'rescued';
+                    $releases[$rcpt][$sender] = $ts;
+                }
+            } catch (Exception $e) {
+                // Ohne Abgleich bleibt es bei "kein Urteil".
+            }
+        }
     }
-    $sender = relationshipSenderKey($from);
     // Post von sich selbst oder aus der eigenen Domain ist kein Urteil
     // ueber einen Absender.
     if ($verdict === '' || $sender === '' || $sender === $rcpt
@@ -131,7 +157,8 @@ while (($line = fgets(STDIN)) !== false) {
         continue;
     }
     if (!isset($found[$rcpt][$sender]) || $found[$rcpt][$sender]['ts'] < $ts) {
-        $found[$rcpt][$sender] = ['verdict' => $verdict, 'ts' => $ts];
+        $found[$rcpt][$sender] = ['verdict' => $verdict, 'ts' => $ts,
+            'released' => isset($releases[$rcpt][$sender]) && $releases[$rcpt][$sender] === $ts];
     }
 }
 
@@ -145,14 +172,16 @@ foreach ($found as $rcpt => $senders) {
     if ($inbox >= 5 && $inbox > ($flaggedJunk[$rcpt] ?? 0)) {
         $skipped[] = $rcpt;
         foreach ($senders as $sender => $entry) {
-            if ($entry['verdict'] === 'rescued') {
+            // Eine Freigabe aus der Quarantaene bleibt gueltig: Die haengt
+            // nicht am Kennzeichen, das dieses Postfach liegen laesst.
+            if ($entry['verdict'] === 'rescued' && empty($entry['released'])) {
                 unset($found[$rcpt][$sender]);
             }
         }
     }
 }
 
-$counts = ['rescued' => 0, 'junked' => 0];
+$counts = ['rescued' => 0, 'junked' => 0, 'released' => 0];
 $db = $dryRun ? null : relationshipDb();
 if (!$dryRun && !$db) {
     fwrite(STDERR, "Beziehungs-Datenbank nicht verfuegbar (RELATIONSHIP_MODE=" . RELATIONSHIP_MODE . ")\n");
@@ -168,10 +197,18 @@ if ($db) {
 foreach ($found as $rcpt => $senders) {
     foreach ($senders as $sender => $entry) {
         $counts[$entry['verdict']]++;
+        if (!empty($entry['released'])) {
+            $counts['released']++;
+        }
         if ($dryRun) {
-            echo $entry['verdict'], "\t", $rcpt, "\t", $sender, "\t", date('Y-m-d', $entry['ts']), "\n";
+            echo $entry['verdict'], "\t", $rcpt, "\t", $sender, "\t", date('Y-m-d', $entry['ts']),
+                !empty($entry['released']) ? "\taus Quarantaene freigegeben" : '', "\n";
         } else {
             $upsert->execute([$rcpt, $sender, $entry['verdict'], $entry['ts']]);
+            if (!empty($entry['released'])) {
+                $db->prepare('INSERT OR IGNORE INTO released (rcpt, sender, ts, noted) VALUES (?, ?, ?, ?)')
+                   ->execute([$rcpt, $sender, $entry['ts'], time()]);
+            }
         }
     }
 }
@@ -180,12 +217,16 @@ if ($db) {
     // ueber einem Jahr nichts mehr kam.
     $db->prepare('DELETE FROM feedback WHERE ts < ?')->execute([time() - FEEDBACK_MAX_AGE_DAYS * 86400]);
     $db->prepare('DELETE FROM history WHERE last_seen < ?')->execute([time() - 400 * 86400]);
+    // Quarantaene haelt mailcow 30 Tage vor - laenger braucht es die
+    // Fingerabdruecke nicht.
+    $db->prepare('DELETE FROM flagged WHERE ts < ?')->execute([time() - 45 * 86400]);
+    $db->prepare('DELETE FROM released WHERE noted < ?')->execute([time() - FEEDBACK_MAX_AGE_DAYS * 86400]);
     $db->commit();
 }
 
 fwrite(STDERR, sprintf(
-    "%d Mails gelesen: %d Absender zurueckgeholt, %d von Hand aussortiert%s\n",
-    $lines, $counts['rescued'], $counts['junked'], $dryRun ? ' (nur Anzeige, nichts gespeichert)' : ''
+    "%d Mails gelesen: %d Absender zurueckgeholt (davon %d aus der Quarantaene freigegeben), %d von Hand aussortiert%s\n",
+    $lines, $counts['rescued'], $counts['released'], $counts['junked'], $dryRun ? ' (nur Anzeige, nichts gespeichert)' : ''
 ));
 if ($undated > 0) {
     fwrite(STDERR, "Hinweis: bei $undated Mails war das Ablagedatum nicht lesbar - dort gilt der heutige Tag\n");

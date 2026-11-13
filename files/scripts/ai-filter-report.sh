@@ -216,6 +216,34 @@ render_missing_context() {
     return 0
 }
 
+# Was Empfaenger aus mailcows Quarantaene freigegeben haben.
+#
+# Jede Freigabe ist ein Fehlurteil, dem jemand ausdruecklich widersprochen
+# hat - deutlicher wird es nicht. Erkannt wird sie nachts von
+# ai-filter-feedback.sh (siehe recordFlagged() im Checker); hier steht, was
+# seit dem letzten Report dazugekommen ist. Der Absender gilt fuer dieses
+# Postfach danach als erwuenscht - wer das nicht will, loescht den Eintrag
+# mit ai-filter-feedback.sh --forget.
+render_releases() {
+    local db="data/logs/ai-checker/relationship.sqlite" out
+    [[ -f "$db" ]] || return 1
+    command -v sqlite3 >/dev/null || return 1
+    out=$(sqlite3 -separator $'\t' "$db" "
+        SELECT strftime('%d.%m. %H:%M', ts, 'unixepoch', 'localtime'),
+               substr(rcpt, 1, 3) || '***' || substr(rcpt, instr(rcpt, '@')),
+               sender
+        FROM released
+        WHERE noted >= strftime('%s', 'now', '-$DAYS days')
+        ORDER BY ts" 2>/dev/null \
+        | awk -F'\t' '{ printf "    %-14s %-32s %s\n", $1, $2, $3 }')
+    [[ -z "$out" ]] && return 1
+    echo
+    echo "  Vom Empfaenger aus der Quarantaene freigegeben"
+    echo "  Der Filter hatte diese Post in Junk oder Ablehnung geschoben - der Absender gilt dort jetzt als erwuenscht."
+    echo "$out"
+    return 0
+}
+
 FOUND=0
 BODY=$(
     # 1. Abgewiesen, obwohl der Absender per DMARC beglaubigt ist.
@@ -374,6 +402,7 @@ BODY=$(
 
     # 8. Keine Logzeilen-Gruppe, sondern eine Konfigurationsluecke.
     render_missing_context && FOUND=1
+    render_releases && FOUND=1
 )
 
 if [[ -z "$BODY" ]]; then

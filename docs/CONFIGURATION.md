@@ -1005,11 +1005,43 @@ recipient rescued the sender or has it arriving for weeks, and forced into
 junk only when **all** of them junked it. History is counted for every
 recipient.
 
+### Releases from quarantine
+
+A release from mailcow's quarantine is the clearest verdict a recipient can
+give: the filter pushed the mail into junk or rejection, and they explicitly
+disagreed. It left no trace the feedback script could use, though. mailcow
+re-injects a released mail through its own Postfix port (590) on which all
+filters are switched off - Rspamd and the checker never see it again - and
+renames its `X-Spam-Flag` first, so it sits in the inbox looking like
+ordinary mail. Afterwards mailcow deletes the quarantine row.
+
+Since 13.11. the checker remembers what it lifted over the junk threshold:
+mailbox, a hash of the Message-ID, sender (`recordFlagged()`, table
+`flagged`, kept 45 days). When the nightly scan finds exactly that mail in
+the inbox **without** the spam header, it was released, and the sender counts
+as `rescued` for that mailbox - same effect as moving mail out of Junk. The
+daily report lists new releases under "Vom Empfaenger aus der Quarantaene
+freigegeben".
+
+Limits and safeguards:
+
+- Only mailcow's default release format `raw` keeps the original headers.
+  With `attachment` the delivered mail is a new one and nothing is detected.
+- Mail Rspamd rejects on its own score never reaches the checker and is not
+  remembered; a release of such mail goes unnoticed.
+- If the same Message-ID later arrives regularly below the threshold, the
+  record is deleted. Otherwise a sender could follow up their spam with a
+  harmless mail carrying the same ID and register as released.
+- The sender of the inbox mail must match the remembered one.
+- mailcow's `X-Pre-Release-Spam-Flag` header is deliberately **not** used:
+  any sender can write it into their own mail.
+- A delivery forced by a whitelist entry is not remembered.
+
 ### What the script reads
 
 Per mailbox, only Inbox and Junk, only mail saved in the last 14 days
-(`--days N`), and only these header fields: `From`, `X-Spam-Flag`/`X-Spam`
-and the saved date. No subject, no body, no attachments. It stores mailbox
+(`--days N`), and only these header fields: `From`, `X-Spam-Flag`/`X-Spam`,
+`Message-ID` (compared as a hash) and the saved date. No subject, no body, no attachments. It stores mailbox
 address, sender key, `rescued`/`junked` and a date in
 `data/logs/ai-checker/relationship.sqlite` (root, `0600`). This is a new kind
 of processing - recipients' sorting behaviour - and belongs in your records

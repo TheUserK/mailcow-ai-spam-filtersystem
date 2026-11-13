@@ -8,9 +8,13 @@
 #    - Post OHNE Spam-Kennzeichen im JUNK hat er von Hand hineingeschoben
 #                                              -> Absender unerwuenscht
 #
+#    - Post, die der Checker in Junk oder Ablehnung geschoben hatte und
+#      die jetzt OHNE Kennzeichen im Posteingang liegt, hat der Empfaenger
+#      aus mailcows Quarantaene freigegeben -> Absender erwuenscht
+#
 #  Gelesen werden per doveadm ausschliesslich Kopfzeilen (From, das
-#  Spam-Kennzeichen, Ablagedatum) der letzten Tage aus Posteingang und
-#  Junk. Kein Betreff, kein Text, keine Anhaenge. Gespeichert wird je
+#  Spam-Kennzeichen, Message-ID, Ablagedatum) der letzten Tage aus
+#  Posteingang und Junk. Kein Betreff, kein Text, keine Anhaenge. Gespeichert wird je
 #  Postfach und Absenderdomain nur "zurueckgeholt" oder "aussortiert" mit
 #  Datum, in data/logs/ai-checker/relationship.sqlite (root, 0600). Nichts
 #  davon verlaesst den Server.
@@ -54,7 +58,7 @@ while [[ $# -gt 0 ]]; do
         --forget)  ACTION=forget; ARG="${2:-}"; ARG2="${3:-}"
                    if [[ -n "$ARG2" && "$ARG2" != --* ]]; then shift 3; else ARG2=""; shift 2; fi ;;
         --days)    DAYS="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -88,6 +92,7 @@ status)
     echo "Datenbank:      $DB ($(du -h "$DB" | cut -f1))"
     echo "Zurueckgeholt:  $(sqlite3 "$DB" "SELECT COUNT(*) FROM feedback WHERE verdict='rescued'")"
     echo "Aussortiert:    $(sqlite3 "$DB" "SELECT COUNT(*) FROM feedback WHERE verdict='junked'")"
+    echo "Freigaben:      $(sqlite3 "$DB" "SELECT COUNT(*) FROM released" 2>/dev/null || echo 0) aus der Quarantaene (in obigen enthalten)"
     echo "Postfaecher:    $(sqlite3 "$DB" "SELECT COUNT(DISTINCT rcpt) FROM feedback")"
     echo "Historie:       $(sqlite3 "$DB" "SELECT COUNT(*) FROM history") Absender/Postfach-Paare"
     echo "Modus:          $($COMPOSE_CMD exec -T ai-checker printenv AI_FILTER_RELATIONSHIP_MODE 2>/dev/null || echo 'on (Vorgabe)')"
@@ -118,7 +123,7 @@ esac
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 chmod 700 "$TMP"
 
-FIELDS='user date.saved hdr.x-spam-flag hdr.x-spam hdr.from'
+FIELDS='user date.saved hdr.x-spam-flag hdr.x-spam hdr.message-id hdr.from'
 
 # -A geht alle Postfaecher durch. Ein einzelnes kaputtes Postfach laesst
 # doveadm mit Fehlercode enden, liefert die uebrigen aber trotzdem -

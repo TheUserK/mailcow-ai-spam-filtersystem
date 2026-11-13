@@ -400,7 +400,8 @@ if (!empty($localResult['handled'])) {
         $localResult,
         whitelistDecision($mail, $localResult, $localResult)
     );
-    recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $localResult['score']);
+    recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $localResult['score'],
+        ($localResult['whitelist']['verdict'] ?? '') === 'deliver');
     // Ab hier in der Skala des Postfachs - siehe mailboxThresholds().
     $localResult['score'] = realScoreDelta($mail, $localResult['score']);
     logStats($requestId, [
@@ -451,7 +452,8 @@ if ($cachedAnalysis !== null) {
     $result = analyzeWithAI($mail, $localResult, $requestId);
 }
 $result = applyWhitelistDecision($result, whitelistDecision($mail, $localResult, $result));
-recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $result['score']);
+recordDelivery($mail, $localResult['auth_strength'] ?? '', $mail['rspamd_score'] + $result['score'],
+    ($result['whitelist']['verdict'] ?? '') === 'deliver');
 // Ab hier in der Skala des Postfachs - siehe mailboxThresholds().
 $result['score'] = realScoreDelta($mail, $result['score']);
 
@@ -5315,6 +5317,16 @@ function relationshipDb() {
             rcpt TEXT NOT NULL, sender TEXT NOT NULL,
             verdict TEXT NOT NULL, ts INTEGER NOT NULL,
             PRIMARY KEY (rcpt, sender))');
+        // Was wir in Junk oder Ablehnung geschoben haben - siehe
+        // recordDelivery() - und was davon wieder aufgetaucht ist.
+        $pdo->exec('CREATE TABLE IF NOT EXISTS flagged (
+            rcpt TEXT NOT NULL, mid TEXT NOT NULL, sender TEXT NOT NULL,
+            ts INTEGER NOT NULL, PRIMARY KEY (rcpt, mid))');
+        // ts = wann die Mail freigegeben wurde, noted = wann wir es
+        // bemerkt haben (danach richtet sich der taegliche Report).
+        $pdo->exec('CREATE TABLE IF NOT EXISTS released (
+            rcpt TEXT NOT NULL, sender TEXT NOT NULL, ts INTEGER NOT NULL,
+            noted INTEGER NOT NULL, PRIMARY KEY (rcpt, sender, ts))');
         if ($fresh) {
             @chmod(RELATIONSHIP_DB, LOG_FILE_MODE);
         }
@@ -5458,15 +5470,73 @@ function relationshipWarm() {
     return $warm;
 }
 
-// Nach dem Urteil mitzaehlen. "inbox" nur, wenn die Summe unter der
-// Junk-Schwelle blieb - siehe den Kommentar bei RELATIONSHIP_MODE.
-function recordDelivery(array $mail, $authStrength, $totalScore) {
-    if ($authStrength !== 'strong') {
+// Fingerabdruck einer Message-ID. Gespeichert wird nur der Hash - die
+// ID selbst kann einen Rechnernamen oder eine Adresse enthalten.
+function messageIdHash($messageId) {
+    $id = strtolower(trim((string)$messageId));
+    $id = trim($id, "<> \t\r\n");
+    return $id === '' ? '' : substr(hash('sha256', $id), 0, 32);
+}
+
+// ---------------------------------------------------------------------
+//  Freigaben aus der Quarantaene erkennen.
+//
+//  mailcow speist eine freigegebene Mail ueber einen eigenen Postfix-Port
+//  wieder ein, an dem alle Filter abgeschaltet sind - Rspamd und dieser
+//  Checker sehen sie kein zweites Mal -, und nimmt ihr vorher das
+//  Spam-Kennzeichen. Sie liegt danach wie gewoehnliche Post im
+//  Posteingang; das Feedback-Skript konnte daraus nichts schliessen. Dabei
+//  ist eine Freigabe das deutlichste Urteil, das ein Empfaenger faellen
+//  kann.
+//
+//  Deshalb merkt sich der Checker hier, was er ueber die Junk-Schwelle
+//  gehoben hat: Postfach, Hash der Message-ID, Absender. Findet das
+//  Feedback-Skript genau diese Mail spaeter OHNE Kennzeichen im
+//  Posteingang, wurde sie freigegeben.
+//
+//  Zwei Sicherungen gegen Missbrauch und Zufall:
+//   - Kommt dieselbe Message-ID spaeter regulaer unter der Schwelle an
+//     (erneute Zustellung, oder jemand schickt gezielt eine harmlose Mail
+//     mit der ID seiner Spam-Mail hinterher), wird der Eintrag geloescht.
+//     Die Kopie im Posteingang stammt dann nicht aus einer Freigabe.
+//   - mailcows Kopfzeile "X-Pre-Release-Spam-Flag" wird bewusst NICHT
+//     ausgewertet: Die kann jeder Absender selbst in seine Mail schreiben
+//     und sich so bei allen Empfaengern als "freigegeben" eintragen.
+//
+//  Was ein Whitelist-Eintrag durchgewinkt hat, zaehlt nicht als geflaggt.
+// ---------------------------------------------------------------------
+function recordFlagged($db, array $mail, $sender, $totalScore, $forcedDelivery) {
+    $mid = messageIdHash($mail['message_id'] ?? '');
+    if ($mid === '' || $sender === '') {
         return;
     }
+    try {
+        if ($totalScore >= JUNK_FLOOR && !$forcedDelivery) {
+            $st = $db->prepare('INSERT OR REPLACE INTO flagged (rcpt, mid, sender, ts) VALUES (?, ?, ?, ?)');
+            foreach (relationshipRecipients($mail) as $one) {
+                $st->execute([$one, $mid, $sender, time()]);
+            }
+        } else {
+            $st = $db->prepare('DELETE FROM flagged WHERE rcpt = ? AND mid = ?');
+            foreach (relationshipRecipients($mail) as $one) {
+                $st->execute([$one, $mid]);
+            }
+        }
+    } catch (Exception $e) {
+        logError('system', 'Flagged-mail record failed: ' . $e->getMessage());
+    }
+}
+
+// Nach dem Urteil mitzaehlen. "inbox" nur, wenn die Summe unter der
+// Junk-Schwelle blieb - siehe den Kommentar bei RELATIONSHIP_MODE.
+function recordDelivery(array $mail, $authStrength, $totalScore, $forcedDelivery = false) {
     list($rcpt, $sender) = relationshipKey($mail);
     $db = ($rcpt !== '') ? relationshipDb() : null;
     if (!$db) {
+        return;
+    }
+    recordFlagged($db, $mail, $sender, $totalScore, $forcedDelivery);
+    if ($authStrength !== 'strong') {
         return;
     }
     try {

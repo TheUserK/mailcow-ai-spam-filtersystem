@@ -2370,6 +2370,27 @@ function runFixtures() {
         'history is counted for every recipient');
     $db->exec('DELETE FROM history');
 
+    // Quarantaene-Freigaben: der Checker merkt sich, was er ueber die
+    // Junk-Schwelle gehoben hat.
+    $checkScore(messageIdHash(' <AbC@Example.org> ') === messageIdHash('abc@example.org')
+        && messageIdHash('') === '' && strlen(messageIdHash('<x@y>')) === 32,
+        'message-id hash ignores brackets and case');
+    $flaggedCount = function () use ($db) {
+        return (int)$db->query('SELECT COUNT(*) FROM flagged')->fetchColumn();
+    };
+    $withId = prepareMailContext(array_replace($news, ['message_id' => '<m1@haendler-beispiel.test>']));
+    recordDelivery($withId, 'medium', 9.0);
+    $checkScore($flaggedCount() === 1, 'mail pushed over the junk threshold is remembered, whatever its auth');
+    recordDelivery($withId, 'strong', 2.0);
+    $checkScore($flaggedCount() === 0, 'the same message-id arriving below the threshold clears the record');
+    recordDelivery($withId, 'strong', 16.0, true);
+    $checkScore($flaggedCount() === 0, 'a whitelist-forced delivery is not remembered');
+    recordDelivery(prepareMailContext($news), 'strong', 16.0);
+    $checkScore($flaggedCount() === 0, 'mail without a message-id is not remembered');
+    recordDelivery(prepareMailContext(array_replace($two, ['message_id' => '<m2@haendler-beispiel.test>'])), 'strong', 16.0);
+    $checkScore($flaggedCount() === 2, 'remembered for every recipient');
+    $db->exec('DELETE FROM flagged'); $db->exec('DELETE FROM history');
+
     // Angebotsart (OFFER_TYPE_RULES). Haendler-Newsletter mit Ein-Klick-
     // Abmeldung: das Modell sagt "spam", liest aber selbst ab, dass es
     // Massenversand eigener Produkte ist -> kein harter Junk-Floor.
