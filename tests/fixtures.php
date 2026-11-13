@@ -2388,9 +2388,46 @@ function runFixtures() {
         'a plain List-Unsubscribe is not one-click');
     $result = $scoreCase($oneClick, $productSpam);
     $checkScore($result['offer_rule'] === 'list-newsletter' && $result['offer_applied']
-        && $result['score'] === $result['model_score']
+        && $result['score'] === scoreFromAi(0.9, 0.9, 'marketing')
+        && $result['model_score'] === scoreFromAi(0.9, 0.9, 'spam')
+        && !$result['reject_eligible']
         && $oneClick['rspamd_score'] + $result['score'] < JUNK_FLOOR,
-        'list newsletter with one-click unsubscribe: model score only');
+        'list newsletter with one-click unsubscribe is scored as marketing');
+
+    // Der Fall vom 12.11.: Imagen-Werbung, Rspamd 1.558749, Modell "spam"
+    // mit 6.84 Punkten. Die Regel griff, die Mail landete trotzdem bei
+    // 8.40 im Junk, weil nur der Floor wegfiel.
+    $imagen = array_replace($oneClick, ['rspamd_score' => 1.558749]);
+    $result = $scoreCase($imagen, array_replace($productSpam, ['spam_probability' => 0.88]));
+    $checkScore($result['model_score'] === 6.84 && $result['score'] === 3.42
+        && $imagen['rspamd_score'] + $result['score'] < JUNK_FLOOR,
+        'reputable product advertising no longer crosses the junk threshold on the model score');
+    $checkScore($scoreCase(array_replace($imagen, ['rspamd_score' => 6.0]),
+        array_replace($productSpam, ['spam_probability' => 0.88]))['score'] + 6.0 >= JUNK_FLOOR,
+        'mail Rspamd already dislikes still reaches junk');
+
+    // Etablierter Werbeversender ohne Listen-Kopfzeilen (trip.com am
+    // 12.11.): Rang der Hauptdomain zaehlt, auch von einer Subdomain.
+    $established = array_replace($news, [
+        'from' => 'deals@newsletter.tchibo.de', 'from_email' => 'deals@newsletter.tchibo.de',
+        'urls' => ['https://www.tchibo.de/angebote'], 'url_domains' => ['www.tchibo.de'],
+        'signals' => [], 'headers' => ['to_header' => 'kundin@example.com'],
+        'rspamd_score' => 0.5,
+    ]);
+    $result = $scoreCase($established, $productSpam);
+    $checkScore($result['offer_rule'] === 'established-advertiser'
+        && $established['rspamd_score'] + $result['score'] < JUNK_FLOOR && !$result['reject_eligible'],
+        'established advertiser on a subdomain is scored as marketing');
+    $small = array_replace($established, ['from' => 'x@news.baldur-garten.de', 'from_email' => 'x@news.baldur-garten.de',
+        'urls' => ['https://www.baldur-garten.de/'], 'url_domains' => ['www.baldur-garten.de']]);
+    $result = $scoreCase($small, $productSpam);
+    $checkScore($result['offer_rule'] === '' && $small['rspamd_score'] + $result['score'] >= JUNK_FLOOR,
+        'a domain outside the top 100,000 without one-click unsubscribe keeps the junk floor');
+    $weak = array_replace($established, ['auth' => ['spf' => 'pass', 'dkim' => 'unknown', 'dmarc' => 'unknown']]);
+    $checkScore($scoreCase($weak, $productSpam)['offer_rule'] === '',
+        'an established name without strong authentication gets nothing');
+    $checkScore($scoreCase($established, array_replace($productSpam, ['category' => 'phishing']))['offer_rule'] === '',
+        'a phishing verdict against an established domain stays hard');
     $checkScore($scoreCase($news, $productSpam)['offer_rule'] === '',
         'without one-click unsubscribe the junk floor stays');
     $checkScore($scoreCase($oneClick, $spamVerdict)['offer_rule'] === '',

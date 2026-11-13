@@ -898,18 +898,27 @@ Two rules follow, both logged as `offer_rule` in `stats.log`:
 
 | Rule | Condition | Result |
 |---|---|---|
-| `list-newsletter` | category `spam`; `mass_mailing`; `product_or_content`; list mail with strong auth and no structural evidence; one-click unsubscribe; recipient has not junked the sender | No hard jump to the junk threshold. The model's own graduated score still counts, so a mail Rspamd already dislikes still lands in junk |
+| `list-newsletter` / `established-advertiser` | category `spam`; `mass_mailing`; `product_or_content`; strong auth; **no** structural evidence; recipient has not junked the sender; and the sender is reputable - either a list with one-click unsubscribe, or a domain (its registrable domain counts) within the global top 100,000 | Scored like `marketing` (at most 5 points instead of 10), no junk floor, no ai-confident reject. A mail Rspamd already dislikes still lands in junk |
 | `cold-outreach` | category `marketing` or `newsletter`; `service_for_recipient`; sender never reached this recipient's inbox and was not rescued; not an established domain; history running for at least `HISTORY_MIN_DAYS` | Junk floor, even with an unsubscribe link. Never rejectable through this |
 
 `cold-outreach` stays silent for the first three weeks after the update:
 until the history has run that long, every sender would look new.
 
-Neither rule was measured against real mail before release - there is no
-stored corpus to replay. Watch `offer_rule` in `stats.log` for the first
-weeks. `list-newsletter` deliberately excludes `clickbait`, `pharma`,
-`phishing` and `fraud`, but a well-built unwanted advertising list with
-one-click unsubscribe will get through more easily than before; that is the
-price for subscribed newsletters no longer being forced into junk. Setting
+The operator's yardstick behind the first rule: a reputable company only
+sends advertising to people who asked for it. Until 13.11. the rule merely
+removed the junk floor, and the model's own score for `spam` (up to 10)
+carried the mail over the threshold anyway - on 12.11. an Imagen product
+mailing with one-click unsubscribe landed in junk at 6.84 + 1.56 = 8.40 with
+the rule applied, and a Trip.com newsletter at 8.32. Of the ten mails that
+day classed `spam` + `product_or_content`, the other eight (throwaway
+domains, a hijacked government account, an affiliate list) all carried
+structural evidence or only medium authentication, which is exactly what the
+rule excludes.
+
+The price: an unwanted but cleanly sent advertising list from an established
+domain, or one with one-click unsubscribe and no evidence against it, now
+reaches the inbox. A recipient who moves it to Junk settles that for their
+mailbox (`recipient-junked-sender`). Setting
 `OFFER_TYPE_RULES` to `false` switches both rules off and keeps the logging.
 
 ## Per-mailbox thresholds

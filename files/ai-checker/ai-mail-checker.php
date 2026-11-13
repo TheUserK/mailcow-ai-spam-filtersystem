@@ -336,11 +336,18 @@ define('VERDICT_CACHE_HOURS', 24);
 //  angeboten - eigene Produkte/Inhalte, oder eine Dienstleistung fuer das
 //  Geschaeft des Empfaengers? Daraus folgen zwei Regeln:
 //
-//   list-newsletter   Kategorie "spam", aber: Massenversand eigener
-//                     Produkte/Inhalte, sauber authentifizierte Liste mit
-//                     Ein-Klick-Abmeldung, kein Strukturbeleg. Kein harter
-//                     Sprung auf die Junk-Schwelle - der eigene Punktwert
-//                     des Modells zaehlt weiter.
+//   list-newsletter / established-advertiser
+//                     Kategorie "spam", aber: Massenversand eigener
+//                     Produkte/Inhalte, starke Authentifizierung, KEIN
+//                     Strukturbeleg, vom Empfaenger nicht aussortiert - und
+//                     der Absender ist serioes: entweder eine Liste mit
+//                     Ein-Klick-Abmeldung, oder eine Domain (samt
+//                     Hauptdomain) unter den ersten 100.000 weltweit.
+//                     Massstab des Betreibers: Ein serioeses Unternehmen
+//                     verschickt Werbung nur an Leute, die sie bestellt
+//                     haben. Solche Post wird wie "marketing" bepunktet
+//                     (hoechstens 5 statt 10 Punkte) und bekommt keinen
+//                     Junk-Floor.
 //   cold-outreach     Kategorie "marketing"/"newsletter", aber: eine
 //                     Dienstleistung fuer das Geschaeft des Empfaengers,
 //                     von einem Absender, der hier noch nie im Posteingang
@@ -3159,6 +3166,46 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
     $relEffect = relationshipEffect($relationship, $category, $strong, $authenticatedList, $realConversation);
     $relApplied = RELATIONSHIP_MODE === 'on' ? $relEffect : '';
 
+    // Angebotsart - siehe OFFER_TYPE_RULES. Fehlen die Felder (aelterer
+    // Anbieter ohne Schema, abgeschnittene Antwort), greift keine Regel.
+    $offerType = in_array($analysis['offer_type'] ?? '', ['none', 'product_or_content', 'service_for_recipient'], true)
+        ? $analysis['offer_type'] : '';
+    $massMailing = !empty($analysis['mass_mailing']);
+    $offerRule = '';
+    if ($offerType === 'service_for_recipient'
+        && in_array($category, ['marketing', 'newsletter'], true)
+        && relationshipWarm()
+        && empty($relationship['inbox']) && empty($relationship['rescued'])
+        && !establishedSender($mail, $localContext)) {
+        $offerRule = 'cold-outreach';
+    } elseif ($offerType === 'product_or_content' && $massMailing
+        && $category === 'spam'
+        && ($localContext['auth_strength'] ?? '') === 'strong'
+        && empty($evidence)
+        && empty($injection)
+        && empty($relationship['junked'])) {
+        // Werbung eines serioesen Absenders fuer eigene Produkte. Zwei
+        // Wege, serioes zu sein - siehe OFFER_TYPE_RULES.
+        if (!empty($mail['signals']['has_list_unsubscribe'])
+            && !empty($mail['signals']['one_click_unsubscribe'])) {
+            $offerRule = 'list-newsletter';
+        } elseif (establishedAdvertiser($mail)) {
+            $offerRule = 'established-advertiser';
+        }
+    }
+    $offerApplied = OFFER_TYPE_RULES ? $offerRule : '';
+    $reputableAd = in_array($offerApplied, ['list-newsletter', 'established-advertiser'], true)
+        && $relApplied !== 'force-floor';
+    if ($reputableAd) {
+        // Bepunktet wie "marketing", nicht wie "spam": hoechstens
+        // MAX_SPAM_POINTS + 1 statt MAX_PHISHING_POINTS. Bis 13.11. fiel
+        // hier nur der Junk-Floor weg - der eigene Punktwert des Modells
+        // (bei "spam" bis 10) trug die Mail trotzdem ueber die Schwelle:
+        // Die Imagen-Werbung landete am 12.11. mit 6.84 + 1.56 = 8.40 im
+        // Junk, obwohl die Regel gegriffen hatte.
+        $score = min($score, scoreFromAi($analysis['spam_probability'], $confidence, 'marketing'));
+    }
+
     // Fuer die Betreiber-Regel gilt eine eigene Vertrauensgrenze.
     //
     // Der Prompt sagt dem Modell, ein Regeltreffer fuehre zur endgueltigen
@@ -3205,6 +3252,8 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         // Was der Empfaenger zurueckgeholt hat, weist das Modell nicht
         // allein ab.
         && $relApplied !== 'protect'
+        // Werbung eines serioesen Absenders ebenso wenig.
+        && !$reputableAd
         // Sonst wuerde dieselbe vom lokalen Marken-Flag gelenkte
         // Modellentscheidung durch die Hintertuer des zweiten Pfads doch
         // wieder rejecten, sobald Rspamd genug Punkte beisteuert.
@@ -3284,26 +3333,6 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         && empty($mail['headers']['list_id'])
         && !establishedSender($mail, $localContext);
 
-    // Angebotsart - siehe OFFER_TYPE_RULES. Fehlen die Felder (aelterer
-    // Anbieter ohne Schema, abgeschnittene Antwort), greift keine Regel.
-    $offerType = in_array($analysis['offer_type'] ?? '', ['none', 'product_or_content', 'service_for_recipient'], true)
-        ? $analysis['offer_type'] : '';
-    $massMailing = !empty($analysis['mass_mailing']);
-    $offerRule = '';
-    if ($offerType === 'service_for_recipient'
-        && in_array($category, ['marketing', 'newsletter'], true)
-        && relationshipWarm()
-        && empty($relationship['inbox']) && empty($relationship['rescued'])
-        && !establishedSender($mail, $localContext)) {
-        $offerRule = 'cold-outreach';
-    } elseif ($offerType === 'product_or_content' && $massMailing
-        && $category === 'spam'
-        && $authenticatedList
-        && !empty($mail['signals']['one_click_unsubscribe'])
-        && empty($relationship['junked'])) {
-        $offerRule = 'list-newsletter';
-    }
-    $offerApplied = OFFER_TYPE_RULES ? $offerRule : '';
     if ($offerApplied === 'cold-outreach') {
         $unsolicitedBulk = true;
     }
@@ -3315,7 +3344,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         && !$realConversation
         && $transactionalGuard === '';
 
-    if ($offerApplied === 'list-newsletter' && $relApplied !== 'force-floor') {
+    if ($reputableAd) {
         $junkFloorApplies = false;
     }
     if ($relApplied === 'protect' || $relApplied === 'lift-floor') {
@@ -4570,6 +4599,28 @@ function establishedDomainRejectGuard(array $localContext, array $strongEvidence
 // Subdomain-Vererbung, siehe senderGlobalRank()) und hoechstens auf Rang
 // ESTABLISHED_DOMAIN_REJECT_GUARD_RANK. Kein Ham-Pass - nimmt nur die
 // Junk-Untergrenze fuer abmeldelose Werbung weg.
+// Etablierter Werbeversender: wie establishedSender(), aber MIT dem Rang
+// der Hauptdomain. Grosse Haendler und Portale versenden Werbung fast
+// immer von einer Subdomain (newsletter.trip.com, email.mydealz.de), die
+// in der Liste nicht steht. Die Vererbung ist hier vertretbar, weil sie
+// nur an einer Stelle wirkt - "spam" wird wie "marketing" bepunktet - und
+// der Aufrufer starke Authentifizierung und null Strukturbelege verlangt.
+// Eine Ablehnung haengt daran nie.
+function establishedAdvertiser(array $mail) {
+    $domain = normalizeHost($mail['from_domain'] ?? '');
+    if ($domain === '') {
+        return false;
+    }
+    $rank = senderGlobalRank($domain);
+    if ($rank === null) {
+        $parent = registrableDomain($domain);
+        if ($parent !== '' && $parent !== $domain) {
+            $rank = senderGlobalRank($parent);
+        }
+    }
+    return $rank !== null && $rank <= ESTABLISHED_DOMAIN_REJECT_GUARD_RANK;
+}
+
 function establishedSender(array $mail, array $localContext) {
     if (($localContext['auth_strength'] ?? '') !== 'strong') {
         return false;
