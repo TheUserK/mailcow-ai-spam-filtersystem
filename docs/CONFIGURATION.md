@@ -1015,6 +1015,30 @@ checker keeps two daily counters (`volume`), the nightly import counts only
 **new or changed** decisions (`corrections`); neither holds an address. The
 balance is part of Monday's report and printed on demand with `--quality`.
 
+## Notice about newer versions (ai-filter-version.sh)
+
+Nothing is installed automatically, on purpose. An automatic update would
+mean that whoever can write to the repository's main branch runs code as root
+on every mail server at night, on all of them at once; a pre-check catches
+broken code, not hostile code.
+
+`ai-filter-version.sh` only asks: a `git fetch` (the working tree of the
+repository directory stays untouched), a comparison with what is
+**installed** here, and on Mondays at 07:30 a mail to the report address for
+as long as the server is behind - with the list of changes and the exact
+command to apply them. `install.sh` records the installed commit in
+`data/ai-checker/update.conf`, so a `git pull` without a following
+`install.sh --upgrade` counts as behind too.
+
+```bash
+ai-filter-version.sh             # show the state and look for news
+ai-filter-version.sh --disable   # stop the weekly mail
+```
+
+Recipient and sender are those of the report (`ai-filter-report.sh --set-to`
+/ `--from`). Without a recipient, or when the repository cannot be reached,
+the cron run ends silently.
+
 ## Offer type and mass mailing (OFFER_TYPE_RULES)
 
 "Newsletter or cold outreach" used to hang on the category alone, and for

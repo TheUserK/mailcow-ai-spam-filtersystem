@@ -207,6 +207,7 @@ ai-filter-context.sh              # Classify domains that have no entry yet
 ai-filter-update-image.sh --status  # PHP version and age of the ai-checker image
 ai-filter-whitelist.sh list       # Senders that are always delivered
 ai-filter-feedback.sh --status    # What recipients rescued from / moved to Junk
+ai-filter-version.sh              # Is a newer version available? (weekly mail, installs nothing)
 ai-filter-whitelist.sh check ADDR # Does an entry apply, and what happened to the last mails
 ai-filter-rank.sh --status        # Domain-rank database: size, age
 ai-filter-rank.sh --show DOMAIN   # Look up one domain's rank

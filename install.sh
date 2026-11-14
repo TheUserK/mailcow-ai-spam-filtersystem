@@ -699,6 +699,39 @@ if ! /usr/local/bin/ai-filter-domains.sh; then
     echo "       Von Hand: ai-filter-domains.sh"
 fi
 
+# Hinweis auf neuere Fassungen. Bewusst KEIN automatisches Update: Das
+# wuerde jedem, der ins Repository schreiben kann, nachts root auf diesem
+# Server geben. ai-filter-version.sh sieht nur nach und schickt montags
+# eine Mail an die Report-Adresse, solange der Server zurueckliegt.
+#
+# Hier wird vermerkt, welcher Stand gerade installiert wird - verglichen
+# wird spaeter damit, nicht mit dem Repository-Ordner. Wer "git pull"
+# macht und install.sh vergisst, liegt ebenfalls zurueck.
+UPDATE_CONF="data/ai-checker/update.conf"
+if [[ -d "$SCRIPT_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
+    INSTALLED_COMMIT=$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)
+    ( umask 077; touch "$UPDATE_CONF" )
+    set_update_conf() {
+        if grep -q "^[[:space:]]*$1[[:space:]]*=" "$UPDATE_CONF"; then
+            sed -i "s|^[[:space:]]*$1[[:space:]]*=.*|$1 = $2|" "$UPDATE_CONF"
+        else
+            printf '%s = %s\n' "$1" "$2" >> "$UPDATE_CONF"
+        fi
+    }
+    set_update_conf repo "$SCRIPT_DIR"
+    [[ -n "$INSTALLED_COMMIT" ]] && set_update_conf installed "$INSTALLED_COMMIT"
+    grep -q '^[[:space:]]*branch[[:space:]]*=' "$UPDATE_CONF" || set_update_conf branch main
+    cat > /etc/cron.d/ai-filter-version <<'CRON'
+# Hinweis auf eine neuere Fassung des AI-Spamfilters, montags um 7:30.
+# Installiert wird nichts. Stand: ai-filter-version.sh   Abstellen: ai-filter-version.sh --disable
+30 7 * * 1 root /usr/local/bin/ai-filter-version.sh --mail >/dev/null 2>&1
+CRON
+    chmod 644 /etc/cron.d/ai-filter-version
+    echo -e "${GREEN}[OK]${NC} Weekly notice about newer versions scheduled (Mondays 07:30, nothing is installed automatically)"
+else
+    echo -e "${YELLOW}[INFO]${NC} No git checkout at $SCRIPT_DIR - no notice about newer versions"
+fi
+
 # Sortierverhalten der Empfaenger auswerten: Was aus dem Junk zurueckgeholt
 # oder von Hand hineingeschoben wurde, ist die einzige belastbare Antwort
 # auf "erwuenscht oder nicht". Liest nur Kopfzeilen, nachts um 2:17.
@@ -905,6 +938,7 @@ echo "  ai-filter-model.sh     Show or change the model / AI provider"
 echo "  ai-filter-report.sh    Cases where the filter contradicts itself"
 echo "  ai-filter-context.sh   Recipient context; --hint sets what only you know"
 echo "  ai-filter-whitelist.sh Senders that are always delivered unless the account is abused"
+echo "  ai-filter-version.sh   Is a newer version available? (weekly mail; installs nothing)"
 echo "  ai-filter-domains.sh   Export local domains for the checker (hourly via cron)"
 echo "  ai-filter-feedback.sh  What recipients rescued from / moved to Junk (nightly; --status, --dry-run)"
 echo "  ai-filter-update-image.sh  Rebuild the ai-checker image (weekly via cron, with rollback)"
