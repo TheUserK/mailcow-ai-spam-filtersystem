@@ -386,6 +386,41 @@ define('OFFER_TYPE_RULES', true);
 // ---------------------------------------------------------------------
 define('ATTACHMENT_CODE_CHARS', 3000);
 
+// ---------------------------------------------------------------------
+//  Kampagnen erkennen: derselbe Text von vielen Absendern, oder an viele
+//  Postfaecher.
+//
+//  Am 12.11. kam "Black Friday Deal: Messer, die sogar Eis schneiden" am
+//  selben Tag von vier Wegwerf-Domains (kaufen.coupons, declass.business,
+//  germasale.auction, deutscherverkauf.auction). Jede Domain fuer sich
+//  war neu und unbelastet - genau dafuer wechseln solche Versender sie.
+//  Was sich nicht wechseln laesst, ist der Text.
+//
+//  Der Checker bildet aus dem bereinigten Mailtext einen Fingerabdruck,
+//  der kleine Abweichungen (Anrede, Tracking-Links) uebersteht, und merkt
+//  sich fuer CAMPAIGN_WINDOW_HOURS, von welchen Absendern und an wie viele
+//  Postfaecher er kam. Daraus zwei Befunde:
+//   - same-content-from-several-senders: mindestens
+//     CAMPAIGN_MIN_SENDERS verschiedene Absender. Als Beleg
+//     "campaign-sender-rotation" zunaechst auf Bewaehrung, weil es
+//     ehrliche Faelle gibt (Verbandsrundschreiben, das jede Filiale von
+//     der eigenen Domain weiterschickt).
+//   - measured-bulk: mindestens CAMPAIGN_MIN_MAILBOXES Postfaecher.
+//     Gemessener Massenversand statt geratenem - kein Spam-Beleg, aber
+//     das Ende jeder Behauptung, die Mail sei einzeln geschrieben.
+//
+//  Gespeichert werden Fingerabdruck, Absender-Schluessel und ein Hash des
+//  Postfachs, kein Text. Kurze Mails bekommen keinen Fingerabdruck -
+//  "Danke, passt so" schreiben viele.
+// ---------------------------------------------------------------------
+define('CAMPAIGN_WINDOW_HOURS', 48);
+define('CAMPAIGN_MIN_SENDERS', 3);
+define('CAMPAIGN_MIN_MAILBOXES', 3);
+define('CAMPAIGN_MIN_WORDS', 40);
+// Wie viele der zehn Kennwerte zwei Fingerabdruecke teilen muessen -
+// siehe campaignFingerprint().
+define('CAMPAIGN_MIN_SHARED', 6);
+
 // Wie viele Zeichen Mailtext das Modell zu sehen bekommt (drei Viertel
 // vom Anfang, ein Viertel vom Ende - siehe promptExcerpt()).
 define('PROMPT_BODY_CHARS', 3000);
@@ -520,6 +555,7 @@ logStats($requestId, [
     'real_conversation' => !empty($result['real_conversation']),
     'claimed_thread' => !empty($result['claimed_thread']),
     'relationship' => $result['relationship'] ?? null,
+    'campaign' => $result['campaign'] ?? null,
     'offer_type' => $result['offer_type'] ?? '',
     'mass_mailing' => !empty($result['mass_mailing']),
     'offer_rule' => $result['offer_rule'] ?? '',
@@ -2060,6 +2096,24 @@ function analyzeLocally(array $mail, $requestId) {
         }
     }
 
+    // Derselbe Text von mehreren Absendern oder an mehrere Postfaecher?
+    // Siehe CAMPAIGN_WINDOW_HOURS. Die Flags sind bewusst ja/nein und
+    // keine Zahl: Sonst aenderte jeder weitere Empfaenger den Prompt, und
+    // der Urteils-Cache traefe gerade bei Massenmails nie.
+    $campaign = campaignObserve($mail);
+    $senderRotation = $campaign['senders'] >= CAMPAIGN_MIN_SENDERS
+        && empty($matchedProfile['key'])
+        && $verifiedBrand === ''
+        && empty($mail['signals']['reply_to_our_mail'])
+        && !establishedAdvertiser($mail);
+    if ($senderRotation) {
+        $riskFlags[] = 'same-content-from-several-senders';
+    }
+    $measuredBulk = $campaign['mailboxes'] >= CAMPAIGN_MIN_MAILBOXES;
+    if ($measuredBulk) {
+        $riskFlags[] = 'measured-bulk';
+    }
+
     $impersonation = detectBrandImpersonation($mail);
     $impersonationScore = 0.0;
     $impersonationKind = '';
@@ -2090,6 +2144,7 @@ function analyzeLocally(array $mail, $requestId) {
         'impersonation_kind' => $impersonationKind,
         'sender_global_rank' => $senderGlobalRank,
         'relationship' => $relationship,
+        'campaign' => $campaign + ['sender_rotation' => $senderRotation, 'measured_bulk' => $measuredBulk],
         'struct' => $struct,
         'risk_flags' => array_values(array_unique($riskFlags)),
         'trust_flags' => array_values(array_unique($trustFlags)),
@@ -2425,6 +2480,20 @@ Zu den Absender-Flags:
   einen Versanddienst. Kaltakquise-Werkzeuge senden meist aus normalen
   Postfaechern und haben es nicht. Kein Abo-Beweis, aber ein deutlicher
   Hinweis auf einen ordentlichen Listenversand statt Einzelansprache.
+- "same-content-from-several-senders": Derselbe Text kam in den letzten
+  zwei Tagen von mindestens drei verschiedenen Absendern auf diesem Server
+  an. Das ist das Muster von Versendern, die ihre Domains laufend wechseln,
+  damit keine davon einen schlechten Ruf bekommt - "spam", auch wenn diese
+  eine Domain unbelastet aussieht. Harmlose Ausnahmen: ein erkennbares
+  Rundschreiben eines Verbands oder einer Kette, das jede Stelle von ihrer
+  eigenen Domain verschickt, und Standardtexte von Shop- und
+  Newsletter-Systemen (Anmelde- oder Bestellbestaetigung), die bei jedem
+  Haendler gleich lauten.
+- "measured-bulk": Derselbe Text ging nachweislich an mehrere Postfaecher
+  auf diesem Server. Das ist KEIN Spam-Beleg - jeder Newsletter sieht so
+  aus. Es widerlegt nur den Anschein einer einzeln geschriebenen Mail:
+  "ich habe mir Ihre Website angesehen" ist dann ein Serienbrief, und
+  "personal" passt nicht. Setze in diesem Fall "mass_mailing" auf true.
 - "recipient-rescued-sender": Der Empfaenger hat Post dieses Absenders
   selbst aus dem Junk-Ordner zurueck in den Posteingang geholt. Das ist die
   Antwort auf die Abo-Frage, und sie stammt nicht vom Absender: Diese Post
@@ -3305,7 +3374,9 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
     // Anbieter ohne Schema, abgeschnittene Antwort), greift keine Regel.
     $offerType = in_array($analysis['offer_type'] ?? '', ['none', 'product_or_content', 'service_for_recipient'], true)
         ? $analysis['offer_type'] : '';
-    $massMailing = !empty($analysis['mass_mailing']);
+    // Gemessen schlaegt geschaetzt: Ging derselbe Text an mehrere
+    // Postfaecher, ist es Massenversand, was immer das Modell meint.
+    $massMailing = !empty($analysis['mass_mailing']) || !empty($localContext['campaign']['measured_bulk']);
     $offerRule = '';
     if ($offerType === 'service_for_recipient'
         && in_array($category, ['marketing', 'newsletter'], true)
@@ -3585,6 +3656,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         'real_conversation' => $realConversation,
         'claimed_thread'  => $claimedThread,
         'relationship'    => relationshipLog($relationship, $relEffect),
+        'campaign'        => $localContext['campaign'] ?? null,
         'offer_type'      => $offerType,
         'mass_mailing'    => $massMailing,
         // Welche Angebots-Regel zutraf, und ob sie angewandt wurde.
@@ -3766,6 +3838,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     }
     if (!empty($struct['archive_dangerous'])) {
         $evidence[] = 'archive-dangerous-content';
+    }
+    if (!empty($localContext['campaign']['sender_rotation'])) {
+        $evidence[] = 'campaign-sender-rotation';
     }
     $attachmentFlags = $struct['attachment_findings']['flags'] ?? [];
     if (in_array('credential-form', $attachmentFlags, true)) {
@@ -4711,6 +4786,7 @@ function strongEvidence(array $evidence) {
         'brand-linked-not-sender', // Mail verlinkt die Marke, kommt aber woanders her
         'brand-claim-vs-known-domain', // behauptete Marke ist eine bekannte fremde Domain
         'archive-dangerous-content',    // ausfuehrbare Datei in einem Archiv (auf Bewaehrung)
+        'campaign-sender-rotation',     // derselbe Text von mehreren Absendern (auf Bewaehrung)
         'attachment-credential-form',   // HTML-/SVG-Anhang mit Passwortfeld (auf Bewaehrung)
         'attachment-obfuscated-script', // HTML-/SVG-Anhang mit verschleiertem Skript (auf Bewaehrung)
     ];
@@ -4830,6 +4906,11 @@ function probationEvidence() {
         'archive-dangerous-content',
         'attachment-credential-form',
         'attachment-obfuscated-script',
+        // Seit 14.11. Derselbe Text von drei und mehr Absendern ist das
+        // Muster wechselnder Wegwerf-Domains - aber auch das eines
+        // Verbandsrundschreibens, das jede Filiale von der eigenen Domain
+        // weiterschickt. Erst im Report ansehen.
+        'campaign-sender-rotation',
         // 'fake-thread-foreign-ref' stand schon vom 16. bis 25.09. hier. In der
         // Zeit hat es an echter Post nur Kaltakquise aus Outlook-Postfaechern
         // getroffen - "Re: Complete price", "Re: Quick Ranking..??",
@@ -5476,6 +5557,11 @@ function relationshipDb() {
             PRIMARY KEY (rcpt, sender))');
         // Was wir in Junk oder Ablehnung geschoben haben - siehe
         // recordDelivery() - und was davon wieder aufgetaucht ist.
+        // Kampagnen-Fingerabdruecke - siehe CAMPAIGN_WINDOW_HOURS.
+        $pdo->exec('CREATE TABLE IF NOT EXISTS campaign (
+            fp TEXT NOT NULL, sender TEXT NOT NULL, rcpt_h TEXT NOT NULL,
+            ts INTEGER NOT NULL, PRIMARY KEY (fp, sender, rcpt_h))');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS campaign_ts ON campaign (ts)');
         $pdo->exec('CREATE TABLE IF NOT EXISTS flagged (
             rcpt TEXT NOT NULL, mid TEXT NOT NULL, sender TEXT NOT NULL,
             ts INTEGER NOT NULL, PRIMARY KEY (rcpt, mid))');
@@ -5625,6 +5711,89 @@ function relationshipWarm() {
         }
     }
     return $warm;
+}
+
+// ---------------------------------------------------------------------
+//  Fingerabdruck eines Mailtexts: die zehn kleinsten Hashwerte aller
+//  Drei-Wort-Folgen (MinHash).
+//
+//  Zwei Texte gelten als derselbe, wenn sie mindestens
+//  CAMPAIGN_MIN_SHARED dieser zehn Werte teilen. Eine andere Anrede oder
+//  ein eingefuegter Name aendert nur die Wortfolgen an dieser Stelle; die
+//  meisten der zehn kleinsten Werte bleiben stehen. Zwei verschiedene
+//  Texte teilen praktisch keine. Links, Adressen und Zahlen fliegen
+//  vorher raus - das ist, was pro Empfaenger wechselt.
+//
+//  Ein erster Anlauf mit einem 64-Bit-SimHash war bei kurzen Werbetexten
+//  zu empfindlich: Schon "Hallo" gegen "Sehr geehrter Herr Sailer" kippte
+//  sieben Bit, zwei solche Varianten untereinander noch mehr.
+// ---------------------------------------------------------------------
+function campaignFingerprint($text) {
+    $text = mb_strtolower((string)$text);
+    $text = preg_replace('#https?://\S+|\S+@\S+|\d+#u', ' ', $text) ?? $text;
+    preg_match_all('/\p{L}{3,}/u', $text, $m);
+    $words = $m[0];
+    if (count($words) < CAMPAIGN_MIN_WORDS) {
+        return '';
+    }
+    $words = array_slice($words, 0, 600);
+
+    $hashes = [];
+    for ($i = 0, $n = count($words) - 2; $i < $n; $i++) {
+        $hashes[substr(md5($words[$i] . ' ' . $words[$i + 1] . ' ' . $words[$i + 2]), 0, 8)] = true;
+    }
+    $hashes = array_keys($hashes);
+    sort($hashes, SORT_STRING);
+    return implode('', array_slice($hashes, 0, 10));
+}
+
+// Wie viele der zehn Werte zwei Fingerabdruecke teilen.
+function campaignShared($a, $b) {
+    return count(array_intersect(str_split($a, 8), str_split($b, 8)));
+}
+
+// Traegt diese Mail ein und zaehlt, was in den letzten Stunden denselben
+// (oder fast denselben) Text trug. Ohne Datenbank oder bei kurzem Text:
+// nichts gesehen.
+function campaignObserve(array $mail) {
+    $seen = ['senders' => 0, 'mailboxes' => 0];
+    $fp = campaignFingerprint(($mail['subject'] ?? '') . ' ' . ($mail['body_clean'] ?? ''));
+    $sender = relationshipSenderKey($mail['from_email'] ?? '');
+    $db = ($fp !== '' && $sender !== '') ? relationshipDb() : null;
+    if (!$db) {
+        return $seen;
+    }
+    try {
+        $now = time();
+        $insert = $db->prepare('INSERT OR IGNORE INTO campaign (fp, sender, rcpt_h, ts) VALUES (?, ?, ?, ?)');
+        foreach (relationshipRecipients($mail) as $one) {
+            $insert->execute([$fp, $sender, substr(hash('sha256', $one), 0, 16), $now]);
+        }
+
+        $rows = $db->prepare('SELECT fp, sender, rcpt_h FROM campaign WHERE ts >= ? ORDER BY ts DESC LIMIT 5000');
+        $rows->execute([$now - CAMPAIGN_WINDOW_HOURS * 3600]);
+        $senders = [];
+        $mailboxes = [];
+        $near = [];
+        foreach ($rows->fetchAll(PDO::FETCH_NUM) as $row) {
+            if (!isset($near[$row[0]])) {
+                $near[$row[0]] = campaignShared($fp, $row[0]) >= CAMPAIGN_MIN_SHARED;
+            }
+            if ($near[$row[0]]) {
+                $senders[$row[1]] = true;
+                $mailboxes[$row[2]] = true;
+            }
+        }
+        $seen = ['senders' => count($senders), 'mailboxes' => count($mailboxes)];
+
+        // Gelegentlich aufraeumen.
+        if (mt_rand(1, 100) === 1) {
+            $db->prepare('DELETE FROM campaign WHERE ts < ?')->execute([$now - 7 * 86400]);
+        }
+    } catch (Exception $e) {
+        logError('system', 'Campaign lookup failed: ' . $e->getMessage());
+    }
+    return $seen;
 }
 
 // Fingerabdruck einer Message-ID. Gespeichert wird nur der Hash - die
@@ -6775,6 +6944,15 @@ function logStats($requestId, $data) {
     }
     if (!empty($data['one_click'])) {
         $entry['one_click'] = true;
+    }
+
+    // Kampagne: nur, wenn derselbe Text schon woanders herkam oder hinging.
+    if (is_array($data['campaign'] ?? null)
+        && (($data['campaign']['senders'] ?? 0) > 1 || ($data['campaign']['mailboxes'] ?? 0) > 1)) {
+        $entry['campaign'] = [
+            'senders' => (int)$data['campaign']['senders'],
+            'mailboxes' => (int)$data['campaign']['mailboxes'],
+        ];
     }
 
     // Was das Postfach des Empfaengers ueber diesen Absender weiss -

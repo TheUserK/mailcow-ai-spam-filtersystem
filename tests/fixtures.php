@@ -2370,6 +2370,75 @@ function runFixtures() {
         'history is counted for every recipient');
     $db->exec('DELETE FROM history');
 
+    // Kampagnen: derselbe Text von wechselnden Absendern (die
+    // Messer-Werbung vom 12.11.) bzw. an mehrere Postfaecher.
+    $knife = 'Black Friday Deal: Diese Messer schneiden sogar durch Eis und gefrorenes Fleisch. '
+        . 'Japanischer Stahl, handgeschmiedet, mit lebenslanger Garantie und kostenlosem Versand nach Deutschland. '
+        . 'Nur heute erhalten Sie das komplette Set mit sechs Klingen, Wetzstahl und Holzblock zum halben Preis. '
+        . 'Tausende zufriedene Kunden haben bereits bestellt, der Vorrat ist streng begrenzt und wird nicht nachgeliefert. '
+        . 'Klicken Sie jetzt auf den Link und sichern Sie sich Ihr Angebot, bevor es ein anderer tut.';
+    $fpA = campaignFingerprint('Hallo Peter, ' . $knife . ' https://kaufen.coupons/a?id=123456');
+    $fpB = campaignFingerprint('Guten Tag Frau Meier, ' . $knife . ' https://germasale.auction/z?uid=998877 Bestellnummer 44512');
+    $fpC = campaignFingerprint('Sehr geehrte Damen und Herren, anbei erhalten Sie unsere Rechnung fuer die im Oktober erbrachten '
+        . 'Leistungen. Bitte ueberweisen Sie den Betrag innerhalb von vierzehn Tagen auf das unten genannte Konto. Fuer Rueckfragen '
+        . 'steht Ihnen unsere Buchhaltung gerne zur Verfuegung. Wir bedanken uns fuer die gute Zusammenarbeit und verbleiben mit '
+        . 'freundlichen Gruessen aus dem Buero in der Hauptstrasse.');
+    $checkScore(strlen($fpA) === 80 && campaignShared($fpA, $fpB) >= CAMPAIGN_MIN_SHARED,
+        'same text with another greeting and link has (nearly) the same fingerprint: ' . campaignShared($fpA, $fpB));
+    $checkScore(campaignShared($fpA, $fpC) === 0, 'a different text shares nothing: ' . campaignShared($fpA, $fpC));
+    foreach (['Hallo, ', 'Guten Tag, ', 'Sehr geehrter Herr Sailer, ', 'Liebe Frau Dr. Duchon, wie besprochen: '] as $g1) {
+        foreach (['Hi, ', 'Moin Wolfgang! ', 'Sehr geehrte Damen und Herren, '] as $g2) {
+            $checkScore(campaignShared(campaignFingerprint($g1 . $knife), campaignFingerprint($g2 . $knife)) >= CAMPAIGN_MIN_SHARED,
+                "greeting variants match: '$g1' / '$g2'");
+        }
+    }
+    $checkScore(campaignFingerprint('Danke, passt so. Bitte um Rechnung.') === '', 'short mail gets no fingerprint');
+
+    $db->exec('DELETE FROM campaign');
+    $knifeMail = function ($from, $to, $greeting = 'Hallo, ') use ($knife) {
+        return prepareMailContext(['from' => $from, 'from_email' => $from, 'to' => $to,
+            'subject' => 'Black Friday Deal: Messer, die sogar Eis schneiden', 'body' => $greeting . $knife,
+            'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'unknown'], 'rspamd_score' => 3.0,
+            'headers' => ['to_header' => $to]]);
+    };
+    $c1 = analyzeLocally($knifeMail('a@kaufen.coupons', 'kundin@example.com'), 'synthetic');
+    $c2 = analyzeLocally($knifeMail('b@declass.business', 'kundin@example.com', 'Guten Tag, '), 'synthetic');
+    $checkScore(empty($c1['campaign']['sender_rotation']) && empty($c2['campaign']['sender_rotation'])
+        && $c2['campaign']['senders'] === 2, 'two senders are not yet a rotation');
+    $m3 = $knifeMail('c@germasale.auction', 'kollege@example.com', 'Sehr geehrter Herr Sailer, ');
+    $c3 = analyzeLocally($m3, 'synthetic');
+    $checkScore($c3['campaign']['senders'] === 3 && $c3['campaign']['sender_rotation']
+        && in_array('same-content-from-several-senders', $c3['risk_flags'], true),
+        'the third sender of the same text is flagged');
+    $r3 = scoreAiAnalysis($m3, $c3, $spamVerdict, 'synthetic');
+    $checkScore(in_array('campaign-sender-rotation', $r3['evidence'], true)
+        && !in_array('campaign-sender-rotation', strongEvidence($r3['evidence']), true)
+        && $r3['campaign']['senders'] === 3,
+        'sender rotation is evidence on probation and is logged');
+    $again = analyzeLocally($m3, 'synthetic');
+    $checkScore($again['campaign']['senders'] === 3 && $again['campaign']['mailboxes'] === 2,
+        'observing the same mail twice counts it once');
+    $checkScore(empty($c3['campaign']['measured_bulk']), 'two mailboxes are not measured bulk');
+    $c4 = analyzeLocally($knifeMail('c@germasale.auction', 'dritter@example.com'), 'synthetic');
+    $checkScore($c4['campaign']['mailboxes'] === 3 && $c4['campaign']['measured_bulk']
+        && in_array('measured-bulk', $c4['risk_flags'], true), 'the third mailbox makes it measured bulk');
+    $r4 = scoreAiAnalysis($knifeMail('c@germasale.auction', 'dritter@example.com'), $c4,
+        array_replace($spamVerdict, ['mass_mailing' => false, 'offer_type' => 'product_or_content']), 'synthetic');
+    $checkScore($r4['mass_mailing'] === true, 'measured bulk overrides the model on mass mailing');
+    $db->exec('DELETE FROM campaign');
+    foreach (['a@news.tchibo.de', 'b@mail.tchibo.de', 'c@tchibo.de'] as $from) {
+        $cT = analyzeLocally($knifeMail($from, 'kundin@example.com'), 'synthetic');
+    }
+    $checkScore($cT['campaign']['senders'] === 1, 'subdomains of one company are one sender');
+    $db->exec('DELETE FROM campaign');
+    $db->prepare('UPDATE campaign SET ts = 0')->execute();
+    analyzeLocally($knifeMail('a@kaufen.coupons', 'kundin@example.com'), 'synthetic');
+    analyzeLocally($knifeMail('b@declass.business', 'kundin@example.com'), 'synthetic');
+    $db->exec('UPDATE campaign SET ts = ts - ' . (CAMPAIGN_WINDOW_HOURS * 3600 + 60));
+    $cOld = analyzeLocally($knifeMail('c@germasale.auction', 'kundin@example.com'), 'synthetic');
+    $checkScore($cOld['campaign']['senders'] === 1, 'observations outside the window do not count');
+    $db->exec('DELETE FROM campaign');
+
     // Aktive Anhaenge: HTML mit nachgebautem Login, SVG mit Skript,
     // Kalendereinladung mit Koeder - und harmlose Gegenstuecke.
     $b64 = function ($text) { return base64_encode($text); };

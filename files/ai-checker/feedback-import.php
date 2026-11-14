@@ -220,6 +220,7 @@ if ($db) {
     // Quarantaene haelt mailcow 30 Tage vor - laenger braucht es die
     // Fingerabdruecke nicht.
     $db->prepare('DELETE FROM flagged WHERE ts < ?')->execute([time() - 45 * 86400]);
+    $db->prepare('DELETE FROM campaign WHERE ts < ?')->execute([time() - 7 * 86400]);
     $db->prepare('DELETE FROM released WHERE noted < ?')->execute([time() - FEEDBACK_MAX_AGE_DAYS * 86400]);
     $db->commit();
 }
