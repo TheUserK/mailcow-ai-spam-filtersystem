@@ -51,7 +51,13 @@ offer_install_missing_tools() {
     # In einer nicht-interaktiven Shell (Cron, CI) liefert read leer zurueck
     # und faellt sauber auf "Nein" - kein apt-Aufruf ohne jemanden, der die
     # Frage tatsaechlich sieht.
-    read -p "Jetzt installieren (apt install ${missing[*]})? (y/N): " install_missing
+    # Bei einem Update wird nicht gefragt: Dort sitzt oft niemand davor
+    # (Auto-Update), und ungefragt Pakete zu installieren ist nicht Sache
+    # eines Updates.
+    local install_missing=""
+    if [[ "${UPGRADE_MODE:-}" != "true" ]]; then
+        read -p "Jetzt installieren (apt install ${missing[*]})? (y/N): " install_missing
+    fi
     if [[ $install_missing =~ ^[Yy]$ ]]; then
         if apt-get install -y "${missing[@]}"; then
             echo -e "${GREEN}[OK]${NC} installiert: ${missing[*]}"
@@ -583,7 +589,7 @@ if [[ -f "docker-compose.override.yml" ]]; then
                 cp docker-compose.override.yml "$OVERRIDE_BACKUP"
                 echo "       ai-checker is the only service in the file, so it can be"
                 echo "       replaced safely. Backup: $OVERRIDE_BACKUP"
-                if [[ "${FORCE_REPLACE:-}" == "true" ]]; then
+                if [[ "${FORCE_REPLACE:-}" == "true" || "${UPGRADE_MODE:-}" == "true" ]]; then
                     upd="y"
                 else
                     read -p "Update docker-compose.override.yml? (Y/n): " upd
@@ -602,7 +608,7 @@ if [[ -f "docker-compose.override.yml" ]]; then
                 echo "       The file defines $OVERRIDE_SERVICES services. Only the ai-checker block"
                 echo "       will be replaced; everything else stays as it is."
                 echo "       Backup: $OVERRIDE_BACKUP"
-                if [[ "${FORCE_REPLACE:-}" == "true" ]]; then
+                if [[ "${FORCE_REPLACE:-}" == "true" || "${UPGRADE_MODE:-}" == "true" ]]; then
                     upd="y"
                 else
                     read -p "Replace the ai-checker block? (Y/n): " upd
@@ -809,7 +815,8 @@ CRON
     fi
 fi
 
-if [[ -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
+if [[ "${UPGRADE_MODE:-}" != "true" \
+      && -z "$(sed -n 's/^[[:space:]]*report_to[[:space:]]*=[[:space:]]*//p' data/ai-checker/report.conf 2>/dev/null | head -1)" ]]; then
     echo ""
     echo "The report mails you the cases where the filter contradicts itself."
     echo "Leave empty to skip - you can set it later with --set-to."
@@ -827,7 +834,14 @@ echo ""
 echo "The ai-checker container needs to be built/started, and Rspamd needs a"
 echo "restart to actually load the filter - 'up -d' alone leaves a running"
 echo "Rspamd untouched, so the filter would stay inactive."
-read -p "Start ai-checker and restart Rspamd now? (y/N): " start_containers
+# Bei einem Update wird nicht gefragt: Ein Update, nach dem der alte Stand
+# weiterlaeuft, ist keins - und das Auto-Update hat niemanden, der antwortet.
+if [[ "${UPGRADE_MODE:-}" == "true" ]]; then
+    start_containers="y"
+    echo "Update: starting ai-checker and restarting Rspamd."
+else
+    read -p "Start ai-checker and restart Rspamd now? (y/N): " start_containers
+fi
 
 if [[ $start_containers =~ ^[Yy]$ ]]; then
     # --pull: immer mit frischem Basis-Image bauen. Ohne das nimmt Docker

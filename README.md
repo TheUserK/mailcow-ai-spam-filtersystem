@@ -503,7 +503,7 @@ API key rather than for the filter:
 ```bash
 cd mailcow-ai-spam-filtersystem
 git pull
-sudo ./install.sh --upgrade       # Carries your existing API key over
+sudo ./install.sh --upgrade       # Carries your existing API key over, asks nothing, restarts on its own
 ```
 
 Use `--upgrade`, not a plain `install.sh`: without it the installer does not
