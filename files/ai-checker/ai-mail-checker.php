@@ -556,6 +556,7 @@ logStats($requestId, [
     'claimed_thread' => !empty($result['claimed_thread']),
     'relationship' => $result['relationship'] ?? null,
     'campaign' => $result['campaign'] ?? null,
+    'relay_platform' => $result['relay_platform'] ?? '',
     'offer_type' => $result['offer_type'] ?? '',
     'mass_mailing' => !empty($result['mass_mailing']),
     'offer_rule' => $result['offer_rule'] ?? '',
@@ -2025,6 +2026,21 @@ function analyzeLocally(array $mail, $requestId) {
         $riskFlags[] = 'url-suspect-listing';
     }
 
+    // Plattform, die fremden Text verschickt - siehe relayPlatformFor().
+    $relayPlatform = $authStrength === 'strong' ? relayPlatformFor($mail) : '';
+    if ($relayPlatform !== '') {
+        $riskFlags[] = 'platform-relayed-content:' . $relayPlatform;
+        if (containsPhoneNumber($mail['body_clean'])) {
+            $riskFlags[] = 'platform-content-phone-number';
+        }
+    }
+
+    // Nachbau einer eigenen Domain - siehe ownDomainLookalike().
+    $lookalike = ownDomainLookalike($mail);
+    if ($lookalike !== '') {
+        $riskFlags[] = 'own-domain-lookalike:' . $lookalike;
+    }
+
     $profile = $matchedProfile['profile'] ?? null;
     $profileKey = $matchedProfile['key'] ?? '';
     $profileKind = $profile['kind'] ?? '';
@@ -2145,6 +2161,8 @@ function analyzeLocally(array $mail, $requestId) {
         'sender_global_rank' => $senderGlobalRank,
         'relationship' => $relationship,
         'campaign' => $campaign + ['sender_rotation' => $senderRotation, 'measured_bulk' => $measuredBulk],
+        'relay_platform' => $relayPlatform,
+        'own_domain_lookalike' => $lookalike,
         'struct' => $struct,
         'risk_flags' => array_values(array_unique($riskFlags)),
         'trust_flags' => array_values(array_unique($trustFlags)),
@@ -2168,6 +2186,10 @@ function analyzeLocally(array $mail, $requestId) {
 
     $canAutoPass = $profile
         && !$hasRejectRule
+        // Die Plattform ist echt, ihr Inhalt nicht unbedingt: nie am
+        // Modell vorbei.
+        && $relayPlatform === ''
+        && $lookalike === ''
         && $authStrength === 'strong'
         && empty($dangerousAttachments)
         && empty($shortenerDomains)
@@ -2364,6 +2386,18 @@ Freemail plus Firmenname oder Geldforderung allein belegt keinen Betrug.
 Das gibt keinen pauschalen Vertrauensbonus: konkrete Identitaetsfaelschung,
 gefaehrliche Links, Anhaenge oder umgeleitete Zahlungswege weiter pruefen.
 
+Zwei Maschen kommen ohne jeden verdaechtigen Link aus - pruefe sie am Text:
+- Geraetecode: Die Mail nennt einen kurzen Code und fordert auf, ihn auf
+  einer ECHTEN Anmeldeseite einzugeben (microsoft.com/devicelogin,
+  "Geraet verknuepfen", "Anmeldung bestaetigen"). Der Link ist echt, die
+  Seite ist echt - mit der Eingabe meldet der Empfaenger aber das Geraet
+  des Angreifers an seinem Konto an. Kommt die Aufforderung unerwartet, ist
+  es "phishing", auch wenn jede Domain stimmt.
+- Rueckruf: Die Mail behauptet eine Abbuchung, ein Abo oder eine Bestellung
+  und nennt als einzigen Ausweg eine Telefonnummer ("falls Sie das nicht
+  veranlasst haben, rufen Sie an"). Kein Link, kein Anhang - der Betrug
+  findet am Telefon statt. "fraud".
+
 Als legitim einstufen:
 - normale Geschaefts- und Privatmails
 - erwartete Newsletter mit List-Unsubscribe
@@ -2480,6 +2514,33 @@ Zu den Absender-Flags:
   einen Versanddienst. Kaltakquise-Werkzeuge senden meist aus normalen
   Postfaechern und haben es nicht. Kein Abo-Beweis, aber ein deutlicher
   Hinweis auf einen ordentlichen Listenversand statt Einzelansprache.
+- "platform-relayed-content:PLATTFORM": Die Mail kommt nachweislich von
+  PLATTFORM (PayPal, DocuSign, Google, Dropbox ...). Das beantwortet aber nur,
+  WER zugestellt hat. Ueber solche Plattformen kann jeder Aussenstehende
+  frei formulierten Text an beliebige Adressen schicken: als Notiz einer
+  Rechnung oder Zahlungsaufforderung, als Titel eines Dokuments, als
+  Beschreibung eines Termins. Trenne deshalb den Rahmen der Plattform vom
+  eingetragenen Text und beurteile DIESEN. Betrug ist es, wenn der Text
+  - eine Abbuchung, Bestellung oder Verlaengerung behauptet, die der
+    Empfaenger nicht kennt, und zum Anruf oder zur Antwort draengt,
+  - sich als andere Firma ausgibt als die Plattform (Norton, Geek Squad,
+    McAfee, eine Bank, "Sicherheitsabteilung"),
+  - Zugangsdaten, einen Code oder eine Fernwartung verlangt.
+  Dann "fraud" oder "phishing" - "verified-brand", "matched-profile" und
+  "auth:strong" entlasten in diesem Fall NICHT, sie sind hier der Trick.
+  Eine gewoehnliche Rechnung, Zahlungsbestaetigung oder Dokumentfreigabe
+  eines erkennbaren Geschaeftspartners bleibt "transactional".
+- "platform-content-phone-number": In einer solchen Plattform-Mail steht
+  eine Telefonnummer. Echte Benachrichtigungen dieser Dienste fordern nicht
+  zum Anruf auf; die Nummer stammt aus dem von Dritten eingetragenen Text.
+  Zusammen mit einer unerwarteten Forderung ein starkes Betrugssignal.
+- "own-domain-lookalike:DOMAIN": Die Absenderdomain ist DOMAIN - einer der
+  Domains dieses Hauses - zum Verwechseln aehnlich, aber nicht sie selbst
+  (ein Buchstabe anders, "rn" statt "m", andere Endung). Wer so schreibt,
+  will fuer einen Kollegen oder Vorgesetzten gehalten werden. Eine Mail
+  mit diesem Flag, die um eine Ueberweisung, Gutscheinkarten, geaenderte
+  Bankdaten, Vertraulichkeit oder eine schnelle Antwort bittet, ist
+  "fraud". Ein vertrauter Ton ist hier kein Ham-Signal, sondern die Masche.
 - "same-content-from-several-senders": Derselbe Text kam in den letzten
   zwei Tagen von mindestens drei verschiedenen Absendern auf diesem Server
   an. Das ist das Muster von Versendern, die ihre Domains laufend wechseln,
@@ -2519,6 +2580,9 @@ Zu den Absender-Flags:
   "reply-to-domain-mismatch", "message-id-domain-mismatch" und
   "url-domain-mismatch" deutlich weniger - die Grundsatzfrage "ist das
   wirklich MARKE" ist bereits beantwortet.
+  AUSNAHME: Steht zugleich "platform-relayed-content" in den Risk-Flags,
+  gilt das alles nur fuer den Rahmen der Mail, nicht fuer ihren Text -
+  siehe dort.
   Das gilt AUCH fuer die Abo-Frage - siehe den Absatz "Werbung eines
   etablierten Unternehmens ist kein Spam" beim Absender-Domain-Rang. Eine
   beglaubigte Marke erfuellt dessen Bedingungen immer.
@@ -3226,6 +3290,12 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         $score = max($score, 0.0);
     }
 
+    // Wer eine unserer Domains nachahmt, bekommt keinen Ham-Bonus - egal
+    // wie kollegial die Mail klingt. Genau so soll sie ja klingen.
+    if (($localContext['own_domain_lookalike'] ?? '') !== '') {
+        $score = max($score, 0.0);
+    }
+
     $bareLink = empty($localContext['matched_profile']) && bareLinkFromStranger($mail);
     if ($bareLink) {
         $score = max($score, 0.0);
@@ -3543,10 +3613,17 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         $unsolicitedBulk = true;
     }
 
+    // Profil und beglaubigte Marke sagen "der Absender ist echt". Bei
+    // einer Plattform, die fremden Text verschickt, schuetzt das nicht vor
+    // dem Junk-Ordner - siehe relayPlatformFor(). Vor der Ablehnung
+    // schuetzt es weiterhin ($noTrustSignals bleibt unveraendert).
+    $relayPlatform = $localContext['relay_platform'] ?? '';
+    $identityVouches = (!empty($localContext['matched_profile']) || $verifiedBrand !== '')
+        && !($relayPlatform !== '' && in_array($category, ['phishing', 'fraud'], true));
+
     $junkFloorApplies = ($policy['may_reject'] || $unsolicitedBulk)
         && $confidence >= 0.80
-        && empty($localContext['matched_profile'])
-        && $verifiedBrand === ''
+        && !$identityVouches
         && !$realConversation
         && $transactionalGuard === '';
 
@@ -3657,6 +3734,7 @@ function scoreAiAnalysis(array $mail, array $localContext, array $analysis, $req
         'claimed_thread'  => $claimedThread,
         'relationship'    => relationshipLog($relationship, $relEffect),
         'campaign'        => $localContext['campaign'] ?? null,
+        'relay_platform'  => $localContext['relay_platform'] ?? '',
         'offer_type'      => $offerType,
         'mass_mailing'    => $massMailing,
         // Welche Angebots-Regel zutraf, und ob sie angewandt wurde.
@@ -3842,6 +3920,9 @@ function collectStructuralEvidence(array $mail, array $localContext, array $anal
     if (!empty($localContext['campaign']['sender_rotation'])) {
         $evidence[] = 'campaign-sender-rotation';
     }
+    if (($localContext['own_domain_lookalike'] ?? '') !== '') {
+        $evidence[] = 'own-domain-lookalike';
+    }
     $attachmentFlags = $struct['attachment_findings']['flags'] ?? [];
     if (in_array('credential-form', $attachmentFlags, true)) {
         $evidence[] = 'attachment-credential-form';
@@ -3998,6 +4079,138 @@ function detectPromptInjection($text) {
 //  Ein Faelscher kommt hier nicht durch: ohne bestandenes DMARC fuer die
 //  echte Markendomain ist die Auth-Staerke nie 'strong'.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  Plattformen, die fremden Text unter eigenem Namen verschicken.
+//
+//  Eine PayPal-Rechnung, eine DocuSign-Anfrage, eine Kalendereinladung
+//  von Google: Die Mail kommt wirklich von dort, SPF/DKIM/DMARC stimmen,
+//  jeder Link zeigt auf die echte Plattform - nur den TEXT hat ein
+//  Fremder eingetragen ("Ihr Konto wurde mit 499 EUR belastet, rufen Sie
+//  sofort an"). Nach KnowBe4 lief 2026 rund jede fuenfte Phishing-Mail
+//  ueber eine solche Plattform.
+//
+//  Bis 14.11. war genau das der blinde Fleck: Ein Treffer im
+//  Trusted-Sender-Profil (PayPal ist eingebaut) winkte die Mail OHNE
+//  Modellaufruf durch, und "verified-brand" galt im Prompt als sehr
+//  starkes Ham-Signal. Beides beantwortet "ist der Absender echt?" - bei
+//  diesen Plattformen ist das die falsche Frage.
+//
+//  Fuer sie gilt jetzt: kein Auto-Pass, das Modell erfaehrt "Absender
+//  echt, Inhalt moeglicherweise von Dritten", und ein sicheres
+//  Phishing-/Betrugsurteil darf die Mail in den Junk schieben, obwohl der
+//  Absender beglaubigt ist. Abgewiesen wird deswegen weiterhin nichts:
+//  Die Plattform ist echt, ein Irrtum trifft echte Rechnungen.
+//
+//  Nur Dienste, ueber die Aussenstehende frei formulierten Text an
+//  beliebige Adressen schicken koennen. Eine Paketbenachrichtigung von
+//  DHL gehoert nicht dazu.
+// ---------------------------------------------------------------------
+function relayPlatformFor(array $mail) {
+    static $platforms = [
+        'paypal'     => ['paypal.com', 'paypal.de', 'paypal.co.uk'],
+        'docusign'   => ['docusign.net', 'docusign.com'],
+        'adobe-sign' => ['adobesign.com', 'echosign.com'],
+        'dropbox'    => ['dropbox.com', 'dropboxmail.com'],
+        'sharepoint' => ['sharepointonline.com'],
+        'google'     => ['docs.google.com', 'calendar.google.com'],
+        'intuit'     => ['intuit.com', 'quickbooks.com'],
+        'xero'       => ['xero.com'],
+        'square'     => ['squareup.com'],
+        'wetransfer' => ['wetransfer.com'],
+        'canva'      => ['canva.com'],
+        'calendly'   => ['calendly.com'],
+        'typeform'   => ['typeform.com'],
+        'jotform'    => ['jotform.com'],
+    ];
+    $domain = normalizeHost($mail['from_domain'] ?? '');
+    if ($domain === '') {
+        return '';
+    }
+    foreach ($platforms as $name => $domains) {
+        foreach ($domains as $d) {
+            if ($domain === $d || endsWith($domain, '.' . $d)) {
+                return $name;
+            }
+        }
+    }
+    // google.com selbst verschickt vor allem EIGENE Post (Kontowarnungen,
+    // Play, Workspace). Fremden Text tragen nur bestimmte Absender:
+    // Kalendereinladungen, Formular-Quittungen, Freigaben, Kommentare.
+    if ($domain === 'google.com') {
+        $local = strtolower(strstr(extractEmailAddress($mail['from_email'] ?? ''), '@', true) ?: '');
+        if (preg_match('/^(calendar-notification|forms-receipts-noreply|drive-shares(-dm)?-noreply|comments-noreply|noreply-apps-scripts-notifications)$/', $local)) {
+            return 'google';
+        }
+    }
+    return '';
+}
+
+// Eine Telefonnummer im Mailtext. Fuer sich belanglos - in einer
+// Plattform-Mail ist sie der Koeder: Der Betrug laeuft dann am Telefon,
+// einen Link, den ein Filter pruefen koennte, gibt es nicht.
+function containsPhoneNumber($text) {
+    return preg_match('/(\+|00)\d[\d ()\/.-]{7,}\d|\(\d{3}\)\s?\d{3}[ .-]?\d{4}|\b1[ .-]\d{3}[ .-]\d{3}[ .-]\d{4}\b/', (string)$text) === 1;
+}
+
+// ---------------------------------------------------------------------
+//  Nachbau einer UNSERER Domains als Absender.
+//
+//  "rnoving-pictures.de", "moving-pictures.co", "movingpictures.de": Wer
+//  so schreibt, will fuer einen Kollegen gehalten werden - die Form, in
+//  der die Chef-Masche ("bitte heute noch ueberweisen") ankommt. Die
+//  Markenpruefung sieht das nicht, weil die eigene Firma in keiner
+//  Markenliste steht.
+//
+//  Verglichen wird die registrierbare Absenderdomain mit jeder eigenen:
+//   - bis auf ein, bei langen Namen zwei Zeichen gleich (Tippfehler,
+//     ausgelassener Bindestrich, vertauschte Buchstaben)
+//   - gleich nach Aufloesen verwechselbarer Zeichen (rn/m, vv/w, 0/o, 1/l)
+//   - derselbe Name unter einer anderen Endung - nur ab acht Zeichen,
+//     sonst traefe es jede Firma, die zufaellig auch "karrer" heisst
+//
+//  Nie fuer eine Domain mit eigenem Rang in der Majestic-Liste: Die
+//  gehoert einer etablierten anderen Firma. Und nie fuer eine eigene.
+// ---------------------------------------------------------------------
+function ownDomainLookalike(array $mail) {
+    $sender = registrableDomain(normalizeHost($mail['from_domain'] ?? ''));
+    if ($sender === '' || strpos($sender, '.') === false) {
+        return '';
+    }
+    $own = getLocalDomains();
+    if (empty($own) || domainMatchesAny($sender, $own)) {
+        return '';
+    }
+    list($senderLabel, $senderTld) = explode('.', $sender, 2);
+    $fold = function ($label) {
+        return str_replace(['rn', 'vv', '0', '1', '-', '_'], ['m', 'w', 'o', 'l', '', ''], $label);
+    };
+
+    foreach ($own as $domain) {
+        $domain = registrableDomain(normalizeHost($domain));
+        if ($domain === '' || $domain === $sender || strpos($domain, '.') === false) {
+            continue;
+        }
+        list($label, $tld) = explode('.', $domain, 2);
+        $length = strlen($label);
+        if ($length < 5) {
+            continue;   // zu kurz, um Aehnlichkeit von Zufall zu trennen
+        }
+        $match = false;
+        if ($senderLabel === $label) {
+            $match = $length >= 8;                       // gleicher Name, andere Endung
+        } elseif ($fold($senderLabel) === $fold($label)) {
+            $match = true;                               // verwechselbare Zeichen, Bindestrich
+        } else {
+            $distance = levenshtein($senderLabel, $label);
+            $match = $distance <= ($length >= 10 ? 2 : 1);
+        }
+        if ($match && senderGlobalRank($sender) === null) {
+            return $domain;
+        }
+    }
+    return '';
+}
+
 function verifiedBrandSender(array $mail) {
     $domain = normalizeHost($mail['from_domain']);
     if ($domain === '' || evaluateAuthStrength($mail) !== 'strong') {
@@ -4787,6 +5000,7 @@ function strongEvidence(array $evidence) {
         'brand-claim-vs-known-domain', // behauptete Marke ist eine bekannte fremde Domain
         'archive-dangerous-content',    // ausfuehrbare Datei in einem Archiv (auf Bewaehrung)
         'campaign-sender-rotation',     // derselbe Text von mehreren Absendern (auf Bewaehrung)
+        'own-domain-lookalike',         // Absenderdomain ahmt eine unserer Domains nach (auf Bewaehrung)
         'attachment-credential-form',   // HTML-/SVG-Anhang mit Passwortfeld (auf Bewaehrung)
         'attachment-obfuscated-script', // HTML-/SVG-Anhang mit verschleiertem Skript (auf Bewaehrung)
     ];
@@ -4911,6 +5125,11 @@ function probationEvidence() {
         // Verbandsrundschreibens, das jede Filiale von der eigenen Domain
         // weiterschickt. Erst im Report ansehen.
         'campaign-sender-rotation',
+        // Seit 14.11. Der Abgleich ist eng gefasst und schliesst Domains
+        // mit eigenem Rang aus - trotzdem kann eine kleine, nicht gelistete
+        // Firma zufaellig fast so heissen wie eine unserer Domains. Erst
+        // im Report ansehen.
+        'own-domain-lookalike',
         // 'fake-thread-foreign-ref' stand schon vom 16. bis 25.09. hier. In der
         // Zeit hat es an echter Post nur Kaltakquise aus Outlook-Postfaechern
         // getroffen - "Re: Complete price", "Re: Quick Ranking..??",
@@ -5557,6 +5776,15 @@ function relationshipDb() {
             PRIMARY KEY (rcpt, sender))');
         // Was wir in Junk oder Ablehnung geschoben haben - siehe
         // recordDelivery() - und was davon wieder aufgetaucht ist.
+        // Tageszaehler fuer die Wochenbilanz im Report: wie viel der Filter
+        // einsortiert hat (volume) und wie oft Empfaenger ihm widersprochen
+        // haben (corrections). Nur Zahlen, keine Adressen.
+        $pdo->exec('CREATE TABLE IF NOT EXISTS volume (
+            day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, kind))');
+        $pdo->exec('CREATE TABLE IF NOT EXISTS corrections (
+            day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, kind))');
         // Kampagnen-Fingerabdruecke - siehe CAMPAIGN_WINDOW_HOURS.
         $pdo->exec('CREATE TABLE IF NOT EXISTS campaign (
             fp TEXT NOT NULL, sender TEXT NOT NULL, rcpt_h TEXT NOT NULL,
@@ -5862,6 +6090,15 @@ function recordDelivery(array $mail, $authStrength, $totalScore, $forcedDelivery
         return;
     }
     recordFlagged($db, $mail, $sender, $totalScore, $forcedDelivery);
+    // Tageszaehler: Junk/Ablehnung oder Posteingang. Der Nenner fuer die
+    // Fehlerquote in der Wochenbilanz (ai-filter-report.sh --quality).
+    try {
+        $db->prepare('INSERT INTO volume (day, kind, n) VALUES (?, ?, 1)
+            ON CONFLICT(day, kind) DO UPDATE SET n = n + 1')
+           ->execute([date('Y-m-d'), ($totalScore >= JUNK_FLOOR && !$forcedDelivery) ? 'junk' : 'inbox']);
+    } catch (Exception $e) {
+        // Ein fehlender Zaehler ist kein Grund, das Urteil aufzuhalten.
+    }
     if ($authStrength !== 'strong') {
         return;
     }
@@ -6944,6 +7181,10 @@ function logStats($requestId, $data) {
     }
     if (!empty($data['one_click'])) {
         $entry['one_click'] = true;
+    }
+
+    if (($data['relay_platform'] ?? '') !== '') {
+        $entry['relay_platform'] = (string)$data['relay_platform'];
     }
 
     // Kampagne: nur, wenn derselbe Text schon woanders herkam oder hinging.

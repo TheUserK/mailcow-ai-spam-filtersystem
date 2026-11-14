@@ -20,6 +20,8 @@ Usage: ai-filter-report.sh [OPTIONS]
 
   (no option)        print the report for the last 24 hours
   -d DAYS            look back DAYS days (default 1)
+  --quality          print the weekly balance: how often recipients overruled
+                     the filter, this week against the weeks before
   --mail             send it by mail instead of printing (used by cron)
   --to ADDRESS       send to this address once, without storing it
   --set-to ADDRESS   store the recipient address
@@ -34,6 +36,7 @@ USAGE
 }
 
 DAYS=1
+QUALITY=0
 ACTION=print
 ARG=""
 ONCE_TO=""
@@ -42,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -d)         DAYS="${2:-1}"; shift 2 ;;
         --mail)     ACTION=mail; shift ;;
+        --quality)  QUALITY=1; shift ;;
         --to)       ONCE_TO="${2:-}"; ACTION=mail; shift 2 ;;
         --set-to)   ACTION=setto; ARG="${2:-}"; shift 2 ;;
         --from)     ACTION=setfrom; ARG="${2:-}"; shift 2 ;;
@@ -244,6 +248,47 @@ render_releases() {
     return 0
 }
 
+# Wochenbilanz: wie oft haben Empfaenger dem Filter widersprochen?
+#
+# Bisher gab es keine Zahl dafuer, ob eine Aenderung den Filter besser oder
+# schlechter gemacht hat - nur einzelne Faelle. Die Nutzerkorrekturen sind
+# so eine Zahl, und sie braucht keinen gespeicherten Mailtext:
+#   Fehlalarm   = aus Junk zurueckgeholt oder aus Quarantaene freigegeben,
+#                 bezogen auf alles, was der Filter einsortiert hat
+#   Durchrutscher = von Hand in den Junk geschoben,
+#                 bezogen auf alles, was im Posteingang ankam
+# Beides sind UNTERGRENZEN: Nicht jeder holt einen Newsletter zurueck, und
+# nicht jeder verschiebt Spam - viele loeschen ihn einfach. Aussagekraeftig
+# ist der Verlauf von Woche zu Woche, nicht die einzelne Prozentzahl.
+render_quality() {
+    local db="data/logs/ai-checker/relationship.sqlite" out
+    [[ -f "$db" ]] || return 1
+    command -v sqlite3 >/dev/null || return 1
+    out=$(sqlite3 -separator $'\t' "$db" "
+        WITH weeks(w, von, bis) AS (
+            SELECT 0, date('now','-6 days'), date('now') UNION ALL
+            SELECT 1, date('now','-13 days'), date('now','-7 days') UNION ALL
+            SELECT 2, date('now','-20 days'), date('now','-14 days') UNION ALL
+            SELECT 3, date('now','-27 days'), date('now','-21 days'))
+        SELECT strftime('%d.%m.', von) || '-' || strftime('%d.%m.', bis),
+            (SELECT COALESCE(SUM(n),0) FROM volume WHERE kind='junk' AND day BETWEEN von AND bis),
+            (SELECT COALESCE(SUM(n),0) FROM corrections WHERE kind IN ('rescued','released') AND day BETWEEN von AND bis),
+            (SELECT COALESCE(SUM(n),0) FROM volume WHERE kind='inbox' AND day BETWEEN von AND bis),
+            (SELECT COALESCE(SUM(n),0) FROM corrections WHERE kind='junked' AND day BETWEEN von AND bis)
+        FROM weeks ORDER BY w" 2>/dev/null \
+        | awk -F'\t' '
+            function pct(a, b) { return b > 0 ? sprintf("%5.1f %%", 100 * a / b) : "     -" }
+            ($2 + $4) > 0 { printf "    %-14s %6d  %5d  %s    %6d  %5d  %s\n", $1, $2, $3, pct($3, $2), $4, $5, pct($5, $4); seen = 1 }
+            END { exit seen ? 0 : 1 }') || return 1
+    echo
+    echo "  Wochenbilanz - wie oft Empfaenger dem Filter widersprochen haben"
+    echo "  Untergrenzen: nicht jeder holt zurueck oder sortiert aus. Auf den Verlauf achten."
+    echo "    Woche          einsortiert  zurueckgeholt       zugestellt  aussortiert"
+    echo "                     (Junk/Abl.)  (Fehlalarm)       (Posteingang) (Durchrutscher)"
+    echo "$out"
+    return 0
+}
+
 FOUND=0
 BODY=$(
     # 1. Abgewiesen, obwohl der Absender per DMARC beglaubigt ist.
@@ -403,6 +448,10 @@ BODY=$(
     # 8. Keine Logzeilen-Gruppe, sondern eine Konfigurationsluecke.
     render_missing_context && FOUND=1
     render_releases && FOUND=1
+    # Die Wochenbilanz auf Wunsch (--quality) und montags von selbst.
+    if [[ "$QUALITY" == 1 || "$(date +%u)" == 1 ]]; then
+        render_quality && FOUND=1
+    fi
 )
 
 if [[ -z "$BODY" ]]; then

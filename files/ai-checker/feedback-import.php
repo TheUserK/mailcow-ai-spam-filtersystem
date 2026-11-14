@@ -188,8 +188,19 @@ if (!$dryRun && !$db) {
     exit(1);
 }
 
+$isNew = null;
 if ($db) {
     $db->beginTransaction();
+    // Fuer die Wochenbilanz: Nur eine NEUE oder geaenderte Entscheidung
+    // zaehlt als Korrektur - dieselbe Mail liegt 14 Tage lang im Fenster
+    // und wuerde sonst jede Nacht erneut gezaehlt.
+    $known = $db->prepare('SELECT verdict FROM feedback WHERE rcpt = ? AND sender = ?');
+    $isNew = function ($rcpt, $sender, $verdict) use ($known) {
+        $known->execute([$rcpt, $sender]);
+        return $known->fetchColumn() !== $verdict;
+    };
+    $countCorrection = $db->prepare('INSERT INTO corrections (day, kind, n) VALUES (?, ?, 1)
+        ON CONFLICT(day, kind) DO UPDATE SET n = n + 1');
     $upsert = $db->prepare('INSERT INTO feedback (rcpt, sender, verdict, ts) VALUES (?, ?, ?, ?)
         ON CONFLICT(rcpt, sender) DO UPDATE SET verdict = excluded.verdict, ts = excluded.ts
         WHERE excluded.ts >= feedback.ts');
@@ -204,6 +215,10 @@ foreach ($found as $rcpt => $senders) {
             echo $entry['verdict'], "\t", $rcpt, "\t", $sender, "\t", date('Y-m-d', $entry['ts']),
                 !empty($entry['released']) ? "\taus Quarantaene freigegeben" : '', "\n";
         } else {
+            if ($isNew($rcpt, $sender, $entry['verdict'])) {
+                $countCorrection->execute([date('Y-m-d'),
+                    !empty($entry['released']) ? 'released' : $entry['verdict']]);
+            }
             $upsert->execute([$rcpt, $sender, $entry['verdict'], $entry['ts']]);
             if (!empty($entry['released'])) {
                 $db->prepare('INSERT OR IGNORE INTO released (rcpt, sender, ts, noted) VALUES (?, ?, ?, ?)')
@@ -221,6 +236,8 @@ if ($db) {
     // Fingerabdruecke nicht.
     $db->prepare('DELETE FROM flagged WHERE ts < ?')->execute([time() - 45 * 86400]);
     $db->prepare('DELETE FROM campaign WHERE ts < ?')->execute([time() - 7 * 86400]);
+    $db->prepare('DELETE FROM volume WHERE day < ?')->execute([date('Y-m-d', time() - 400 * 86400)]);
+    $db->prepare('DELETE FROM corrections WHERE day < ?')->execute([date('Y-m-d', time() - 400 * 86400)]);
     $db->prepare('DELETE FROM released WHERE noted < ?')->execute([time() - FEEDBACK_MAX_AGE_DAYS * 86400]);
     $db->commit();
 }

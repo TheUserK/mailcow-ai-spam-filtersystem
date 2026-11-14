@@ -179,6 +179,7 @@ Incoming Email
 - Otherwise calls the AI with a compact prompt built from the mail + the local risk/trust flags, and turns `spam_probability` + `confidence` + `category` into a bounded, signed score
 - Applies the reject-eligibility conjunction, the category override, the junk floor and the two reject paths (see [Design Principle](#design-principle-v3) above)
 - Looks up what the recipient's own mailbox says about the sender (`relationshipFor()`: rescued from Junk, moved to Junk by hand, or arriving in the inbox for weeks) and, once switched from shadow to on, uses it for the junk floor - see [CONFIGURATION.md](CONFIGURATION.md#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite)
+- Looks inside HTML, SVG and calendar attachments (`attachmentFindings()`), recognises a campaign by its text across rotating senders (`campaignObserve()`), treats platforms that relay third-party text (PayPal invoices, DocuSign, calendar invites) as real senders with unverified content (`relayPlatformFor()`), and spots lookalikes of your own domains (`ownDomainLookalike()`) - see [CONFIGURATION.md](CONFIGURATION.md#attachments-with-active-content)
 - Manages budget tracking
 - Never returns a `reject` action - always `add` (or `pass` for the two skip cases above), with a numeric score for Rspamd to add
 
@@ -190,6 +191,7 @@ Incoming Email
 - Skips mail re-delivered by the server's own sieve forwarding (`SIEVE_HOST`, `LOCAL_OUTBOUND`). It was already analysed on ingress with the authentication intact, which forwarding destroys - a forwarded legitimate mail otherwise presents exactly the signature of a forged one
 - Checks the Lua-level sender whitelist before making any API call at all (saves cost)
 - Gathers SPF/DKIM/DMARC results, Reply-To/Return-Path/Message-Id, List-Unsubscribe/List-Id, forged-sender signals, URLs/link-domains, attachments and content stats from the task, and sends them to the PHP checker
+- Sends the content of HTML/SVG/calendar parts (head and tail, Base64), the file names inside archives and Rspamd's attachment findings (encrypted/nested archive, extension mismatch, olefy macro verdict, hidden text)
 - Also forwards the URL reputation Rspamd has already established for the mail (Spamhaus DBL, SURBL, URIBL, OpenPhish, PhishTank, and the SEM fresh-domain zone). These lookups happen anyway as part of stock mailcow - reading their symbols costs nothing and adds no dependency
 - Adds the returned score directly to the `AI_CONTENT_SCORE` symbol (no more weight division or forced reject - the number the checker returns *is* the Rspamd score delta)
 - Supports log-only mode (calls the checker, logs what it would have added, but doesn't apply it)

@@ -2370,6 +2370,77 @@ function runFixtures() {
         'history is counted for every recipient');
     $db->exec('DELETE FROM history');
 
+    // Plattform-Missbrauch: echte PayPal-Mail, Betrugstext in der Notiz.
+    $paypal = [
+        'from' => 'service@paypal.de', 'from_email' => 'service@paypal.de', 'from_display_name' => 'PayPal',
+        'to' => 'kundin@example.com', 'subject' => 'Rechnung von Norton Security LLC',
+        'body' => 'Norton Security LLC hat Ihnen eine Rechnung ueber 499,00 EUR gesendet. Hinweis des Verkaeufers: '
+            . 'Ihr Abo wurde verlaengert. Falls Sie das nicht veranlasst haben, rufen Sie sofort an: +1 (888) 555-0142.',
+        'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'], 'rspamd_score' => -1.5,
+        'return_path' => 'bounce@paypal.de', 'message_id' => '<abc@paypal.de>',
+        'urls' => ['https://www.paypal.com/invoice/p/#ABC'], 'url_domains' => ['www.paypal.com'],
+        'headers' => ['to_header' => 'kundin@example.com'],
+    ];
+    $ctxP = analyzeLocally(prepareMailContext($paypal), 'synthetic');
+    $checkScore($ctxP['matched_profile'] === 'paypal' && empty($ctxP['handled']),
+        'a genuine PayPal mail is no longer waved through without the model');
+    $checkScore(in_array('platform-relayed-content:paypal', $ctxP['risk_flags'], true)
+        && in_array('platform-content-phone-number', $ctxP['risk_flags'], true),
+        'the model is told the text may be a third party\'s, and that it carries a phone number');
+    $fraud = array_replace($spamVerdict, ['category' => 'fraud', 'spam_probability' => 0.95, 'confidence' => 0.9]);
+    $resP = scoreAiAnalysis(prepareMailContext($paypal), $ctxP, $fraud, 'synthetic');
+    $checkScore($paypal['rspamd_score'] + $resP['score'] >= JUNK_FLOOR && !$resP['reject_eligible']
+        && $resP['relay_platform'] === 'paypal',
+        'a fraud verdict on platform-relayed text reaches junk, never reject');
+    $resPT = scoreAiAnalysis(prepareMailContext($paypal), $ctxP,
+        array_replace($spamVerdict, ['category' => 'transactional', 'spam_probability' => 0.1]), 'synthetic');
+    $checkScore($resPT['score'] <= 0, 'an ordinary PayPal receipt keeps its ham credit');
+    $resPS = scoreAiAnalysis(prepareMailContext($paypal), $ctxP, $spamVerdict, 'synthetic');
+    $checkScore($paypal['rspamd_score'] + $resPS['score'] < JUNK_FLOOR,
+        'only phishing/fraud verdicts break the platform\'s identity protection');
+    $dhl = array_replace($paypal, ['from' => 'noreply@dhl.de', 'from_email' => 'noreply@dhl.de', 'from_display_name' => 'DHL Paket',
+        'return_path' => 'bounce@dhl.de', 'message_id' => '<x@dhl.de>', 'subject' => 'Ihr Paket kommt',
+        'body' => 'Ihre Sendung wird heute zugestellt.', 'urls' => ['https://www.dhl.de/x'], 'url_domains' => ['www.dhl.de']]);
+    $checkScore(!empty(analyzeLocally(prepareMailContext($dhl), 'synthetic')['handled']),
+        'a shipping notification still auto-passes');
+    $checkScore(relayPlatformFor(['from_domain' => 'google.com', 'from_email' => 'no-reply@accounts.google.com']) === ''
+        && relayPlatformFor(['from_domain' => 'google.com', 'from_email' => 'calendar-notification@google.com']) === 'google'
+        && relayPlatformFor(['from_domain' => 'eu.docusign.net', 'from_email' => 'dse@eu.docusign.net']) === 'docusign',
+        'Google\'s own mail is not treated as relayed, its calendar and DocuSign are');
+    $weakPaypal = array_replace($paypal, ['auth' => ['spf' => 'fail', 'dkim' => 'unknown', 'dmarc' => 'fail']]);
+    $checkScore(!preg_grep('/^platform-relayed-content/', analyzeLocally(prepareMailContext($weakPaypal), 'synthetic')['risk_flags']),
+        'a forged platform sender is not a relayed platform - the forgery rules apply');
+    $checkScore(containsPhoneNumber('Ruf an: +49 89 1234567') && containsPhoneNumber('call (888) 555-0142')
+        && !containsPhoneNumber('Rechnung 2026-11-14, Betrag 1.234,56 EUR, Kd.Nr. 445566'), 'phone numbers, not invoice numbers');
+
+    // Nachbau einer eigenen Domain (eigene Domains im Test: example.com,
+    // moving-pictures.de, karrerlabs.de, karrer.info).
+    $look = function ($domain) { return ownDomainLookalike(['from_domain' => $domain]); };
+    $checkScore($look('rnoving-pictures.de') === 'moving-pictures.de', 'rn for m');
+    $checkScore($look('moving-picture.de') === 'moving-pictures.de', 'one letter missing');
+    $checkScore($look('movingpictures.de') === 'moving-pictures.de', 'hyphen dropped');
+    $checkScore($look('moving-pictures.co') === 'moving-pictures.de', 'same long name, other ending');
+    $checkScore($look('mail.karrer1abs.de') === 'karrerlabs.de', 'digit for letter, on a subdomain');
+    $checkScore($look('moving-pictures.de') === '' && $look('mail.moving-pictures.de') === '', 'our own domain is not its own lookalike');
+    $checkScore($look('karrer.com') === '' && $look('karrer.de') === '', 'a short name under another ending is someone else');
+    $checkScore($look('example.org') === '', 'seven letters under another ending: not enough');
+    $checkScore($look('tchibo.de') === '' && $look('haendler-beispiel.test') === '', 'unrelated domains');
+    $ceo = ['from' => 'Wolfgang Sailer <w.sailer@rnoving-pictures.de>', 'from_email' => 'w.sailer@rnoving-pictures.de',
+        'from_display_name' => 'Wolfgang Sailer', 'to' => 'buchhaltung@moving-pictures.de',
+        'subject' => 'Kurze Bitte', 'body' => 'Bist du am Platz? Ich brauche heute noch eine Ueberweisung, bitte vertraulich.',
+        'auth' => ['spf' => 'pass', 'dkim' => 'pass', 'dmarc' => 'pass'], 'rspamd_score' => -0.5,
+        'headers' => ['to_header' => 'buchhaltung@moving-pictures.de']];
+    $friendly = array_replace($spamVerdict, ['category' => 'personal', 'spam_probability' => 0.1]);
+    $ctxC = analyzeLocally(prepareMailContext($ceo), 'synthetic');
+    $checkScore(in_array('own-domain-lookalike:moving-pictures.de', $ctxC['risk_flags'], true),
+        'the lookalike is shown to the model');
+    $resC = scoreAiAnalysis(prepareMailContext($ceo), $ctxC, $friendly, 'synthetic');
+    $checkScore($resC['score'] === 0.0 && in_array('own-domain-lookalike', $resC['evidence'], true)
+        && !in_array('own-domain-lookalike', strongEvidence($resC['evidence']), true),
+        'a lookalike gets no ham credit; the evidence is on probation');
+    $resCF = scoreAiAnalysis(prepareMailContext($ceo), $ctxC, $fraud, 'synthetic');
+    $checkScore($ceo['rspamd_score'] + $resCF['score'] >= JUNK_FLOOR, 'a fraud verdict on it reaches junk');
+
     // Kampagnen: derselbe Text von wechselnden Absendern (die
     // Messer-Werbung vom 12.11.) bzw. an mehrere Postfaecher.
     $knife = 'Black Friday Deal: Diese Messer schneiden sogar durch Eis und gefrorenes Fleisch. '

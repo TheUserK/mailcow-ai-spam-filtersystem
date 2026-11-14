@@ -877,6 +877,144 @@ domain stays established even when its mailbox is hijacked, so
 `hijacked-reply-to`, a business-context role conflict, or any other structural
 evidence still applies exactly as before.
 
+## Attachments with active content
+
+Of an attachment the checker used to see name, type and size, and judged the
+extension. The common malicious attachments are no longer programs but text
+files that act when opened: an HTML page with a rebuilt login form, an SVG
+"image" carrying a script, a calendar invite with a link or call-back number.
+Macro documents are already rejected by mailcow itself (olefy: auto-exec plus
+suspicious keyword is +20, so the checker is never asked).
+
+**What the Lua module sends** (all three added on 14.11.):
+
+- the content of HTML, SVG and calendar parts - head and tail, at most three,
+  Base64-encoded so that any charset survives the JSON request
+- the file names **inside** archives, which Rspamd reads anyway
+- Rspamd's own findings that were computed and discarded: encrypted and
+  nested archives, extension mismatch, the olefy macro verdict, hidden text
+
+**What the checker does with it** (`attachmentFindings()`):
+
+| Finding | Meaning | Evidence |
+|---|---|---|
+| `credential-form` | password field in an HTML/SVG attachment | `attachment-credential-form` |
+| `obfuscated-script` | script that decodes its own content (`atob`, `unescape`, `eval`, long encoded blob) | `attachment-obfuscated-script` |
+| `script`, `redirect` | code is executed / the page forwards elsewhere | hint only |
+| `link`, `phone-number`, `embedded-file` | calendar invite carrying one of these | hint only |
+| executable inside an archive | `archive-contains:js` | `archive-dangerous-content` |
+
+The model gets a **skeleton**, not the document: title, 300 characters of
+visible text, forms and inputs, scripts with encoded blobs collapsed, link
+targets. An attachment can also be a real invoice, and its content is none of
+the AI provider's business. For calendar invites the attendee list is left
+out. `ATTACHMENT_CODE_CHARS` (3000) caps the excerpt.
+
+The analysis works one way only. An active attachment removes any ham credit
+and the "reputable advertiser" protection, but nothing in an attachment can
+make a mail look better. The three evidence classes start on probation: they
+show in the report and cannot carry a reject. A password field also occurs in
+portals for encrypted mail, and an archive with an executable is what a
+software supplier sends.
+
+Not covered: QR codes in images and PDFs, and macro source code. Both need a
+separate extraction container.
+
+## Campaigns: the same text from many senders
+
+On 12.11. the same knife advertisement arrived from four throwaway domains
+within a day. Each domain was new and unburdened - which is why such senders
+rotate them. The text is what they cannot rotate.
+
+`campaignFingerprint()` reduces the cleaned mail text (links, addresses and
+numbers removed) to the ten smallest hashes of all three-word sequences. Two
+texts count as the same when they share `CAMPAIGN_MIN_SHARED` (6) of them, so
+a different greeting or an inserted name does not matter. For
+`CAMPAIGN_WINDOW_HOURS` (48) the checker remembers which senders the text
+came from and how many mailboxes it reached:
+
+| Flag | Condition | Effect |
+|---|---|---|
+| `same-content-from-several-senders` | `CAMPAIGN_MIN_SENDERS` (3) different senders; not a matched profile, verified brand, established domain or reply to our mail | shown to the model; evidence `campaign-sender-rotation`, on probation |
+| `measured-bulk` | `CAMPAIGN_MIN_MAILBOXES` (3) mailboxes | shown to the model as a fact about mass mailing, **not** as a spam signal; overrides the model's `mass_mailing` |
+
+Honest cases exist for the first one - an association's circular that every
+branch forwards from its own domain, or the standard confirmation text of a
+shop system - hence probation. Stored are fingerprint, sender key and a hash
+of the mailbox, for seven days. Mails under `CAMPAIGN_MIN_WORDS` (40) words
+get no fingerprint. The flags are yes/no rather than counts, otherwise every
+additional recipient would change the prompt and defeat the verdict cache for
+exactly the mass mailings it is meant for.
+
+## Platforms that relay third-party text
+
+A PayPal invoice, a DocuSign request, a Google Calendar invite: the mail
+really comes from there, SPF/DKIM/DMARC pass, every link points to the real
+platform - only the **text** was entered by a stranger ("your account was
+charged 499 EUR, call now"). According to KnowBe4, about one in five phishing
+mails went through such a platform in 2026.
+
+Until 14.11. this was a blind spot. A trusted-sender profile match (PayPal is
+built in) passed the mail **without a model call**, and `verified-brand` was
+described to the model as a very strong ham signal. Both answer "is the
+sender real?", which is the wrong question here.
+
+For the platforms in `relayPlatformFor()` (PayPal, DocuSign, Adobe Sign,
+Dropbox, SharePoint, Google's calendar/forms/sharing senders, Intuit, Xero,
+Square, WeTransfer, Canva, Calendly, Typeform, Jotform) and strong
+authentication:
+
+- no auto-pass; the model always sees the mail
+- flag `platform-relayed-content:NAME`, and `platform-content-phone-number`
+  when the text carries a phone number
+- a confident `phishing`/`fraud` verdict may lift the mail to the junk
+  threshold although the sender is verified
+- **never** a reject because of it: the platform is real, and a mistake
+  would hit real invoices
+
+An ordinary receipt stays `transactional` and keeps its ham credit. Google's
+own mail (account alerts, Play) is not treated as relayed.
+
+## Lookalikes of your own domains
+
+`rnoving-pictures.de`, `moving-pictures.co`, `movingpictures.de`: whoever
+writes from such a domain wants to be taken for a colleague - the shape CEO
+fraud arrives in. The brand check does not see it, because your own company
+is in no brand list.
+
+`ownDomainLookalike()` compares the registrable sender domain with each of
+your domains: one character apart (two for names of ten or more), equal after
+resolving confusable characters (`rn`/`m`, `vv`/`w`, `0`/`o`, `1`/`l`,
+dropped hyphen), or the same name under another ending - the last only from
+eight characters, otherwise every company that happens to be called "karrer"
+would match. Never for a domain with its own Majestic rank (an established
+other company), never for names under five characters.
+
+Effect: flag `own-domain-lookalike:DOMAIN` for the model, no ham credit, no
+auto-pass, evidence `own-domain-lookalike` on probation.
+
+## Weekly balance (ai-filter-report.sh --quality)
+
+There was no number for whether a change made the filter better or worse -
+only individual cases. Recipients' corrections are such a number, and they
+need no stored mail text:
+
+```
+Woche          einsortiert  zurueckgeholt       zugestellt  aussortiert
+08.11.-14.11.     212      3    1.4 %       540      7    1.3 %
+```
+
+- **False alarms:** senders rescued from Junk or released from quarantine,
+  against everything the filter sorted into junk or rejection.
+- **Misses:** senders moved to Junk by hand, against everything delivered to
+  the inbox.
+
+Both are lower bounds - not everyone rescues a newsletter, and many delete
+spam instead of moving it. The trend from week to week is what counts. The
+checker keeps two daily counters (`volume`), the nightly import counts only
+**new or changed** decisions (`corrections`); neither holds an address. The
+balance is part of Monday's report and printed on demand with `--quality`.
+
 ## Offer type and mass mailing (OFFER_TYPE_RULES)
 
 "Newsletter or cold outreach" used to hang on the category alone, and for
@@ -1184,6 +1322,8 @@ keeps your choice.
 | `BRAND_DOMAINS_FILE` | `brand_domains.txt` next to the script | The generated Majestic-Million brand list (see below); absent means the checker silently falls back to the hand-curated list only |
 | `LOG_SUBJECT` | `true` | Write the subject line to stats.log. Needed to judge a verdict after the fact; kept 30 days, root-only |
 | `PROMPT_BODY_CHARS` | `3000` | How much of the visible mail text the model sees. Since 12.11. this is head *and* tail (`promptExcerpt()`), and the text is what the recipient reads (`visibleText()`): until then `strip_tags()` left the contents of `<style>` in place, so for HTML-only newsletters the model was partly reading CSS, and anything after character 3000 was invisible |
+| `ATTACHMENT_CODE_CHARS` | `3000` | How much of the attachment skeleton the model sees. See [Attachments with active content](#attachments-with-active-content) |
+| `CAMPAIGN_WINDOW_HOURS` / `CAMPAIGN_MIN_SENDERS` / `CAMPAIGN_MIN_MAILBOXES` | `48` / `3` / `3` | See [Campaigns](#campaigns-the-same-text-from-many-senders) |
 | `OFFER_TYPE_RULES` | `true` | Use the model's `offer_type`/`mass_mailing` answers for the junk floor. See [Offer type and mass mailing](#offer-type-and-mass-mailing-offer_type_rules) |
 | `VERDICT_CACHE_HOURS` | `24` | How long a model answer is reused for an identical mail; `0` disables. The same mailing to twenty mailboxes used to be twenty calls, and not always twenty identical answers (on 19.09. one Alfahosting mail got `transactional` and `spam` within eleven minutes). Cached is the model's answer, never the score: that is recomputed per mail from Rspamd's score, the recipient's feedback and the evidence. The key is a hash of what the model would see (minus the Rspamd score line), the model and this file's modification time, so an update or model change empties it. The file `data/logs/ai-checker/verdict_cache.sqlite` holds hash, verdict and time - no sender, recipient or mail text. A hit shows as `analysis_source: ai-cache` in `stats.log` and costs no budget |
 | `RELATIONSHIP_MODE` | `on` | `off` / `shadow` / `on`, set via `AI_FILTER_RELATIONSHIP_MODE`. See [Recipient relationship](#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite) |
