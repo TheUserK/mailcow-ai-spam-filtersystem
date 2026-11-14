@@ -204,6 +204,62 @@ local virus_symbols = {
   'CLAM_VIRUS',
 }
 
+-- Was Rspamd an Anhaengen und am HTML ohnehin feststellt. Wurde bis 14.11.
+-- berechnet und dann weggeworfen - dieselbe Sorte Versaeumnis wie frueher
+-- bei den URL-Blocklisten. Der Checker macht daraus Hinweise fuers Modell.
+local encrypted_archive_symbols = { 'MIME_ENCRYPTED_ARCHIVE' }
+local nested_archive_symbols = { 'MIME_ARCHIVE_IN_ARCHIVE', 'MIME_OBFUSCATED_ARCHIVE' }
+local bad_extension_symbols = {
+  'MIME_BAD_EXTENSION', 'MIME_DOUBLE_BAD_EXTENSION', 'MIME_BAD_ATTACHMENT',
+  'MIME_EXE_IN_GEN_SPLIT_RAR',
+}
+-- mailcow laesst Office-Dateien durch olefy laufen; OLETOOLS heisst:
+-- selbststartendes Makro mit verdaechtigen Befehlen.
+local office_macro_symbols = { 'OLETOOLS' }
+-- Text, den der Empfaenger nicht sieht (Schriftgroesse null, weiss auf
+-- weiss). Zeigt dem Filter etwas anderes als dem Menschen.
+local hidden_text_symbols = { 'ZERO_FONT', 'R_WHITE_ON_WHITE', 'HIDDEN_TEXT', 'MANY_INVISIBLE_PARTS' }
+
+-- Textanhaenge, die erst beim Oeffnen etwas tun: HTML-Seiten mit
+-- nachgebautem Login, SVG-"Bilder" mit Skript, Kalendereinladungen mit
+-- Link oder Rueckrufnummer. Deren Inhalt geht (gekuerzt) an den Checker -
+-- siehe ATTACHMENT_CODE_CHARS dort.
+local active_extensions = {
+  html = 'html', htm = 'html', shtml = 'html', xhtml = 'html',
+  svg = 'svg', ics = 'ics',
+}
+local rspamd_util_ok, rspamd_util = pcall(require, 'rspamd_util')
+
+-- Anfang und Ende eines Anhangs, Base64-kodiert. Kodiert, weil der Inhalt
+-- jede Zeichenkodierung haben kann und ungueltiges UTF-8 die JSON-Anfrage
+-- an den Checker unlesbar machen wuerde.
+local function attachment_excerpt(part)
+  if not rspamd_util_ok then
+    return nil
+  end
+  local content = part:get_content()
+  if not content then
+    return nil
+  end
+  local size = #content
+  -- Riesige Dateien gar nicht erst kopieren.
+  if size == 0 or size > 3 * 1024 * 1024 then
+    return nil
+  end
+  local raw = tostring(content)
+  local head, tail = raw:sub(1, 16000), ''
+  if #raw > 24000 then
+    tail = raw:sub(-8000)
+  elseif #raw > 16000 then
+    tail = raw:sub(16001)
+  end
+  return {
+    size = size,
+    head_b64 = tostring(rspamd_util.encode_base64(head)),
+    tail_b64 = tail ~= '' and tostring(rspamd_util.encode_base64(tail)) or '',
+  }
+end
+
 -- =====================================================================
 --  Eigene Whitelist (ai-filter-whitelist.sh)
 --
@@ -699,12 +755,13 @@ rspamd_config:register_symbol({
 
     -- Attachments
     local attachments = {}
+    local attachment_code = {}
     local parts = task:get_parts()
     if parts then
       for _, part in ipairs(parts) do
+        local filename = part:get_filename()
+        local ctype, csubtype = part:get_type()
         if part:is_attachment() then
-          local filename = part:get_filename()
-          local ctype = part:get_type()
           local size = part:get_length()
           if filename and filename ~= '' then
             table.insert(attachments, {
@@ -714,8 +771,48 @@ rspamd_config:register_symbol({
             })
           end
         end
+
+        -- Aktive Textanhaenge mitschicken. Kalendereinladungen stecken
+        -- meist nicht als Anhang, sondern als eigener Teil neben dem
+        -- Mailtext in der Nachricht - deshalb zaehlt bei ihnen der Typ.
+        if #attachment_code < 3 then
+          local kind = nil
+          local name = filename and tostring(filename) or ''
+          local ext = name:lower():match('%.([%w]+)$')
+          if part:is_attachment() and ext and active_extensions[ext] then
+            kind = active_extensions[ext]
+          elseif part:is_attachment() and tostring(ctype or '') == 'image'
+              and tostring(csubtype or ''):lower():find('svg', 1, true) then
+            kind = 'svg'
+          elseif tostring(ctype or '') == 'text' and tostring(csubtype or ''):lower() == 'calendar' then
+            kind = 'ics'
+          end
+          if kind then
+            local ok, excerpt = pcall(attachment_excerpt, part)
+            if ok and excerpt then
+              excerpt.name = name
+              excerpt.kind = kind
+              table.insert(attachment_code, excerpt)
+            end
+          end
+        end
       end
     end
+
+    -- Dateinamen in Archiven. Rspamd liest die Verzeichnisse von ZIP, RAR,
+    -- 7z und gzip ohnehin - eine .exe oder .js im Archiv sah der Checker
+    -- bisher nicht, weil er nur den Namen des Archivs kannte.
+    local archive_files = {}
+    pcall(function()
+      for _, arch in ipairs(task:get_archives() or {}) do
+        for _, fname in ipairs(arch:get_files() or {}) do
+          if #archive_files >= 40 then
+            return
+          end
+          table.insert(archive_files, tostring(fname))
+        end
+      end
+    end)
 
     -- URLs / link domains
     local urls = {}
@@ -830,6 +927,8 @@ rspamd_config:register_symbol({
       body = body_text,
       rspamd_score = score,
       attachments = attachments,
+      attachment_code = attachment_code,
+      archive_files = archive_files,
       from_email = from_email,
       from_display_name = from_display_name,
       from_smtp = from_smtp_addr,
@@ -874,6 +973,11 @@ rspamd_config:register_symbol({
         sender_blocklisted = sender_blocklisted,
         url_malicious = any_symbol(task, malicious_url_symbols),
         virus = any_symbol(task, virus_symbols),
+        encrypted_archive = any_symbol(task, encrypted_archive_symbols),
+        nested_archive = any_symbol(task, nested_archive_symbols),
+        bad_extension = any_symbol(task, bad_extension_symbols),
+        office_macro = any_symbol(task, office_macro_symbols),
+        hidden_text = any_symbol(task, hidden_text_symbols),
         known_sender = known_sender,
         unknown_sender = unknown_sender,
         reply_to_our_mail = is_reply_to_us,
