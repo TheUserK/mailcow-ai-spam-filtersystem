@@ -19,6 +19,12 @@
 #  Datum, in data/logs/ai-checker/relationship.sqlite (root, 0600). Nichts
 #  davon verlaesst den Server.
 #
+#  Eine Entscheidung gilt fuer ALLE Postfaecher dieses Servers: Es zaehlt
+#  die neueste, egal von wem - nur wer selbst entschieden hat, fuer den
+#  gilt die eigene (FEEDBACK_SCOPE in ai-mail-checker.php). Sortiert das
+#  Mailprogramm eines Nutzers eigenmaechtig in den Junk, gehoert dessen
+#  Postfach deshalb in die Ausschlussliste unten.
+#
 #  Was der Checker damit macht, steht bei RELATIONSHIP_MODE in
 #  ai-mail-checker.php. Vorgabe ist "on". Mit
 #  AI_FILTER_RELATIONSHIP_MODE=shadow wird nur mitgeschrieben und im Log
@@ -58,7 +64,7 @@ while [[ $# -gt 0 ]]; do
         --forget)  ACTION=forget; ARG="${2:-}"; ARG2="${3:-}"
                    if [[ -n "$ARG2" && "$ARG2" != --* ]]; then shift 3; else ARG2=""; shift 2; fi ;;
         --days)    DAYS="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done

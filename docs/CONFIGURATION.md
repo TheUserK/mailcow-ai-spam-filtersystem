@@ -1129,6 +1129,33 @@ Two local sources, neither of which leaves the server:
 The sender key is the registrable From domain; for freemail it is the full
 address.
 
+### Whose decision counts (FEEDBACK_SCOPE)
+
+Since 15.11. a decision applies to the **whole server**, not only to the
+mailbox that made it. When one user rescues a sender's mail from Junk or
+moves it there, that holds for every mailbox:
+
+- **The newest decision wins**, whoever made it. A mistake corrects itself in
+  both directions: what one user junks wrongly, the next one rescues. Giving
+  rescues permanent priority instead would have made any spam untouchable
+  that somebody once rescued.
+- **A user's own decision beats everyone else's**, even an older one.
+  Otherwise two users with different tastes would switch each other's
+  newsletter on and off.
+
+This is deliberately different from the large providers, which let every
+mailbox learn for itself: on a server of this size, a colleague's decision is
+the best information there is about a sender. The price: if **one** user's
+mail client moves mail to Junk on its own, that applies to everyone until the
+next opposite decision - put such mailboxes into `feedback_exclude.txt`.
+
+The effects below are unchanged: they touch advertising only, never lead to a
+reject, and protection needs a verified sender without structural evidence.
+In `stats.log`, `relationship.by` says whose decision it was (`own` or
+`server`); the model sees `recipient-...` or `server-...` flags accordingly.
+`AI_FILTER_FEEDBACK_SCOPE=mailbox` in the `ai-checker` service's environment
+restores the per-mailbox behaviour.
+
 What follows from it (`relationshipEffect()`):
 
 | Effect | Condition | Result |
@@ -1162,10 +1189,11 @@ recreate the container (`docker compose up -d ai-checker`):
 
 Rspamd scores a delivery, not a recipient, so a mail to several mailboxes
 gets one score. Until 12.11. only the first recipient counted. Now the
-gentler reading applies: the delivery is protected as soon as **one**
-recipient rescued the sender or has it arriving for weeks, and forced into
-junk only when **all** of them junked it. History is counted for every
-recipient.
+gentler reading applies: for each recipient the decision that counts is
+determined as above (own first, otherwise the server's newest), and the
+delivery is protected as soon as that is "rescued" for **one** of them or
+one has the sender arriving for weeks. It is forced into junk only when it
+is "junked" for **all** of them. History is counted for every recipient.
 
 ### Releases from quarantine
 
@@ -1351,6 +1379,7 @@ keeps your choice.
 | `OFFER_TYPE_RULES` | `true` | Use the model's `offer_type`/`mass_mailing` answers for the junk floor. See [Offer type and mass mailing](#offer-type-and-mass-mailing-offer_type_rules) |
 | `VERDICT_CACHE_HOURS` | `24` | How long a model answer is reused for an identical mail; `0` disables. The same mailing to twenty mailboxes used to be twenty calls, and not always twenty identical answers (on 19.09. one Alfahosting mail got `transactional` and `spam` within eleven minutes). Cached is the model's answer, never the score: that is recomputed per mail from Rspamd's score, the recipient's feedback and the evidence. The key is a hash of what the model would see (minus the Rspamd score line), the model and this file's modification time, so an update or model change empties it. The file `data/logs/ai-checker/verdict_cache.sqlite` holds hash, verdict and time - no sender, recipient or mail text. A hit shows as `analysis_source: ai-cache` in `stats.log` and costs no budget |
 | `RELATIONSHIP_MODE` | `on` | `off` / `shadow` / `on`, set via `AI_FILTER_RELATIONSHIP_MODE`. See [Recipient relationship](#recipient-relationship-ai-filter-feedbacksh-relationshipsqlite) |
+| `FEEDBACK_SCOPE` | `server` | `server`: the newest decision of any user applies to all mailboxes, a user's own decision first. `mailbox`: only for the mailbox that decided. Set via `AI_FILTER_FEEDBACK_SCOPE`. See [Whose decision counts](#whose-decision-counts-feedback_scope) |
 | `FEEDBACK_MAX_AGE_DAYS` | `180` | How long a recipient's rescue/junk decision stays valid |
 | `HISTORY_MIN_INBOX` / `HISTORY_MIN_DAYS` | `3` / `21` | When a list counts as established for a recipient |
 | `LOG_MAIL_CONTENT` | `false` | Write a body excerpt as well. Far more revealing than a subject and not needed for review - debugging only |

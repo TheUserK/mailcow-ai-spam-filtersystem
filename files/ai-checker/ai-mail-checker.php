@@ -300,6 +300,31 @@ define('RELATIONSHIP_MODE', in_array(getenv('AI_FILTER_RELATIONSHIP_MODE'), ['of
     : 'on');
 // Wie lange eine Nutzerentscheidung gilt.
 define('FEEDBACK_MAX_AGE_DAYS', 180);
+// Fuer wen eine Nutzerentscheidung gilt.
+//
+//   server  - fuer alle Postfaecher dieses Servers (Vorgabe seit 15.11.).
+//             Holt EIN Nutzer Post eines Absenders aus dem Junk oder
+//             schiebt sie hinein, gilt das fuer alle - es zaehlt die
+//             NEUESTE Entscheidung, egal von wem. Damit korrigiert sich
+//             ein Irrtum in beide Richtungen von selbst: Was einer
+//             faelschlich aussortiert, holt der naechste zurueck. Ein
+//             Vorrang fuers Zurueckholen haette dagegen jeden Spam
+//             unangreifbar gemacht, den einmal jemand gerettet hat.
+//             Eine Ausnahme: Wer SELBST ueber einen Absender entschieden
+//             hat, fuer den gilt die eigene Entscheidung, nicht die der
+//             anderen. Sonst schalteten zwei Nutzer mit verschiedenem
+//             Geschmack einander den Newsletter hin und her.
+//   mailbox - nur fuer das Postfach, das entschieden hat (Stand bis 14.11.).
+//
+// Bewusst anders als bei den grossen Anbietern, die jedes Postfach fuer
+// sich lernen lassen: Auf einem Server dieser Groesse ist die Entscheidung
+// eines Kollegen die beste Auskunft, die es ueber einen Absender gibt.
+// Preis: Sortiert das Mailprogramm EINES Nutzers eigenmaechtig in den
+// Junk, gilt das bis zur naechsten Gegenentscheidung fuer alle - solche
+// Postfaecher gehoeren in feedback_exclude.txt.
+define('FEEDBACK_SCOPE', in_array(getenv('AI_FILTER_FEEDBACK_SCOPE'), ['server', 'mailbox'], true)
+    ? getenv('AI_FILTER_FEEDBACK_SCOPE')
+    : 'server');
 // Ab wann eine Liste als "laeuft hier schon laenger" gilt.
 define('HISTORY_MIN_INBOX', 3);
 define('HISTORY_MIN_DAYS', 21);
@@ -2101,10 +2126,13 @@ function analyzeLocally(array $mail, $requestId) {
     // das Modell bekommt die Flags erst, wenn der Modus scharf ist.
     $relationship = relationshipFor($mail, $authStrength);
     if (RELATIONSHIP_MODE === 'on') {
+        // "recipient-" = der Empfaenger selbst, "server-" = ein anderer
+        // Nutzer dieses Servers (FEEDBACK_SCOPE).
+        $who = ($relationship['by'] ?? '') === 'server' ? 'server' : 'recipient';
         if ($relationship['junked']) {
-            $riskFlags[] = 'recipient-junked-sender';
+            $riskFlags[] = $who . '-junked-sender';
         } elseif ($relationship['verified'] && $relationship['rescued']) {
-            $trustFlags[] = 'recipient-rescued-sender';
+            $trustFlags[] = $who . '-rescued-sender';
         }
         if ($relationship['verified'] && $relationship['established'] && !$relationship['junked']) {
             $trustFlags[] = 'sender-history:' . $relationship['inbox'] . '-inbox-mails-over-'
@@ -2570,6 +2598,12 @@ Zu den Absender-Flags:
   egal wie sauber der Versand ist und ob ein Abmeldelink vorhanden ist.
   Fuer Rechnungen, Bestaetigungen und persoenliche Post desselben
   Absenders folgt daraus nichts.
+- "server-rescued-sender" / "server-junked-sender": Dasselbe wie die beiden
+  "recipient-"-Flags, nur hat nicht dieser Empfaenger entschieden, sondern
+  zuletzt ein anderer Nutzer desselben Mailservers. Auf diesem Server gilt
+  die neueste Entscheidung eines Nutzers fuer alle, die nicht selbst
+  entschieden haben. Behandle sie wie die "recipient-"-Flags; sie sind eine
+  Auskunft ueber den Absender aus erster Hand, nicht vom Absender selbst.
 - "verified-brand:MARKE": Die From-Domain gehoert nachweislich (per DMARC)
   zu MARKE - kein Anzeigename-Trick, die Mail kommt wirklich von deren
   eigenen Servern. SEHR STARKES Ham-Signal, staerker als einzelne
@@ -5774,6 +5808,9 @@ function relationshipDb() {
             rcpt TEXT NOT NULL, sender TEXT NOT NULL,
             verdict TEXT NOT NULL, ts INTEGER NOT NULL,
             PRIMARY KEY (rcpt, sender))');
+        // Fuer die serverweite Frage "was war die neueste Entscheidung zu
+        // diesem Absender?" - siehe FEEDBACK_SCOPE.
+        $pdo->exec('CREATE INDEX IF NOT EXISTS feedback_sender ON feedback (sender, ts)');
         // Was wir in Junk oder Ablehnung geschoben haben - siehe
         // recordDelivery() - und was davon wieder aufgetaucht ist.
         // Tageszaehler fuer die Wochenbilanz im Report: wie viel der Filter
@@ -5868,6 +5905,9 @@ function isFreemailDomain($domain) {
 function relationshipFor(array $mail, $authStrength) {
     $rel = [
         'key' => '', 'rescued' => false, 'junked' => false,
+        // Wessen Entscheidung gilt: 'own' (ein Empfaenger dieser Mail hat
+        // selbst entschieden) oder 'server' (ein anderer Nutzer).
+        'by' => '',
         'inbox' => 0, 'seen' => 0, 'days' => 0,
         'established' => false,
         // Nur ein nachweislich echter Absender erbt Vertrauen. Sonst
@@ -5882,19 +5922,36 @@ function relationshipFor(array $mail, $authStrength) {
     $rel['key'] = $sender;
     $recipients = relationshipRecipients($mail);
     $junkedBy = 0;
+    $ownDecisions = 0;
+    $oldest = time() - FEEDBACK_MAX_AGE_DAYS * 86400;
 
     try {
         $feedback = $db->prepare('SELECT verdict, ts FROM feedback WHERE rcpt = ? AND sender = ?');
         $history = $db->prepare('SELECT first_seen, seen, inbox FROM history WHERE rcpt = ? AND sender = ?');
+
+        // Die neueste Entscheidung irgendeines Nutzers dieses Servers zu
+        // diesem Absender - siehe FEEDBACK_SCOPE.
+        $serverVerdict = '';
+        if (FEEDBACK_SCOPE === 'server') {
+            $newest = $db->prepare('SELECT verdict FROM feedback WHERE sender = ? AND ts >= ? ORDER BY ts DESC LIMIT 1');
+            $newest->execute([$sender, $oldest]);
+            $serverVerdict = (string)($newest->fetchColumn() ?: '');
+        }
+
         foreach ($recipients as $one) {
+            // Die eigene Entscheidung dieses Empfaengers geht vor; hat er
+            // keine, gilt die neueste des Servers.
             $feedback->execute([$one, $sender]);
             $row = $feedback->fetch(PDO::FETCH_ASSOC);
-            if ($row && (int)$row['ts'] >= time() - FEEDBACK_MAX_AGE_DAYS * 86400) {
-                if ($row['verdict'] === 'rescued') {
-                    $rel['rescued'] = true;
-                } elseif ($row['verdict'] === 'junked') {
-                    $junkedBy++;
-                }
+            $verdict = $serverVerdict;
+            if ($row && (int)$row['ts'] >= $oldest) {
+                $verdict = $row['verdict'];
+                $ownDecisions++;
+            }
+            if ($verdict === 'rescued') {
+                $rel['rescued'] = true;
+            } elseif ($verdict === 'junked') {
+                $junkedBy++;
             }
 
             $history->execute([$one, $sender]);
@@ -5912,8 +5969,12 @@ function relationshipFor(array $mail, $authStrength) {
                 }
             }
         }
-        // Aussortiert zaehlt nur einstimmig, und nie gegen eine Rettung.
+        // Bei mehreren Empfaengern einer Zustellung: Aussortiert zaehlt nur
+        // einstimmig, und nie gegen eine Rettung.
         $rel['junked'] = !$rel['rescued'] && !empty($recipients) && $junkedBy === count($recipients);
+        if ($rel['rescued'] || $rel['junked']) {
+            $rel['by'] = $ownDecisions > 0 ? 'own' : 'server';
+        }
     } catch (Exception $e) {
         logError('system', 'Relationship lookup failed: ' . $e->getMessage());
     }
@@ -6166,6 +6227,8 @@ function relationshipLog(array $rel, $effect) {
     }
     return [
         'feedback' => !empty($rel['rescued']) ? 'rescued' : (!empty($rel['junked']) ? 'junked' : ''),
+        // 'own' = der Empfaenger selbst, 'server' = ein anderer Nutzer.
+        'by'       => (string)($rel['by'] ?? ''),
         'inbox'    => (int)$rel['inbox'],
         'seen'     => (int)$rel['seen'],
         'days'     => (int)$rel['days'],

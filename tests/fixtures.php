@@ -2349,21 +2349,70 @@ function runFixtures() {
         }
     }
 
-    // Mehrere Empfaenger: geschuetzt, sobald EINER gerettet hat; Junk nur,
-    // wenn ALLE aussortiert haben.
+    // Nutzerentscheidungen gelten serverweit (FEEDBACK_SCOPE): die neueste
+    // gewinnt, die eigene schlaegt die der anderen.
     $two = array_replace($news, ['recipients' => ['kundin@example.com', 'kollege@example.com']]);
     $checkScore(prepareMailContext($two)['recipients'] === ['kundin@example.com', 'kollege@example.com'],
         'all recipients are kept, first one first');
-    $setFeedback('junked');
-    $checkScore(!relationshipFor(prepareMailContext($two), 'strong')['junked'],
-        'one of two recipients junking the sender does not force junk');
-    $db->prepare('INSERT INTO feedback VALUES (?, ?, ?, ?)')
-       ->execute(['kollege@example.com', 'haendler-beispiel.test', 'junked', time()]);
-    $checkScore(relationshipFor(prepareMailContext($two), 'strong')['junked'],
-        'all recipients junking the sender does');
-    $db->prepare('UPDATE feedback SET verdict = ? WHERE rcpt = ?')->execute(['rescued', 'kollege@example.com']);
+    $fb = function ($rcpt, $verdict, $ageDays = 0) use ($db) {
+        $db->prepare('INSERT OR REPLACE INTO feedback VALUES (?, ?, ?, ?)')
+           ->execute([$rcpt, 'haendler-beispiel.test', $verdict, time() - $ageDays * 86400]);
+    };
+    $relOf = function ($to) use ($news) {
+        return relationshipFor(prepareMailContext(array_replace($news, ['to' => $to,
+            'headers' => ['to_header' => $to]])), 'strong');
+    };
+    $checkScore(FEEDBACK_SCOPE === 'server', 'feedback applies server-wide by default');
+
+    $db->exec('DELETE FROM feedback');
+    $fb('kundin@example.com', 'junked');
+    $other = $relOf('fremder@andere-firma.test');
+    $checkScore($other['junked'] && $other['by'] === 'server',
+        'one user junking a sender applies to every mailbox on the server');
+    $own = $relOf('kundin@example.com');
+    $checkScore($own['junked'] && $own['by'] === 'own', 'for the user who decided it is their own decision');
+    $checkScore(in_array('server-junked-sender',
+        analyzeLocally(prepareMailContext(array_replace($news, ['to' => 'fremder@andere-firma.test'])), 'synthetic')['risk_flags'], true)
+        && in_array('recipient-junked-sender', analyzeLocally(prepareMailContext($news), 'synthetic')['risk_flags'], true),
+        'the model is told whose decision it was');
+    $resOther = $scoreCase(array_replace($news, ['to' => 'fremder@andere-firma.test']), $newsVerdict);
+    $checkScore($news['rspamd_score'] + $resOther['score'] >= JUNK_FLOOR && !$resOther['reject_eligible']
+        && $resOther['relationship']['by'] === 'server',
+        'advertising from a sender another user junked goes to junk, never reject');
+
+    // Die neueste Entscheidung gewinnt - in beide Richtungen.
+    $fb('kollege@example.com', 'rescued');
+    $checkScore($relOf('fremder@andere-firma.test')['rescued'] && !$relOf('fremder@andere-firma.test')['junked'],
+        'a newer rescue by someone else overrides the older junking for everyone undecided');
+    $fb('dritter@example.com', 'junked');
+    $db->prepare('UPDATE feedback SET ts = ts - 3600 WHERE rcpt IN (?, ?)')->execute(['kundin@example.com', 'kollege@example.com']);
+    $checkScore($relOf('fremder@andere-firma.test')['junked'], 'and a newer junking overrides the rescue again');
+
+    // Die eigene Entscheidung schlaegt die der anderen, auch wenn sie aelter ist.
+    $mine = $relOf('kollege@example.com');
+    $checkScore($mine['rescued'] && !$mine['junked'] && $mine['by'] === 'own',
+        'a user who rescued the sender keeps it, whatever others decided later');
+    $resMine = $scoreCase(array_replace($news, ['to' => 'kollege@example.com']), $spamVerdict);
+    $checkScore($news['rspamd_score'] + $resMine['score'] < JUNK_FLOOR && $resMine['relationship']['effect'] === 'protect',
+        'and their mail from that sender is not pushed into junk');
+
+    // Abgelaufene Entscheidungen zaehlen auch serverweit nicht.
+    $db->exec('DELETE FROM feedback');
+    $fb('kundin@example.com', 'junked', FEEDBACK_MAX_AGE_DAYS + 1);
+    $checkScore(!$relOf('fremder@andere-firma.test')['junked'], 'an expired decision does not apply to anyone');
+
+    // Mehrere Empfaenger EINER Zustellung: geschuetzt, sobald fuer einen
+    // davon "zurueckgeholt" gilt; Junk nur, wenn es fuer alle gilt.
+    $db->exec('DELETE FROM feedback');
+    $fb('kundin@example.com', 'junked', 2);
+    $fb('kollege@example.com', 'rescued', 5);
     $relTwo = relationshipFor(prepareMailContext($two), 'strong');
-    $checkScore($relTwo['rescued'] && !$relTwo['junked'], 'one rescue protects the delivery');
+    $checkScore($relTwo['rescued'] && !$relTwo['junked'] && $relTwo['by'] === 'own',
+        'a delivery to one who junked and one who rescued is protected');
+    $db->exec('DELETE FROM feedback');
+    $fb('dritter@example.com', 'junked');
+    $checkScore(relationshipFor(prepareMailContext($two), 'strong')['junked'],
+        'a delivery to two undecided mailboxes follows the server');
     $setFeedback('');
     recordDelivery(prepareMailContext($two), 'strong', 1.0);
     $checkScore((int)$db->query('SELECT COUNT(*) FROM history')->fetchColumn() === 2,
