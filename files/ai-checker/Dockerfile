@@ -20,7 +20,20 @@ FROM php:8-cli
 # package) - unlike pdo_mysql, the base image has neither the lib nor the
 # headers, so the configure step fails without it ("Package 'sqlite3',
 # required by 'virtual:world', not found").
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libsqlite3-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && docker-php-ext-install pdo_mysql pdo_sqlite
+#
+# mbstring und curl waren bis PHP 8.5 fest im Basis-Image einkompiliert.
+# Das php:8-cli mit PHP 8.6.0 bringt mbstring nicht mehr mit -
+# ai-filter-update-image.sh hat das Image deshalb zurueckgehalten. Beide
+# werden jetzt nur nachgebaut, wenn sie fehlen: so bleibt der Build auf
+# aelteren Basis-Images unveraendert und bricht auf neueren nicht.
+# mbstring braucht dafuer oniguruma (libonig-dev), curl libcurl.
+RUN set -eux; \
+    exts="pdo_mysql pdo_sqlite"; \
+    pkgs="libsqlite3-dev"; \
+    if ! php -m | grep -qix mbstring; then exts="$exts mbstring"; pkgs="$pkgs libonig-dev"; fi; \
+    if ! php -m | grep -qix curl;     then exts="$exts curl";     pkgs="$pkgs libcurl4-openssl-dev"; fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends $pkgs; \
+    rm -rf /var/lib/apt/lists/*; \
+    docker-php-ext-install $exts; \
+    for e in pdo_mysql pdo_sqlite mbstring curl json; do php -m | grep -qix "$e"; done
