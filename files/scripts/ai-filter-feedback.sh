@@ -13,7 +13,7 @@
 #      aus mailcows Quarantaene freigegeben -> Absender erwuenscht
 #
 #  Gelesen werden per doveadm ausschliesslich Kopfzeilen (From, das
-#  Spam-Kennzeichen, Message-ID, Ablagedatum) der letzten Tage aus
+#  Spam-Kennzeichen, Message-ID, Ablage- und Eingangsdatum) der letzten Tage aus
 #  Posteingang und Junk. Kein Betreff, kein Text, keine Anhaenge. Gespeichert wird je
 #  Postfach und Absenderdomain nur "zurueckgeholt" oder "aussortiert" mit
 #  Datum, in data/logs/ai-checker/relationship.sqlite (root, 0600). Nichts
@@ -129,7 +129,10 @@ esac
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 chmod 700 "$TMP"
 
-FIELDS='user date.saved hdr.x-spam-flag hdr.x-spam hdr.message-id hdr.from'
+# date.received ist das Eingangsdatum, das beim Verschieben erhalten
+# bleibt; date.saved setzt jedes Verschieben neu. Liegen beide
+# auseinander, hat jemand die Mail verschoben - siehe feedback-import.php.
+FIELDS='user date.saved hdr.x-spam-flag hdr.x-spam hdr.message-id hdr.from date.received'
 
 # -A geht alle Postfaecher durch. Ein einzelnes kaputtes Postfach laesst
 # doveadm mit Fehlercode enden, liefert die uebrigen aber trotzdem -

@@ -1123,7 +1123,7 @@ Two local sources, neither of which leaves the server:
 
 | Source | Written by | Meaning |
 |---|---|---|
-| `feedback` | `ai-filter-feedback.sh`, nightly | Mail carrying the spam header that sits in the **inbox** was moved out of Junk by the recipient -> `rescued`. Mail **without** the spam header in **Junk** was moved there by hand -> `junked`. Newest decision per mailbox and sender wins, valid for `FEEDBACK_MAX_AGE_DAYS` (180) |
+| `feedback` | `ai-filter-feedback.sh`, nightly | Mail carrying the spam header that sits in the **inbox** and was **moved** there (its saved date is later than its received date) was moved out of Junk by the recipient -> `rescued`. Mail **without** the spam header in **Junk** was moved there by hand -> `junked`. Newest decision per mailbox and sender wins, valid for `FEEDBACK_MAX_AGE_DAYS` (180) |
 | `history` | the checker, per mail | How often and since when a strongly authenticated sender reached this recipient's **inbox**. Mail we sorted into junk ourselves does not count, otherwise persistent advertising would unlock itself over time |
 
 The sender key is the registrable From domain; for freemail it is the full
@@ -1227,11 +1227,27 @@ Limits and safeguards:
   any sender can write it into their own mail.
 - A delivery forced by a whitelist entry is not remembered.
 
+### Mailboxes that only mark spam
+
+A mailbox set to "only mark spam" in mailcow leaves flagged mail in the
+inbox. There, every spam mail would count as rescued, so the import skips
+rescues for a mailbox with at least 5 flagged mails in the inbox and more
+than in Junk ("Uebersprungen" in the output).
+
+Since 25.11. only mail that arrived **directly** in the inbox counts for that
+rule. Dovecot keeps a mail's received date when it is moved and sets a new
+saved date; when the two are at least 5 seconds apart, the mail was moved,
+and that is a rescue, not a sign of "only mark". Until then, a recipient who
+emptied Junk and rescued five mails was taken for a mark-only mailbox and
+lost every rescue - a sender rescued five times kept landing in Junk. A
+flagged mail delivered straight to the inbox is no longer read as a rescue
+at all.
+
 ### What the script reads
 
 Per mailbox, only Inbox and Junk, only mail saved in the last 14 days
 (`--days N`), and only these header fields: `From`, `X-Spam-Flag`/`X-Spam`,
-`Message-ID` (compared as a hash) and the saved date. No subject, no body, no attachments. It stores mailbox
+`Message-ID` (compared as a hash), the saved and the received date. No subject, no body, no attachments. It stores mailbox
 address, sender key, `rescued`/`junked` and a date in
 `data/logs/ai-checker/relationship.sqlite` (root, `0600`). This is a new kind
 of processing - recipients' sorting behaviour - and belongs in your records

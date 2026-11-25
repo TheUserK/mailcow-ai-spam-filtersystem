@@ -15,7 +15,8 @@
 //  verrutschte dadurch alles um eins, und als Datum galt immer "heute".
 //
 //  Daraus:
-//    INBOX + Spam-Kennzeichen   -> "rescued"  (aus dem Junk zurueckgeholt)
+//    INBOX + Spam-Kennzeichen, verschoben
+//                               -> "rescued"  (aus dem Junk zurueckgeholt)
 //    INBOX ohne Kennzeichen, aber vom Checker als Junk/Reject vermerkt
 //                               -> "rescued"  (aus der Quarantaene
 //                                  freigegeben - siehe recordFlagged())
@@ -76,7 +77,20 @@ function feedbackExcluded($rcpt) {
 // dass keine kommt: die angeforderte Reihenfolge mit vorangestelltem
 // "username".
 $columns = ['username' => 1, 'user' => 2, 'date.saved' => 3,
-            'hdr.x-spam-flag' => 4, 'hdr.x-spam' => 5, 'hdr.message-id' => 6, 'hdr.from' => 7];
+            'hdr.x-spam-flag' => 4, 'hdr.x-spam' => 5, 'hdr.message-id' => 6, 'hdr.from' => 7,
+            'date.received' => 8];
+
+// Verschoben oder direkt zugestellt? Dovecot behaelt beim Verschieben das
+// Eingangsdatum (date.received) und setzt das Ablagedatum (date.saved)
+// neu. Bei der Zustellung sind beide praktisch gleich. Am 25.11. lagen bei
+// echten Rettungen aus dem Junk 15 Sekunden bis 19 Stunden dazwischen.
+//
+// Bis dahin zaehlte JEDE gekennzeichnete Mail im Posteingang als Hinweis
+// auf "Spam nur markieren" - auch die geretteten selbst. Wer seinen Junk
+// leer raeumte und ein paar Mails zurueckholte, galt damit als
+// Nur-Markieren-Postfach, und alle seine Rettungen wurden verworfen
+// (buyzoxs.de, fuenfmal zurueckgeholt, landete immer wieder im Junk).
+const FEEDBACK_MOVED_MIN_SECONDS = 5;
 
 // Fuer die Quarantaene-Erkennung wird die Datenbank auch im Probelauf
 // gelesen - geschrieben wird dort nichts.
@@ -116,13 +130,23 @@ while (($line = fgets(STDIN)) !== false) {
     $flagged = preg_match('/^\s*yes/i', feedbackUnescape($column($fields, 'hdr.x-spam-flag'))) === 1
             || preg_match('/^\s*yes/i', feedbackUnescape($column($fields, 'hdr.x-spam'))) === 1;
     $from    = feedbackAddress(feedbackUnescape($column($fields, 'hdr.from')));
+    // null = unbekannt (kein Eingangsdatum geliefert, etwa ein alter
+    // Aufruf ohne die Spalte): dann wie bisher, ohne diese Unterscheidung.
+    $received = strtotime(feedbackUnescape($column($fields, 'date.received')));
+    $moved   = ($saved !== false && $received !== false)
+        ? ($saved - $received) >= FEEDBACK_MOVED_MIN_SECONDS
+        : null;
 
     if ($rcpt === '' || feedbackExcluded($rcpt)) {
         continue;
     }
     if ($flagged) {
         if ($folder === 'INBOX') {
-            $flaggedInbox[$rcpt] = ($flaggedInbox[$rcpt] ?? 0) + 1;
+            // Nur, was gekennzeichnet DIREKT im Posteingang ankam, spricht
+            // fuer "Spam nur markieren". Eine zurueckgeholte Mail nicht.
+            if ($moved !== true) {
+                $flaggedInbox[$rcpt] = ($flaggedInbox[$rcpt] ?? 0) + 1;
+            }
         } else {
             $flaggedJunk[$rcpt] = ($flaggedJunk[$rcpt] ?? 0) + 1;
         }
@@ -130,11 +154,13 @@ while (($line = fgets(STDIN)) !== false) {
 
     $verdict = '';
     $sender = relationshipSenderKey($from);
-    if ($folder === 'INBOX' && $flagged) {
+    if ($folder === 'INBOX' && $flagged && $moved !== false) {
+        // Gekennzeichnet und nachweislich verschoben: zurueckgeholt.
+        // Direkt so zugestellt ($moved === false) ist keine Entscheidung.
         $verdict = 'rescued';
     } elseif ($folder === 'JUNK' && !$flagged) {
         $verdict = 'junked';
-    } elseif ($folder === 'INBOX' && $flaggedLookup && $sender !== '') {
+    } elseif ($folder === 'INBOX' && !$flagged && $flaggedLookup && $sender !== '') {
         // Ohne Kennzeichen im Posteingang, obwohl der Checker genau diese
         // Mail in Junk oder Ablehnung geschoben hatte: freigegeben.
         $mid = messageIdHash(feedbackUnescape($column($fields, 'hdr.message-id')));
